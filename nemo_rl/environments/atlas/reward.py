@@ -73,9 +73,14 @@ def get_reward(
     else:
         return reward
 
-    # Performance: only when a speedup was actually measured (-1.0 means the
-    # workloads were correctness-only / never benchmarked).
-    if result.speedup != -1.0:
+    # Performance — PREFER the SOL score (gap toward speed-of-light, anchored at
+    # human-best; the metric solswarm/KFB reward on). ``sol_score`` is in [0, 1]
+    # (0.5 = match human-best, 1.0 = roofline), scaled by the performance weight.
+    # Fall back to cudagym's eager-reference speedup only when the problem has no
+    # SOL/human-best anchors (-1.0); correctness-only workloads also leave both -1.
+    if result.sol_score >= 0.0:
+        reward += weights.get("performance", 0.0) * result.sol_score
+    elif result.speedup != -1.0:
         reward += normalize_performance_reward(
             result.speedup,
             scale=weights["performance"],

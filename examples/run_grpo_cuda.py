@@ -33,6 +33,7 @@ The agentic path (M1) reuses the env's evaluation+reward via a NeMo-Gym
 """
 
 import argparse
+import json
 import os
 import pprint
 from typing import Any, Optional
@@ -210,6 +211,9 @@ def cudagym_data_processor(
         "workloads": datum_dict["workloads"],
         "target_hardware": datum_dict.get("target_hardware"),
         "destination_passing_style": destination_passing_style,
+        # Per-workload SOL/human-best anchors (parsed from the JSON string the data
+        # layer baked in) — drives the SOL-score perf reward in the env's step().
+        "sol_anchors": json.loads(datum_dict.get("sol_anchors") or "{}"),
     }
     return {
         "message_log": message_log,

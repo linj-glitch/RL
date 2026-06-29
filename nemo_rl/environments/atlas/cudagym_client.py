@@ -50,6 +50,8 @@ from .cuda_kernel_utils import (
     CudaGymEvalConfig,
     KernelEvalResult,
     fence_lang_for,  # re-exported for the env side (cudagym_base) — noqa: F401
+    geomean,
+    sol_score,
 )
 
 # Per-workload statuses that deny a stage. ``compiled``/``executed`` credit is
@@ -154,7 +156,9 @@ async def evaluate_solution(
     )
 
 
-def update_result_from_trace(trace: Trace, result: KernelEvalResult) -> None:
+def update_result_from_trace(
+    trace: Trace, result: KernelEvalResult, sol_anchors: dict | None = None
+) -> None:
     """Map a run-level ``Trace`` onto a ``KernelEvalResult`` in place.
 
     A kernel must clear a stage on *every* workload to earn it:
@@ -201,9 +205,41 @@ def update_result_from_trace(trace: Trace, result: KernelEvalResult) -> None:
         result.metadata["correctness_error"] = _first_log(lambda s: s not in _CORRECT_OK)
         return
 
-    # Performance: mean speedup / latency over benchmarked workloads.
+    # Eager-reference speedup/latency (cudagym's own metric) — kept for logging
+    # and as the FALLBACK perf signal when SOL anchors are unavailable.
     summary = trace.summary
     if summary.speedup_factor is not None and summary.speedup_factor.mean is not None:
         result.speedup = summary.speedup_factor.mean
     if summary.latency_ms is not None and summary.latency_ms.mean is not None:
         result.runtime = summary.latency_ms.mean
+
+    # SOL score (PREFERRED — what solswarm/KFB reward on): per workload, anchored at
+    # human-best (0.5) and speed-of-light (1.0). ``sol_anchors`` maps workload uuid ->
+    # {"human_best_latency_ms", "sol_latency_ms"}. Only workloads with a positive
+    # human-best contribute; ``sol_latency_ms`` may be 0 (then ``sol_score`` degrades
+    # to a bounded speedup-over-human-best). No usable anchors -> sol_score stays -1
+    # and the reward falls back to the eager speedup above.
+    if sol_anchors:
+        scores: list[float] = []
+        human_best_speedups: list[float] = []
+        for workload_trace in workload_traces:
+            evaluation = workload_trace.evaluation
+            if evaluation is None or evaluation.performance is None:
+                continue
+            workload = getattr(workload_trace, "workload", None)
+            uuid = getattr(workload, "uuid", None)
+            if uuid is None and isinstance(workload, dict):
+                uuid = workload.get("uuid")
+            anchor = sol_anchors.get(uuid) if uuid else None
+            human_best = float((anchor or {}).get("human_best_latency_ms") or 0.0)
+            if not anchor or human_best <= 0.0:
+                continue
+            t_k = float(evaluation.performance.latency_ms)
+            scores.append(sol_score(t_k, human_best, float(anchor.get("sol_latency_ms") or 0.0)))
+            if t_k > 0:
+                human_best_speedups.append(human_best / t_k)
+        if scores:
+            result.sol_score = sum(scores) / len(scores)  # avg SOL score (KFB convention)
+            result.metadata["sol_scores"] = scores
+            if human_best_speedups:
+                result.human_best_speedup = geomean(human_best_speedups)

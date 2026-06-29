@@ -92,7 +92,9 @@ class KernelEvalResult:
     compiled: bool = False  # all workloads compiled (or no compilation needed)
     executed: bool = False  # all workloads ran without runtime errors
     correctness: bool = False  # all workloads numerically matched the reference
-    speedup: float = -1.0  # mean speedup over the reference (passed workloads)
+    speedup: float = -1.0  # mean speedup over the EAGER reference (cudagym; logging + fallback)
+    sol_score: float = -1.0  # mean SOL score in [0,1] (0.5=human-best, 1.0=speed-of-light); -1 = no anchors
+    human_best_speedup: float = -1.0  # geomean speedup over human-best (logging)
     runtime: float = -1.0  # mean custom-kernel latency in ms
     ref_exec_eager_time: float = -1.0  # mean reference latency in ms
     # Free-form diagnostics (compile/exec errors, per-workload statuses, ...);
@@ -134,3 +136,39 @@ def fence_lang_for(language: str) -> str:
 def entry_symbol_for(language: str) -> str:
     """Entry function name the kernel must define (the part after ``::``)."""
     return LANGUAGE_DEFAULTS.get(language, LANGUAGE_DEFAULTS["python"])[1].split("::")[-1]
+
+
+# ---------------------------------------------------------------------------
+# SOL score — the solswarm / Kernel-Factory-Bench performance metric.
+# ---------------------------------------------------------------------------
+# Unlike cudagym's ``speedup_factor`` (speedup over the *eager* reference), the
+# SOL score is anchored at the per-workload **human-best** latency (T_b) and the
+# **speed-of-light** roofline (T_SOL) — both precomputed offline in KFB's
+# latencies_b200.csv. We compute it at reward time from cudagym's measured
+# latency (T_k) + those anchors. This is the signal solswarm rewards on.
+def sol_score(latency_ms: float, human_best_ms: float, sol_ms: float) -> float:
+    """Anchored Speed-Of-Light score in [0, 1] for one workload.
+
+    ``S = 1 / (1 + (T_k - T_SOL) / (T_b - T_SOL))``, clamped to [0, 1]:
+      * ``S = 0.5`` when the kernel matches human-best (T_k = T_b),
+      * ``S = 1.0`` when it reaches speed-of-light (T_k = T_SOL),
+      * ``S -> 0`` as it gets slower than human-best.
+    Mirrors ``kernel-factory-bench/scripts/calculate_sol_scores.py`` (clamped
+    here so the RL reward stays bounded).
+    """
+    gap = human_best_ms - sol_ms
+    if gap <= 0:  # degenerate anchors (human-best already at/under SOL): pass/fail
+        s = 1.0 if latency_ms <= sol_ms else 0.0
+    else:
+        s = 1.0 / (1.0 + (latency_ms - sol_ms) / gap)
+    return max(0.0, min(1.0, s))
+
+
+def geomean(values: list[float]) -> float:
+    """Geometric mean of positive values (0.0 if none are positive)."""
+    import math
+
+    positives = [v for v in values if v > 0]
+    if not positives:
+        return 0.0
+    return math.exp(sum(math.log(v) for v in positives) / len(positives))

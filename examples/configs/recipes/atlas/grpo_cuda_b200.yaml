@@ -93,8 +93,9 @@ env:
         clip_max: 10.0
         clip_min: 0.1
         speedup_ratio: 0.75
-      # CudaGym EvalConfig overrides (warmup/iterations/tolerances/clock-lock); {} = server defaults.
-      benchmark_config: {}
+      # CudaGym EvalConfig overrides. lock_clocks=true so eval timing matches the
+      # locked-clock anchors in latencies_b200.csv that the SOL-score reward uses.
+      benchmark_config: {lock_clocks: true}
       # null -> CudaGymClient.from_env() (reads CUDAGYM_UNIFIED_SERVER_URL / CUDAGYM_AUTH_TOKEN).
       # Set explicitly for a fixed remote/colocated endpoint.
       server_url: null

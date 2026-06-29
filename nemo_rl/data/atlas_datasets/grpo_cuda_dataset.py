@@ -82,6 +82,8 @@ def format_cuda_problem(
         "target_hardware": data.get("target_hardware")
         or getattr(task_to_env_config[chosen_task], "arch", None),
         "destination_passing_style": data.get("destination_passing_style", True),
+        # Per-workload SOL/human-best anchors (JSON string) for the SOL-score reward.
+        "sol_anchors": data.get("sol_anchors", "{}"),
     }
 
 
@@ -178,11 +180,51 @@ class GRPODriverDataset:
 # -- Kernel-Factory-Bench helpers (build a dataset JSONL from a KFB checkout) --
 
 
+def load_sol_anchors(sol_latencies_csv: str, artifact_id: str) -> dict[str, dict[str, float]]:
+    """Per-workload SOL / human-best anchors for one problem, from a KFB latency CSV.
+
+    Returns ``{workload_uuid: {"human_best_latency_ms", "sol_latency_ms"}}`` for every
+    workload of ``artifact_id`` with a *positive* human-best latency (the essential
+    anchor; ``sol_latency_ms`` may be 0 -> the SOL score degrades to a bounded
+    speedup-over-human-best). Reads ``latencies_b200.csv`` / ``sol_latencies.csv``; the
+    human-best column is ``human_best_latency_ms`` or ``optimized_baseline_latency_ms``.
+    Loaded at dataset-build time so the anchors travel with the row (no CSV access at
+    eval time). Consumed by the reward in nemo_rl/environments/atlas/cudagym_client.py.
+    """
+    import csv
+
+    anchors: dict[str, dict[str, float]] = {}
+    path = Path(sol_latencies_csv)
+    if not path.is_file():
+        return anchors
+    with open(path, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            if row.get("artifact_id") != artifact_id:
+                continue
+            raw_hb = row.get("human_best_latency_ms") or row.get("optimized_baseline_latency_ms")
+            try:
+                human_best = float(raw_hb)
+            except (TypeError, ValueError):
+                continue
+            if human_best <= 0.0:
+                continue
+            try:
+                sol = float(row.get("sol_latency_ms") or 0.0)
+            except (TypeError, ValueError):
+                sol = 0.0
+            anchors[row["workload_uuid"]] = {
+                "human_best_latency_ms": human_best,
+                "sol_latency_ms": sol,
+            }
+    return anchors
+
+
 def kfb_problem_to_row(
     problem_dir: str,
     language: str,
     target_hardware: str = "B200",
     destination_passing_style: bool = True,
+    sol_latencies_csv: Optional[str] = None,
 ) -> dict[str, Any]:
     """Read one KFB problem directory into a SOLBench dataset row.
 
@@ -193,6 +235,11 @@ def kfb_problem_to_row(
             solution language, so it is chosen here.
         target_hardware: GPU SKU the kernel is evaluated on (KFB targets "B200").
         destination_passing_style: whether ``run`` writes outputs in-place.
+        sol_latencies_csv: optional KFB latency CSV (e.g. ``data/benchmark/latencies_b200.csv``);
+            when given, per-workload SOL/human-best anchors for this problem are baked in.
+
+    ``sol_anchors`` is stored as a JSON string (not a nested dict) so the HuggingFace
+    dataset schema stays uniform across structurally-different problems.
     """
     pdir = Path(problem_dir)
     definition = json.loads((pdir / "definition.json").read_text())
@@ -201,12 +248,18 @@ def kfb_problem_to_row(
         for line in (pdir / "workload.jsonl").read_text().splitlines()
         if line.strip()
     ]
+    anchors = (
+        load_sol_anchors(sol_latencies_csv, definition.get("name", pdir.name))
+        if sol_latencies_csv
+        else {}
+    )
     return {
         "definition": definition,
         "workloads": workloads,
         "language": language,
         "target_hardware": target_hardware,
         "destination_passing_style": destination_passing_style,
+        "sol_anchors": json.dumps(anchors),
     }
 
 
@@ -216,13 +269,18 @@ def write_kfb_dataset(
     language: str,
     target_hardware: str = "B200",
     destination_passing_style: bool = True,
+    sol_latencies_csv: Optional[str] = None,
 ) -> int:
     """Write a SOLBench dataset JSONL (one problem per line) from KFB dirs.
 
     Returns the number of rows written. Point ``data.dataset_path`` at ``out_path``.
+    Pass ``sol_latencies_csv`` (e.g. ``data/benchmark/latencies_b200.csv``) to bake
+    per-problem SOL/human-best anchors into each row for the SOL-score reward.
     """
     rows = [
-        kfb_problem_to_row(d, language, target_hardware, destination_passing_style)
+        kfb_problem_to_row(
+            d, language, target_hardware, destination_passing_style, sol_latencies_csv
+        )
         for d in problem_dirs
     ]
     with open(out_path, "w", encoding="utf-8") as f:

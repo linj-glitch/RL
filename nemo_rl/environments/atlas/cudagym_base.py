@@ -120,7 +120,9 @@ class BaseCudaEvaluator(ABC):
             except Exception as e:  # noqa: BLE001 - surface unexpected SDK/transport errors
                 result.metadata["evaluation_error"] = str(e)
                 return
-            cudagym_client.update_result_from_trace(trace, result)
+            cudagym_client.update_result_from_trace(
+                trace, result, sol_anchors=meta.get("sol_anchors")
+            )
 
         await asyncio.gather(*(_evaluate_one(i) for i in range(len(results))))
         return results
