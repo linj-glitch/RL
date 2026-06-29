@@ -1,0 +1,11 @@
+Write a fast, numerically-correct GPU kernel that implements the following problem.
+Your response must define a function called `{entry_function}` with the signature shown below.
+
+First reason step-by-step inside a single <think> ... </think> block. Then, after
+</think>, provide the complete implementation in ONE ```{kernel_lang} code block (and
+nothing else after it). Do not include any prose outside the <think> block.
+
+Problem:
+```{driver_lang}
+{driver_code}
+```

@@ -1,0 +1,110 @@
+# Single-turn (M0) GRPO on CudaGym / SOLBench (Kernel-Factory-Bench) kernel
+# problems, evaluated on B200. Launch: `uv run examples/run_grpo_cuda.py --config <this>`.
+#
+# Inherits all unspecified fields (loss_fn, full policy/data defaults, ...) from
+# grpo_math_1B.yaml and overrides only the CudaGym-specific bits. SET_ME markers
+# below MUST be filled in:
+#   * policy.model_name      -> the SFT'd checkpoint to RL on (see plan §11.5 SFT prereq)
+#   * data.dataset_path      -> a SOLBench problem JSONL (build from a KFB checkout
+#                               with nemo_rl.data.atlas_datasets.write_kfb_dataset)
+#   * CUDAGYM_UNIFIED_SERVER_URL / CUDAGYM_AUTH_TOKEN in the environment (or set
+#     env.cudagym.b200.server_url) -> the B200 CudaGym eval server (plan §11.12).
+defaults: "../../grpo_math_1B.yaml"
+
+grpo:
+  num_prompts_per_step: 8
+  num_generations_per_prompt: 8  # effective batch = 8 * 8 = 64 completions / step
+  max_rollout_turns: 1  # SINGLE-TURN: prompt -> one kernel completion -> reward -> done
+  max_num_steps: 200
+  max_num_epochs: 1
+  normalize_rewards: true
+  use_leave_one_out_baseline: true
+  val_period: 20
+  val_at_start: false
+  max_val_samples: 8
+  val_batch_size: 8
+  seed: 42
+
+checkpointing:
+  enabled: true
+  checkpoint_dir: "results/grpo-cuda-b200"
+  # Our env reports correctness_rate + avg_speedup via global_post_process_and_metrics.
+  metric_name: "val:correctness_rate"
+  higher_is_better: true
+  keep_top_k: 5
+  save_period: 20
+
+policy:
+  model_name: "/models/SET_ME_solswarm_sft_checkpoint"
+  max_total_sequence_length: 16384  # generous for <think> + a kernel; raise for big problems
+  tokenizer:
+    name: ${policy.model_name}
+    # Minimal chat template that PRESERVES <think> verbatim (Qwen-family / <|im_start|>
+    # style; swap to match the SFT'd model). Single-turn inline-code needs no tool
+    # rendering. See plan §3.2 (prefix-stability) on why a think-preserving template matters.
+    chat_template: "{%- for message in messages %}{%- if message.role == 'system' %}\n<|im_start|>system\n{{- message.content }}<|im_end|>\n{%- elif message.role == 'user' %}\n<|im_start|>user\n{{- message.content }}<|im_end|>\n<|im_start|>assistant\n{%- elif message.role == 'assistant' %}\n{{- message.content }}<|im_end|>{%- endif %}{%- endfor %}"
+  train_global_batch_size: 32
+  train_micro_batch_size: 1
+  precision: "bfloat16"
+  dtensor_cfg:
+    enabled: true
+    tensor_parallel_size: 1  # raise for larger SFT checkpoints
+    activation_checkpointing: true
+  generation:
+    backend: "vllm"
+    max_new_tokens: ${policy.max_total_sequence_length}
+    temperature: 1.0
+    top_p: 1.0
+    top_k: null
+    stop_token_ids: null
+    stop_strings: null
+    vllm_cfg:
+      async_engine: false
+      tensor_parallel_size: 1
+      gpu_memory_utilization: 0.6
+      max_model_len: ${policy.max_total_sequence_length}
+
+data:
+  max_input_seq_length: ${policy.max_total_sequence_length}
+  prompt_file: "examples/prompts/cudagym.txt"
+  system_prompt_file: null
+  dataset_path: "/datasets/SET_ME_kfb_solbench.jsonl"
+  duplicate_train_data: true
+  test_size: 0.1
+  add_system_prompt: false
+  shuffle: false
+
+env:
+  cudagym:
+    # One entry per GPU arch; the entry name is the task_name and (by default)
+    # the arch. Add more entries (with weights) to mix archs.
+    b200:
+      arch: "B200"
+      weight: 1.0
+      compilation_timeout: 300
+      execution_timeout_per_trial: 120
+      reward_weights:
+        format: 1
+        compiled: 2
+        executed: 2
+        correctness: 4
+        performance: 8
+      perf_reward_config:
+        clip_max: 10.0
+        clip_min: 0.1
+        speedup_ratio: 0.75
+      # CudaGym EvalConfig overrides (warmup/iterations/tolerances/clock-lock); {} = server defaults.
+      benchmark_config: {}
+      # null -> CudaGymClient.from_env() (reads CUDAGYM_UNIFIED_SERVER_URL / CUDAGYM_AUTH_TOKEN).
+      # Set explicitly for a fixed remote/colocated endpoint.
+      server_url: null
+
+logger:
+  log_dir: "logs/grpo-cuda-b200"
+  wandb_enabled: false
+  tensorboard_enabled: true
+  monitor_gpus: true
+
+cluster:
+  gpus_per_node: 1
+  num_nodes: 1
