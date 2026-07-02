@@ -2921,6 +2921,7 @@ def grpo_train(
                             ],
                             max_rollout_turns=master_config.grpo.max_rollout_turns,
                             greedy=False,
+                            timer=timer,
                         )
                     policy_generation.finish_generation()
                     # Collect generation logger metrics for performance reporting after each generation step
@@ -2950,6 +2951,20 @@ def grpo_train(
                 with timer.time("reward_calculation"):
                     # Extract rewards from final_batch
                     rewards = repeated_batch["total_reward"]
+
+                    # Log rollout conversations (+ rewards / task names) to table
+                    # backends (e.g. W&B) for observability. Best-effort: never let
+                    # table logging interrupt training.
+                    try:
+                        logger.log_conversations_from_message_logs(
+                            message_logs=repeated_batch["message_log"],
+                            rewards=repeated_batch.get("total_reward"),
+                            task_names=repeated_batch.get("task_name"),
+                            step=total_steps + 1,
+                            name="train/conversations",
+                        )
+                    except Exception as e:
+                        print(f"\n  ⚠️ Error logging conversations table: {str(e)}")
 
                     print("▶ Computing advantages...", flush=True)
                     # For DAPO with reward shaping, compute std on the raw

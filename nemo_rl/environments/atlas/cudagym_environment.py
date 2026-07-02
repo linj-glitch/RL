@@ -31,16 +31,15 @@ prompt/observation tokens are masked by provenance.
 """
 
 import asyncio
-from typing import Literal, TypedDict
+from typing import TypedDict
 
-import numpy as np
 import ray
 import torch
 
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 from nemo_rl.environments.interfaces import EnvironmentInterface, EnvironmentReturn
 
-from .cuda_kernel_utils import CudaGymEvalConfig
+from .cuda_kernel_utils import CudaGymEvalConfig, aggregate_kernel_metrics
 from .cudagym_base import BaseCudaEvaluator
 
 
@@ -55,7 +54,9 @@ class CudaGymEnvironmentMetadata(TypedDict, total=False):
     language: str  # cudagym SupportedLanguages value (e.g. "triton", "cuda_cpp")
     definition: dict  # a Definition dict (e.g. a KFB definition.json)
     workloads: list  # list of Workload dicts (e.g. KFB workload.jsonl lines)
-    target_hardware: str  # cudagym SupportedHardware (e.g. "B200"); falls back to env arch
+    target_hardware: (
+        str  # cudagym SupportedHardware (e.g. "B200"); falls back to env arch
+    )
     destination_passing_style: bool
     correctness: bool
     speedup: float  # speedup over the eager PyTorch reference (cudagym speedup_factor)
@@ -84,13 +85,17 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
                 perf_reward_config=config.get(
                     "perf_reward_config", defaults.perf_reward_config
                 ),
-                benchmark_config=config.get("benchmark_config", defaults.benchmark_config),
+                benchmark_config=config.get(
+                    "benchmark_config", defaults.benchmark_config
+                ),
                 server_url=config.get("server_url", defaults.server_url),
                 auth_token=config.get("auth_token", defaults.auth_token),
             )
 
         if not self.eval_config.arch:
-            raise ValueError("CudaGymEnvironment requires 'arch' (the target GPU, e.g. B200)")
+            raise ValueError(
+                "CudaGymEnvironment requires 'arch' (the target GPU, e.g. B200)"
+            )
 
         # One transport client + one event loop per actor. The client is
         # imported here (not at module top) so the data layer can import the
@@ -136,7 +141,9 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
         completion_batch: list[str] = []
         for conversation in message_log_batch:
             user_prompts = [m["content"] for m in conversation if m["role"] == "user"]
-            assistant_msgs = [m["content"] for m in conversation if m["role"] == "assistant"]
+            assistant_msgs = [
+                m["content"] for m in conversation if m["role"] == "assistant"
+            ]
             user_prompt_batch.append(user_prompts[0] if user_prompts else "")
             completion_batch.append(assistant_msgs[-1] if assistant_msgs else "")
 
@@ -170,9 +177,11 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
         for meta, result in zip(metadata, results):
             updated = dict(meta)
             updated["correctness"] = bool(result.correctness)
-            updated["speedup"] = float(result.speedup)                        # vs eager reference
-            updated["human_best_speedup"] = float(result.human_best_speedup)  # vs human-best/baseline
-            updated["sol_score"] = float(result.sol_score)                    # anchored SOL score
+            updated["speedup"] = float(result.speedup)  # vs eager reference
+            updated["human_best_speedup"] = float(
+                result.human_best_speedup
+            )  # vs human-best/baseline
+            updated["sol_score"] = float(result.sol_score)  # anchored SOL score
             output_metadata.append(updated)  # type: ignore[arg-type]
 
         rewards_tensor = torch.tensor(rewards, dtype=torch.float32).cpu()
@@ -191,54 +200,23 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
     def global_post_process_and_metrics(
         self, batch: BatchedDataDict
     ) -> tuple[BatchedDataDict, dict]:
-        """Aggregate the step's observability metrics.
+        """Aggregate the step's reward-observability metrics.
 
-        ``correctness_rate`` over the whole batch; then, over the CORRECT kernels
-        only, ``avg_speedup_over_ref`` (vs the eager PyTorch reference),
-        ``avg_speedup_over_baseline`` (vs the human-best baseline anchor),
-        ``avg_sol_score`` (the anchored SOL score that IS the performance reward),
-        and ``perf_ref_fallback_rate`` (fraction whose perf reward fell back to
-        speedup-over-ref for lack of a SOL/human-best anchor).
+        Delegates to ``cuda_kernel_utils.aggregate_kernel_metrics`` (shared with the
+        M1 NeMo-Gym path so both log identical names/semantics): ``correctness_rate``
+        over the batch; then, over the CORRECT kernels only, ``avg_speedup_over_ref``
+        (vs the eager PyTorch reference), ``avg_speedup_over_baseline`` (vs the
+        human-best baseline anchor), ``avg_sol_score`` (the anchored SOL score that IS
+        the performance reward), and ``perf_ref_fallback_rate`` (fraction whose perf
+        reward fell back to speedup-over-ref for lack of a SOL/human-best anchor).
         """
         metrics: dict = {}
         try:
-            batch_metadata = batch.get("metadata", [])
-            if batch_metadata:
-                correct = np.array(
-                    [bool(m.get("correctness", False)) for m in batch_metadata]
-                )
-                metrics["correctness_rate"] = (
-                    float(correct.mean()) if len(correct) else 0.0
-                )
-
-                # Perf metrics are averaged over CORRECT kernels only, each dropping
-                # its -1.0 sentinel (not measured / no anchor) so anchorless or
-                # incorrect samples don't drag the mean toward zero.
-                def _avg_correct(key: str) -> float:
-                    if not correct.any():
-                        return 0.0
-                    vals = np.array(
-                        [float(m.get(key, -1.0)) for m in batch_metadata]
-                    )[correct]
-                    vals = vals[vals >= 0.0]
-                    return float(vals.mean()) if len(vals) else 0.0
-
-                metrics["avg_speedup_over_ref"] = _avg_correct("speedup")
-                metrics["avg_speedup_over_baseline"] = _avg_correct("human_best_speedup")
-                metrics["avg_sol_score"] = _avg_correct("sol_score")
-
-                # Fraction of correct kernels whose performance reward fell back to
-                # speedup-over-ref because the problem carried no SOL/human-best
-                # anchor (sol_score < 0). High => the reward is drifting off the SOL
-                # objective onto the weaker eager-reference signal (reward.get_reward
-                # fallback), which is easy to saturate — worth watching.
-                if correct.any():
-                    sol_vals = np.array(
-                        [float(m.get("sol_score", -1.0)) for m in batch_metadata]
-                    )[correct]
-                    metrics["perf_ref_fallback_rate"] = float((sol_vals < 0.0).mean())
-        except Exception:
-            pass
+            batch_metadata = batch.get("metadata", []) or []
+            records = [m for m in batch_metadata if isinstance(m, dict)]
+            metrics = aggregate_kernel_metrics(records)
+        except Exception as e:  # never let metric aggregation crash a rollout
+            print(f"⚠️ Error aggregating cudagym metrics: {e}")
         return batch, metrics
 
     def shutdown(self) -> None:

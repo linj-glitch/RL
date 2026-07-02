@@ -57,7 +57,7 @@ from nemo_rl.models.generation.interfaces import (
     GenerationOutputSpec,
     GenerationSamplingParams,
 )
-from nemo_rl.utils.timer import Timer
+from nemo_rl.utils.timer import Timer, create_timer_context
 
 TokenizerType = PreTrainedTokenizerBase
 
@@ -671,6 +671,7 @@ def run_multi_turn_rollout(
     max_seq_len: int,
     max_rollout_turns: int = 999999,
     greedy: bool = False,
+    timer: Optional[Timer] = None,
 ) -> tuple[BatchedDataDict[DatumSpec], dict[str, Any]]:
     """Runs a multi-turn rollout loop, interacting with the environment.
 
@@ -682,6 +683,8 @@ def run_multi_turn_rollout(
         max_rollout_turns: Maximum number of agent-environment interaction turns.
         max_seq_len: Maximum sequence length allowed.
         greedy: Whether to use greedy decoding.
+        timer: Optional Timer; when provided, per-phase generation/reward timings
+            are recorded under ``rollouts/*`` labels.
 
     Returns:
         Tuple containing:
@@ -707,6 +710,9 @@ def run_multi_turn_rollout(
     sample_terminated = torch.zeros(batch_size, dtype=torch.bool)
     sample_truncated = torch.zeros(batch_size, dtype=torch.bool)
     sample_max_turns_reached = torch.zeros(batch_size, dtype=torch.bool)
+    # Track per-sample environment metadata (the env's output_metadata) so
+    # global_post_process_and_metrics can aggregate env-specific online metrics.
+    sample_env_metadata: list[dict | None] = [None] * batch_size
 
     # Tracking per-turn metrics
     total_gen_tokens_per_turn = []
@@ -756,14 +762,15 @@ def run_multi_turn_rollout(
             generation_input_data["vllm_audios"] = active_batch["vllm_audios"]
 
         # generate_responses updates active_batch["message_log"] in-place
-        active_batch, generated_ids, gen_metrics = generate_responses(
-            policy_generation,
-            generation_input_data,
-            active_batch,
-            tokenizer,
-            input_lengths=active_input_lengths,
-            greedy=greedy,
-        )
+        with create_timer_context(timer, "rollouts/generate_responses"):
+            active_batch, generated_ids, gen_metrics = generate_responses(
+                policy_generation,
+                generation_input_data,
+                active_batch,
+                tokenizer,
+                input_lengths=active_input_lengths,
+                greedy=greedy,
+            )
 
         # Record response truncation (response hit max_tokens without stop token)
         response_truncated = gen_metrics.pop("_response_truncated", None)
@@ -781,7 +788,8 @@ def run_multi_turn_rollout(
         total_gen_tokens_per_turn.append(sum(len(ids) for ids in generated_ids))
 
         # Calculate rewards and get environment feedback
-        env_output: EnvironmentReturn = calculate_rewards(active_batch, task_to_env)
+        with create_timer_context(timer, "rollouts/calculate_rewards"):
+            env_output: EnvironmentReturn = calculate_rewards(active_batch, task_to_env)
 
         # Accumulate rewards: env returns dict[str, Tensor] for multi-reward, Tensor for single-reward.
         if isinstance(env_output.rewards, dict):
@@ -805,6 +813,12 @@ def run_multi_turn_rollout(
         truncation_mask = torch.zeros_like(env_output.terminateds, dtype=torch.bool)
         for i, global_idx in enumerate(active_indices.tolist()):
             env_obs_content = env_output.observations[i]["content"]
+            # Record the latest per-sample environment metadata so it can be
+            # aggregated by the env's global_post_process_and_metrics below.
+            try:
+                sample_env_metadata[global_idx] = env_output.metadata[i]
+            except (IndexError, TypeError):
+                sample_env_metadata[global_idx] = None
             # Tokenize the raw content from the environment
             # TODO @sahilj: handle if we want these subsequent messages to have a chat template
             tokenized_obs = tokenizer(
@@ -882,6 +896,8 @@ def run_multi_turn_rollout(
     # Add total rewards to the final batch
     current_batch["total_reward"] = total_rewards
     current_batch["truncated"] = sample_truncated
+    # Attach per-sample environment metadata for downstream aggregation.
+    current_batch["metadata"] = sample_env_metadata
     # Expose per-component rewards for multi-reward envs (e.g. GDPO advantage calculation).
     if multi_rewards is not None:
         for name, reward_tensor in multi_rewards.items():
@@ -910,6 +926,40 @@ def run_multi_turn_rollout(
             sample_env_token_counts.float().mean().item()
         ),
     }
+
+    # Aggregate environment-specific online metrics via each env's
+    # global_post_process_and_metrics, grouped by task_name (e.g. GPU arch), and
+    # merge them into rollout_metrics as ``{task_name}/{metric}``. Best-effort:
+    # metric aggregation must never crash a rollout.
+    try:
+        task_names = current_batch["task_name"]
+        task_to_indices: dict[str, list[int]] = {}
+        for idx, task_name in enumerate(task_names):
+            task_to_indices.setdefault(task_name, []).append(idx)
+
+        for task_name, indices in task_to_indices.items():
+            if task_name not in task_to_env:
+                continue
+            env = task_to_env[task_name]
+            sub_batch = BatchedDataDict(
+                {
+                    "metadata": [current_batch["metadata"][i] for i in indices],
+                    "rewards": total_rewards[indices]
+                    if isinstance(total_rewards, torch.Tensor)
+                    else total_rewards,
+                }
+            )
+            # Envs are Ray actors in the training loop but may be local in tests.
+            post_process = env.global_post_process_and_metrics
+            if hasattr(post_process, "remote"):
+                _, env_metrics = ray.get(post_process.remote(sub_batch))
+            else:
+                _, env_metrics = post_process(sub_batch)
+            for k, v in env_metrics.items():
+                rollout_metrics[f"{task_name}/{k}"] = v
+    except Exception as e:
+        print(f"\n  ⚠️ Error aggregating environment metrics: {e}")
+
     return current_batch, rollout_metrics
 
 
@@ -2449,6 +2499,26 @@ def _postprocess_single_nemo_gym_group(
             # )
             # / batch_size,
         }
+
+    # Kernel reward-observability metrics (M0/M1 parity): when the NeMo-Gym verifier
+    # surfaced cudagym fields (correctness/speedup/sol_score/human_best_speedup) on
+    # full_result, aggregate them with the SAME helper + names/semantics as the M0
+    # native path (correctness_rate, avg_speedup_over_ref/baseline, avg_sol_score,
+    # perf_ref_fallback_rate). Guarded so non-cudagym NeMo-Gym runs are unaffected.
+    kernel_keys = ("sol_score", "correctness", "speedup", "human_best_speedup")
+    kernel_records = [
+        r["full_result"]
+        for r in results
+        if any(k in r["full_result"] for k in kernel_keys)
+    ]
+    if kernel_records:
+        # Local import keeps the core rollout path decoupled from the atlas env
+        # unless a cudagym NeMo-Gym rollout is actually running.
+        from nemo_rl.environments.atlas.cuda_kernel_utils import (
+            aggregate_kernel_metrics,
+        )
+
+        rollout_metrics.update(aggregate_kernel_metrics(kernel_records))
 
     # Per-agent misc metrics
     with timer.time(f"{timer_prefix}/per_agent_misc_metrics"):

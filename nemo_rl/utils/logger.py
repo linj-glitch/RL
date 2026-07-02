@@ -13,12 +13,14 @@
 # limitations under the License.
 
 
+import csv
 import glob
 import json
 import logging
 import os
 import re
 import subprocess
+import tempfile
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -130,12 +132,31 @@ class LoggerInterface(ABC):
         """Log a matplotlib figure."""
         pass
 
+    @abstractmethod
+    def log_table(
+        self,
+        name: str,
+        columns: list[str],
+        rows: list[list[Any]],
+        step: Optional[int] = None,
+    ) -> None:
+        """Log a tabular dataset.
+
+        Args:
+            name: Name/key under which to log the table
+            columns: Column names
+            rows: Table rows (list of lists)
+            step: Optional step index to associate with this log
+        """
+        pass
+
 
 class TensorboardLogger(LoggerInterface):
     """Tensorboard logger backend."""
 
     def __init__(self, cfg: TensorboardConfig, log_dir: Optional[str] = None):
         self.writer = SummaryWriter(log_dir=log_dir)
+        self.log_dir = log_dir or "."
         print(f"Initialized TensorboardLogger at {log_dir}")
 
     @staticmethod
@@ -210,6 +231,33 @@ class TensorboardLogger(LoggerInterface):
             step: Global step value
         """
         self.writer.add_figure(name, figure, step)
+
+    def log_table(
+        self,
+        name: str,
+        columns: list[str],
+        rows: list[list[Any]],
+        step: Optional[int] = None,
+    ) -> None:
+        """Persist the table as a CSV and reference it in TensorBoard text.
+
+        TensorBoard has no native table artifact; we store a CSV alongside logs
+        and add a text note with the file path.
+        """
+        try:
+            os.makedirs(self.log_dir, exist_ok=True)
+            step_suffix = f"_{step}" if step is not None else ""
+            csv_path = os.path.join(
+                self.log_dir, f"{name.replace('/', '_')}{step_suffix}.csv"
+            )
+            with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(columns)
+                for row in rows:
+                    writer.writerow(row)
+            self.writer.add_text(f"{name}/csv_path", csv_path, global_step=step or 0)
+        except Exception as e:
+            print(f"Error logging table to TensorBoard: {e}")
 
 
 class WandbLogger(LoggerInterface):
@@ -431,6 +479,26 @@ class WandbLogger(LoggerInterface):
             # Log the scalar value instead.
             self.run.log({name: histogram[0] if len(histogram) > 0 else 0}, step=step)
 
+    def log_table(
+        self,
+        name: str,
+        columns: list[str],
+        rows: list[list[Any]],
+        step: Optional[int] = None,
+    ) -> None:
+        """Log a table to Weights & Biases using wandb.Table."""
+        try:
+            table = wandb.Table(columns=columns)
+            for row in rows:
+                table.add_data(*row)
+            payload = {name: table}
+            if step is not None:
+                self.run.log(payload, step=step)
+            else:
+                self.run.log(payload)
+        except Exception as e:
+            print(f"Error logging table to wandb: {e}")
+
 
 class SwanlabLogger(LoggerInterface):
     """SwanLab logger backend."""
@@ -443,6 +511,7 @@ class SwanlabLogger(LoggerInterface):
             log_dir (Optional[str]): Optional offline log directory passed to Swanlab's init.
         """
         self.run = swanlab.init(**cfg, logdir=log_dir)
+        self.log_dir = log_dir or "."
         print(
             f"Initialized SwanlabLogger for project {cfg.get('project')}, run {cfg.get('name')} (with offline logdir={log_dir})"
         )
@@ -491,6 +560,32 @@ class SwanlabLogger(LoggerInterface):
     def log_histogram(self, histogram: list[Any], step: int, name: str) -> None:
         """Log histogram metrics to swanlab."""
         return
+
+    def log_table(
+        self,
+        name: str,
+        columns: list[str],
+        rows: list[list[Any]],
+        step: Optional[int] = None,
+    ) -> None:
+        """Persist the table as a CSV alongside logs.
+
+        SwanLab has no native table artifact wired here; we store a CSV under the
+        run's log directory so the data is preserved.
+        """
+        try:
+            os.makedirs(self.log_dir, exist_ok=True)
+            step_suffix = f"_{step}" if step is not None else ""
+            csv_path = os.path.join(
+                self.log_dir, f"{name.replace('/', '_')}{step_suffix}.csv"
+            )
+            with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(columns)
+                for row in rows:
+                    writer.writerow(row)
+        except Exception as e:
+            print(f"Error logging table to SwanLab: {e}")
 
 
 class GpuMetricSnapshot(TypedDict):
@@ -952,6 +1047,28 @@ class MLflowLogger(LoggerInterface):
         """Log histogram metrics to MLflow."""
         return
 
+    def log_table(
+        self,
+        name: str,
+        columns: list[str],
+        rows: list[list[Any]],
+        step: Optional[int] = None,  # unused
+    ) -> None:
+        """Persist a CSV and log it as an artifact under tables/{name}."""
+        try:
+            with tempfile.NamedTemporaryFile(
+                suffix=".csv", delete=False, mode="w", newline="", encoding="utf-8"
+            ) as tmp_file:
+                writer = csv.writer(tmp_file)
+                writer.writerow(columns)
+                for row in rows:
+                    writer.writerow(row)
+                tmp_path = tmp_file.name
+            mlflow.log_artifact(tmp_path, f"tables/{name}")
+            os.remove(tmp_path)
+        except Exception as e:
+            print(f"Error logging table to MLflow: {e}")
+
     def __del__(self) -> None:
         """Clean up resources when the logger is destroyed."""
         try:
@@ -1215,6 +1332,45 @@ class Logger(LoggerInterface):
         """
         for logger in self.loggers:
             logger.log_plot(figure, step, name)
+
+    def log_table(
+        self,
+        name: str,
+        columns: list[str],
+        rows: list[list[Any]],
+        step: Optional[int] = None,
+    ) -> None:
+        """Log a table to all enabled backends."""
+        for logger in self.loggers:
+            try:
+                logger.log_table(name, columns, rows, step)
+            except Exception as e:
+                print(f"Error logging table via backend {type(logger).__name__}: {e}")
+
+    def log_conversations_from_message_logs(
+        self,
+        message_logs: list[LLMMessageLogType],
+        rewards: Optional[Any] = None,
+        task_names: Optional[Any] = None,
+        step: int = 0,
+        name: str = "train/conversations",
+    ) -> None:
+        """Build and log a conversation table from message logs.
+
+        Args:
+            message_logs: List of per-sample message logs
+            rewards: Optional tensor/list of rewards aligned with message_logs
+            task_names: Optional list/tensor of task names aligned with message_logs
+            step: Global step for logging
+            name: Name of the table in the logger backend
+        """
+        columns, rows = build_conversation_table(
+            message_logs=message_logs,
+            rewards=rewards,
+            task_names=task_names,
+            step=step,
+        )
+        self.log_table(name=name, columns=columns, rows=rows, step=step)
 
     def log_plot_token_mult_prob_error(
         self, data: dict[str, Any], step: int, name: str
@@ -1609,6 +1765,84 @@ def print_message_log_samples(
         console.print("")  # Add some spacing
 
     console.rule("[bold bright_white on purple4]End of Samples")
+
+
+def _to_list_safe(x: Any) -> list[Any] | None:
+    """Convert tensors or sequences to a Python list if possible; otherwise None."""
+    if x is None:
+        return None
+    try:
+        if isinstance(x, torch.Tensor):
+            return x.detach().cpu().tolist()
+        if isinstance(x, (list, tuple)):
+            return list(x)
+    except Exception:
+        pass
+    return None
+
+
+def build_conversation_table(
+    message_logs: list[LLMMessageLogType],
+    rewards: Optional[Any] = None,
+    task_names: Optional[Any] = None,
+    step: int = 0,
+) -> tuple[list[str], list[list[Any]]]:
+    """Convert message logs into a table representation suitable for logging.
+
+    Columns: step, sample_idx, task_name, conversation, total_reward
+
+    Args:
+        message_logs: List of message logs (each is a list of {role, content})
+        rewards: Optional tensor/list of rewards per sample
+        task_names: Optional list/tensor of task names per sample
+        step: Current step
+
+    Returns:
+        (columns, rows) where rows is a list of row values
+    """
+    rewards_list = _to_list_safe(rewards)
+    task_names_list = _to_list_safe(task_names)
+
+    num_samples = len(message_logs)
+    if rewards_list is not None and len(rewards_list) != num_samples:
+        print(
+            f"build_conversation_table: rewards length {len(rewards_list)} does not match samples {num_samples}; clipping"
+        )
+        num_samples = min(num_samples, len(rewards_list))
+    if task_names_list is not None and len(task_names_list) != num_samples:
+        print(
+            f"build_conversation_table: task_names length {len(task_names_list)} does not match samples; clipping"
+        )
+        num_samples = min(num_samples, len(task_names_list))
+
+    columns = [
+        "step",
+        "sample_idx",
+        "task_name",
+        "conversation",
+        "total_reward",
+    ]
+
+    rows: list[list[Any]] = []
+    for i in range(num_samples):
+        conversation = message_logs[i]
+        parts: list[str] = []
+        try:
+            for msg in conversation:
+                role = (
+                    msg.get("role", "unknown") if isinstance(msg, dict) else "unknown"
+                )
+                content = msg.get("content", "") if isinstance(msg, dict) else str(msg)
+                parts.append(f"**{role}**: {content}")
+        except Exception as e:
+            parts.append(f"[error formatting conversation: {e}]")
+
+        formatted_conversation = "\n\n".join(parts).strip()
+        task_name_val = task_names_list[i] if task_names_list is not None else None
+        reward_val = rewards_list[i] if rewards_list is not None else None
+        rows.append([step, i, task_name_val, formatted_conversation, reward_val])
+
+    return columns, rows
 
 
 def get_next_experiment_dir(base_log_dir: str) -> str:

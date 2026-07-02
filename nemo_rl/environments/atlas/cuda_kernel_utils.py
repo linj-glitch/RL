@@ -92,8 +92,12 @@ class KernelEvalResult:
     compiled: bool = False  # all workloads compiled (or no compilation needed)
     executed: bool = False  # all workloads ran without runtime errors
     correctness: bool = False  # all workloads numerically matched the reference
-    speedup: float = -1.0  # mean speedup over the EAGER reference (cudagym; logging + fallback)
-    sol_score: float = -1.0  # mean SOL score in [0,1] (0.5=human-best, 1.0=speed-of-light); -1 = no anchors
+    speedup: float = (
+        -1.0
+    )  # mean speedup over the EAGER reference (cudagym; logging + fallback)
+    sol_score: float = (
+        -1.0
+    )  # mean SOL score in [0,1] (0.5=human-best, 1.0=speed-of-light); -1 = no anchors
     human_best_speedup: float = -1.0  # geomean speedup over human-best (logging)
     runtime: float = -1.0  # mean custom-kernel latency in ms
     ref_exec_eager_time: float = -1.0  # mean reference latency in ms
@@ -135,7 +139,9 @@ def fence_lang_for(language: str) -> str:
 
 def entry_symbol_for(language: str) -> str:
     """Entry function name the kernel must define (the part after ``::``)."""
-    return LANGUAGE_DEFAULTS.get(language, LANGUAGE_DEFAULTS["python"])[1].split("::")[-1]
+    return LANGUAGE_DEFAULTS.get(language, LANGUAGE_DEFAULTS["python"])[1].split("::")[
+        -1
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -172,3 +178,51 @@ def geomean(values: list[float]) -> float:
     if not positives:
         return 0.0
     return math.exp(sum(math.log(v) for v in positives) / len(positives))
+
+
+def aggregate_kernel_metrics(records: list[dict[str, Any]]) -> dict[str, float]:
+    """Aggregate per-kernel eval records into observability metrics (shared M0/M1).
+
+    Each record carries ``correctness`` (bool) and the perf signals ``speedup`` (over
+    the eager PyTorch reference), ``human_best_speedup`` (over the human-best baseline),
+    and ``sol_score`` (anchored SOL score in [0,1]); not-measured / no-anchor values use
+    the ``-1.0`` sentinel. Returns (empty when ``records`` is empty):
+
+      * ``correctness_rate`` — over all records;
+      * ``avg_speedup_over_ref`` / ``avg_speedup_over_baseline`` / ``avg_sol_score`` —
+        averaged over CORRECT records only, dropping ``-1.0`` sentinels so anchorless or
+        incorrect samples don't drag the mean toward zero;
+      * ``perf_ref_fallback_rate`` — fraction of correct records whose performance reward
+        fell back to speedup-over-ref for lack of a SOL/human-best anchor (``sol_score < 0``).
+
+    This is the single source of truth for the reward-observability metrics so the M0
+    (native ``run_multi_turn_rollout``) and M1 (NeMo-Gym) paths log identical names/semantics.
+    """
+    if not records:
+        return {}
+
+    correct_flags = [bool(r.get("correctness", False)) for r in records]
+    n_correct = sum(correct_flags)
+    metrics: dict[str, float] = {"correctness_rate": n_correct / len(records)}
+
+    def _avg_correct(key: str) -> float:
+        vals = [
+            float(r.get(key, -1.0))
+            for r, ok in zip(records, correct_flags)
+            if ok and float(r.get(key, -1.0)) >= 0.0
+        ]
+        return sum(vals) / len(vals) if vals else 0.0
+
+    metrics["avg_speedup_over_ref"] = _avg_correct("speedup")
+    metrics["avg_speedup_over_baseline"] = _avg_correct("human_best_speedup")
+    metrics["avg_sol_score"] = _avg_correct("sol_score")
+
+    if n_correct:
+        n_fallback = sum(
+            1
+            for r, ok in zip(records, correct_flags)
+            if ok and float(r.get("sol_score", -1.0)) < 0.0
+        )
+        metrics["perf_ref_fallback_rate"] = n_fallback / n_correct
+
+    return metrics
