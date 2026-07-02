@@ -24,7 +24,7 @@ Flow per ``step`` (everything is batched):
   message_log_batch -> (first user prompt, last assistant completion) per sample
     -> ``evaluate_batch`` (parse -> build Solution -> cudagym evaluate -> Trace -> KernelEvalResult)
     -> ``get_reward`` (staged partial credit)
-    -> EnvironmentReturn(observations, metadata+{correctness,speedup}, next_stop_strings=None,
+    -> EnvironmentReturn(observations, metadata+{correctness,speedup,human_best_speedup,sol_score}, next_stop_strings=None,
                          rewards=Tensor[B], terminateds=ones, answers=None)
 GRPO then trains the assistant tokens (``<think>`` + code) against this reward;
 prompt/observation tokens are masked by provenance.
@@ -58,7 +58,9 @@ class CudaGymEnvironmentMetadata(TypedDict, total=False):
     target_hardware: str  # cudagym SupportedHardware (e.g. "B200"); falls back to env arch
     destination_passing_style: bool
     correctness: bool
-    speedup: float
+    speedup: float  # speedup over the eager PyTorch reference (cudagym speedup_factor)
+    human_best_speedup: float  # speedup over the human-best / optimized-baseline anchor
+    sol_score: float  # anchored SOL score in [0,1] (== the performance reward term)
 
 
 @ray.remote  # pragma: no cover
@@ -163,12 +165,14 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
             for rew, result in zip(rewards, results)
         ]
 
-        # Carry correctness/speedup forward for global metrics aggregation.
+        # Carry correctness + the three perf signals forward for global metrics.
         output_metadata: list[CudaGymEnvironmentMetadata] = []
         for meta, result in zip(metadata, results):
             updated = dict(meta)
             updated["correctness"] = bool(result.correctness)
-            updated["speedup"] = float(result.speedup)
+            updated["speedup"] = float(result.speedup)                        # vs eager reference
+            updated["human_best_speedup"] = float(result.human_best_speedup)  # vs human-best/baseline
+            updated["sol_score"] = float(result.sol_score)                    # anchored SOL score
             output_metadata.append(updated)  # type: ignore[arg-type]
 
         rewards_tensor = torch.tensor(rewards, dtype=torch.float32).cpu()
@@ -187,24 +191,52 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
     def global_post_process_and_metrics(
         self, batch: BatchedDataDict
     ) -> tuple[BatchedDataDict, dict]:
-        """Aggregate correctness rate + mean speedup over correct kernels."""
+        """Aggregate the step's observability metrics.
+
+        ``correctness_rate`` over the whole batch; then, over the CORRECT kernels
+        only, ``avg_speedup_over_ref`` (vs the eager PyTorch reference),
+        ``avg_speedup_over_baseline`` (vs the human-best baseline anchor),
+        ``avg_sol_score`` (the anchored SOL score that IS the performance reward),
+        and ``perf_ref_fallback_rate`` (fraction whose perf reward fell back to
+        speedup-over-ref for lack of a SOL/human-best anchor).
+        """
         metrics: dict = {}
         try:
             batch_metadata = batch.get("metadata", [])
             if batch_metadata:
-                correctness = np.array(
+                correct = np.array(
                     [bool(m.get("correctness", False)) for m in batch_metadata]
                 )
-                speedups = np.array(
-                    [float(m.get("speedup", -1.0)) for m in batch_metadata]
-                )
                 metrics["correctness_rate"] = (
-                    float(correctness.mean()) if len(correctness) else 0.0
+                    float(correct.mean()) if len(correct) else 0.0
                 )
-                # Average speedup only over kernels that were actually correct.
-                metrics["avg_speedup"] = (
-                    float(speedups[correctness].mean()) if correctness.any() else 0.0
-                )
+
+                # Perf metrics are averaged over CORRECT kernels only, each dropping
+                # its -1.0 sentinel (not measured / no anchor) so anchorless or
+                # incorrect samples don't drag the mean toward zero.
+                def _avg_correct(key: str) -> float:
+                    if not correct.any():
+                        return 0.0
+                    vals = np.array(
+                        [float(m.get(key, -1.0)) for m in batch_metadata]
+                    )[correct]
+                    vals = vals[vals >= 0.0]
+                    return float(vals.mean()) if len(vals) else 0.0
+
+                metrics["avg_speedup_over_ref"] = _avg_correct("speedup")
+                metrics["avg_speedup_over_baseline"] = _avg_correct("human_best_speedup")
+                metrics["avg_sol_score"] = _avg_correct("sol_score")
+
+                # Fraction of correct kernels whose performance reward fell back to
+                # speedup-over-ref because the problem carried no SOL/human-best
+                # anchor (sol_score < 0). High => the reward is drifting off the SOL
+                # objective onto the weaker eager-reference signal (reward.get_reward
+                # fallback), which is easy to saturate — worth watching.
+                if correct.any():
+                    sol_vals = np.array(
+                        [float(m.get("sol_score", -1.0)) for m in batch_metadata]
+                    )[correct]
+                    metrics["perf_ref_fallback_rate"] = float((sol_vals < 0.0).mean())
         except Exception:
             pass
         return batch, metrics
