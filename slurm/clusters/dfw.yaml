@@ -1,0 +1,18 @@
+host: dfw
+hostname: cw-dfw-cs-001-login-01.cw-dfw-cs-001.hpc.nvidia.com
+arch: h100
+gpus_per_node: 8
+
+paths:
+  workspace: /lustre/fs1/portfolios/coreai/users/alexandery
+  cache: ${paths.workspace}/.cache
+  container: ${paths.workspace}/containers/nemorl-1115.sqsh
+  cudagym_container: ${paths.workspace}/containers/cudagym-0.5.1.sqsh
+  models: ${paths.workspace}/models
+  output: ${paths.workspace}/experiments/nemorl
+  datasets: ${paths.workspace}/datasets/post_training
+  artifacts: ${paths.workspace}/cudagym_cache/artifacts
+  ccache: ${paths.workspace}/cudagym_cache/ccache
+
+extra_config_opts: ""
+requires_proxy_tunnel: true

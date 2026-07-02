@@ -1,0 +1,24 @@
+host: hsg
+hostname: oci-hsg-cs-001-login-01.nvidia.com
+arch: gb200
+gpus_per_node: 4
+
+paths:
+  # The following directories will be created inside the workspace path:
+  # - .cache: cache path for uv and huggingface
+  # - nemorl/exp_name: the root directory for the current experiment
+  # - nemorl/exp_name/code: the code snapshot of the current experiment
+  # - nemorl/exp_name/ckpts: the checkpoints of the current experiment
+  # - nemorl/exp_name/logs: the logs of the current experiment
+  workspace: /lustre/fs1/portfolios/coreai/projects/coreai_nvfm_cupilot/users/alexandery
+  cache: ${paths.workspace}/.cache
+  container: ${paths.workspace}/containers/nemorl-1120-arm64.sqsh
+  cudagym_container: ${paths.workspace}/containers/cudagym-0.5.1-arm64.sqsh
+  models: ${paths.workspace}/models
+  output: ${paths.workspace}/experiments/nemorl
+  datasets: ${paths.workspace}/datasets/post_training
+  artifacts: ${paths.workspace}/cudagym_cache/artifacts
+  ccache: ${paths.workspace}/cudagym_cache/ccache
+
+# 4 gb200s per node, 192GB memory per gpu
+extra_config_opts: "++policy.dtensor_cfg.tensor_parallel_size=4 ++policy.megatron_cfg.tensor_model_parallel_size=4 ++policy.generation.vllm_cfg.tensor_parallel_size=4 ++sft.val_micro_batch_size=8 ++policy.train_micro_batch_size=2"

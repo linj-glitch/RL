@@ -474,6 +474,216 @@ head_node_ip=${ip_addresses_array[0]}
 
 ip_head=$head_node_ip:$PORT
 
+########################################################
+# CudaGym service hosting mode (colocated | disjoint | remote)
+########################################################
+# CUDAGYM_MODE selects how the CudaGym compile/GPU servers are hosted for this run.
+# When unset (and CUDAGYM_ENABLED unset), none of the blocks below run and the Ray
+# bringup is byte-for-byte identical to a non-CudaGym job.
+#   colocated: CompileServer+GPUServer on EVERY node, load balancer on the Ray head
+#              node. Eval time-shares the training GPUs (M0 single-turn).
+#   disjoint:  the trailing CUDAGYM_NUM_NODES nodes are carved out of the Ray cluster
+#              and dedicated to CudaGym; load balancer on the first CudaGym node
+#              (M1 in-cluster, e.g. nodes 1-8 train, 9-10 cudagym).
+#   remote:    no in-allocation servers; the driver reaches a remote endpoint carried
+#              by the recipe (env.cudagym.<arch>.server_url) (M1 default).
+CUDAGYM_MODE=${CUDAGYM_MODE:-}
+
+# Number of nodes dedicated to Ray training. Defaults to the full allocation so the
+# worker loop / NUM_ACTORS below are UNCHANGED unless disjoint mode carves off the
+# trailing CUDAGYM_NUM_NODES nodes for CudaGym.
+if [[ "$CUDAGYM_MODE" == "disjoint" ]]; then
+  : "${CUDAGYM_NUM_NODES:?CUDAGYM_NUM_NODES must be set when CUDAGYM_MODE=disjoint}"
+  TRAIN_NUM_NODES=$((SLURM_JOB_NUM_NODES - CUDAGYM_NUM_NODES))
+  if [[ "$CUDAGYM_NUM_NODES" -lt 1 || "$TRAIN_NUM_NODES" -lt 1 ]]; then
+    echo "[ERROR] CUDAGYM_NUM_NODES=$CUDAGYM_NUM_NODES must be in [1, SLURM_JOB_NUM_NODES-1] (SLURM_JOB_NUM_NODES=$SLURM_JOB_NUM_NODES)." >&2
+    exit 1
+  fi
+else
+  TRAIN_NUM_NODES=$SLURM_JOB_NUM_NODES
+fi
+
+# Only the TRAIN_NUM_NODES Ray nodes register worker_units with the head, so the
+# expected-actors bound must track TRAIN_NUM_NODES rather than the full allocation
+# (identical when not disjoint; overrides the default computed above).
+NUM_ACTORS=$((GPUS_PER_NODE * TRAIN_NUM_NODES))
+
+# Optionally launch in-allocation CudaGym services (colocated or disjoint).
+if [[ "${CUDAGYM_ENABLED:-0}" == "1" ]]; then
+  # Port configuration
+  LB_PORT=8000
+  COMPILE_PORT=8001
+  GPU_PORT=8002
+
+  # Load balancing configuration
+  COMPILE_MAX_LOAD=50
+  GPU_MAX_LOAD=8
+
+  # Select the CudaGym node set and the load-balancer node based on the mode.
+  #   colocated: services on all nodes [0, SLURM_JOB_NUM_NODES), LB on the Ray head node.
+  #   disjoint:  services on the trailing nodes [TRAIN_NUM_NODES, SLURM_JOB_NUM_NODES),
+  #              LB on the first CudaGym node.
+  if [[ "$CUDAGYM_MODE" == "disjoint" ]]; then
+    CUDAGYM_NODE_START=$TRAIN_NUM_NODES
+    CUDAGYM_LB_NODE=${nodes_array[$TRAIN_NUM_NODES]}
+    CUDAGYM_LB_NODE_IP=${ip_addresses_array[$TRAIN_NUM_NODES]}
+  else
+    CUDAGYM_NODE_START=0
+    CUDAGYM_LB_NODE=$head_node
+    CUDAGYM_LB_NODE_IP=$head_node_ip
+  fi
+  CUDAGYM_NODE_END=$SLURM_JOB_NUM_NODES
+
+  mkdir -p "$LOG_DIR/cudagym/compile" "$LOG_DIR/cudagym/gpu" "$LOG_DIR/cudagym/loadbalancer"
+
+  echo "[INFO] Launching CudaGym services (mode=${CUDAGYM_MODE:-colocated}) on nodes [${CUDAGYM_NODE_START}, ${CUDAGYM_NODE_END})..."
+  : "${CUDAGYM_CONTAINER:?CUDAGYM_CONTAINER must be set when CUDAGYM_ENABLED=1}"
+  : "${ARTIFACTS_DIR:?ARTIFACTS_DIR must be set when CUDAGYM_ENABLED=1}"
+  : "${CCACHE_DIR:?CCACHE_DIR must be set when CUDAGYM_ENABLED=1}"
+  mkdir -p "${ARTIFACTS_DIR}" "${CCACHE_DIR}" || true
+
+  # Collect all server URLs
+  COMPILE_SERVERS=""
+  GPU_SERVERS=""
+  for ((i = CUDAGYM_NODE_START; i < CUDAGYM_NODE_END; i++)); do
+    ip_i=${ip_addresses_array[$i]}
+    if [[ -n "$COMPILE_SERVERS" ]]; then COMPILE_SERVERS+=","; fi
+    COMPILE_SERVERS+="http://$ip_i:${COMPILE_PORT}"
+    if [[ -n "$GPU_SERVERS" ]]; then GPU_SERVERS+=","; fi
+    GPU_SERVERS+="http://$ip_i:${GPU_PORT}"
+  done
+
+  echo "[INFO] Compile servers: $COMPILE_SERVERS"
+  echo "[INFO] GPU servers: $GPU_SERVERS"
+
+  echo "[INFO] Launching CudaGym services on selected nodes..."
+  CUDAGYM_CONTAINER_MOUNTS="${MOUNTS},${ARTIFACTS_DIR}:${ARTIFACTS_DIR},${CCACHE_DIR}:${CCACHE_DIR}"
+  CUDAGYM_SRUN_COMMON="--no-container-mount-home --mpi=pmix --container-image=${CUDAGYM_CONTAINER} --container-mounts=${CUDAGYM_CONTAINER_MOUNTS} --container-workdir=$SLURM_SUBMIT_DIR --overlap"
+  ANY_SERVER_FAILED=false
+  for ((i = CUDAGYM_NODE_START; i < CUDAGYM_NODE_END; i++)); do
+    node_i=${nodes_array[$i]}
+
+    echo "[INFO] Starting services on node ${node_i}..."
+
+    # Launch CompileServer
+    srun $CUDAGYM_SRUN_COMMON --nodes=1 --ntasks=1 -w "$node_i" \
+         -o "$LOG_DIR/cudagym/compile/${node_i}_compile.out" \
+         bash -lc "export PYTHONPATH=$SLURM_SUBMIT_DIR/3rdparty/cudagym/src:\${PYTHONPATH}; python -m cudagym.servers.compile.serve \
+                   --host 0.0.0.0 \
+                   --port ${COMPILE_PORT} \
+                   --artifacts-dir ${ARTIFACTS_DIR} \
+                   --ccache-dir ${CCACHE_DIR} \
+                   --num-workers ${CPUS_PER_WORKER}" &
+    SRUN_PIDS["cudagym-compile-$i"]=$!
+
+    # Let SLURM recover
+    sleep 2
+
+    # Launch GPUServer
+    srun $CUDAGYM_SRUN_COMMON $GRES_ARG --nodes=1 --ntasks=1 -w "$node_i" \
+         -o "$LOG_DIR/cudagym/gpu/${node_i}_gpu.out" \
+         bash -lc "export PYTHONPATH=$SLURM_SUBMIT_DIR/3rdparty/cudagym/src:\${PYTHONPATH}; python -m cudagym.servers.gpu.serve \
+                   --host 0.0.0.0 \
+                   --port ${GPU_PORT}" &
+    SRUN_PIDS["cudagym-gpu-$i"]=$!
+
+    # Let SLURM recover
+    sleep 2
+  done
+
+  echo "[INFO] Waiting for CudaGym services to start..."
+  sleep 30
+
+  echo "[INFO] Checking CudaGym service status..."
+  for ((i = CUDAGYM_NODE_START; i < CUDAGYM_NODE_END; i++)); do
+    node_i=${nodes_array[$i]}
+    ip_i=${ip_addresses_array[$i]}
+
+    echo "[CHECK][$node_i] CompileServer: http://${ip_i}:${COMPILE_PORT}/health"
+    if ! srun $CUDAGYM_SRUN_COMMON --nodes=1 --ntasks=1 -w "$node_i" \
+         bash -lc "curl -sf --connect-timeout 5 http://127.0.0.1:${COMPILE_PORT}/health >/dev/null"; then
+      echo "[ERR] CompileServer on $node_i not responding"
+      ANY_SERVER_FAILED=true
+    else
+      echo "[OK] CompileServer on $node_i healthy"
+    fi
+
+    echo "[CHECK][$node_i] GPUServer: http://${ip_i}:${GPU_PORT}/health"
+    if ! srun $CUDAGYM_SRUN_COMMON --nodes=1 --ntasks=1 -w "$node_i" \
+         bash -lc "curl -sf --connect-timeout 5 http://127.0.0.1:${GPU_PORT}/health >/dev/null"; then
+      echo "[ERR] GPUServer on $node_i not responding"
+      ANY_SERVER_FAILED=true
+    else
+      echo "[OK] GPUServer on $node_i healthy"
+    fi
+  done
+
+  # Cancel the job if any server failed
+  if [ "$ANY_SERVER_FAILED" = true ]; then
+    echo "[ERROR] One or more CudaGym services failed health checks. Cancelling job ${SLURM_JOB_ID}."
+    scancel "$SLURM_JOB_ID" 2>/dev/null || true
+    exit 1
+  fi
+
+  echo "[INFO] Launching load balancer on node $CUDAGYM_LB_NODE..."
+  srun $CUDAGYM_SRUN_COMMON --nodes=1 --ntasks=1 -w "$CUDAGYM_LB_NODE" \
+       -o "$LOG_DIR/cudagym/loadbalancer/${CUDAGYM_LB_NODE}_lb.out" \
+       bash -lc "export PYTHONPATH=$SLURM_SUBMIT_DIR/3rdparty/cudagym/src:\${PYTHONPATH}; python 3rdparty/cudagym/examples/multi_node/cudagym_load_balancer.py \
+                 ${LB_PORT} \
+                 '$COMPILE_SERVERS' \
+                 '$GPU_SERVERS' \
+                 ${COMPILE_MAX_LOAD} \
+                 ${GPU_MAX_LOAD}" &
+  SRUN_PIDS["cudagym-lb-0"]=$!
+
+  echo "[INFO] Waiting for load balancer to start..."
+  sleep 10
+
+  # Verify load balancer is running with retries
+  echo "[INFO] Checking load balancer status..."
+  LB_READY=false
+  for retry in {1..5}; do
+    echo "[CHECK][LB] http://${CUDAGYM_LB_NODE_IP}:${LB_PORT}/health (attempt $retry/5)"
+    if srun $CUDAGYM_SRUN_COMMON --nodes=1 --ntasks=1 -w "$CUDAGYM_LB_NODE" \
+         bash -lc "curl -sf --connect-timeout 5 http://127.0.0.1:${LB_PORT}/health >/dev/null"; then
+      LB_READY=true
+      echo "[OK] Load balancer is running"
+      # Print status
+      srun $CUDAGYM_SRUN_COMMON --nodes=1 --ntasks=1 -w "$CUDAGYM_LB_NODE" \
+           bash -lc "curl -s --connect-timeout 5 http://127.0.0.1:${LB_PORT}/status | head -c 1000 || true; echo"
+      break
+    else
+      echo "[INFO] Load balancer not ready yet (attempt $retry/5)..."
+      sleep 5
+    fi
+  done
+
+  if [ "$LB_READY" = false ]; then
+    echo "[ERROR] Load balancer is not responding after multiple attempts"
+    echo "[DEBUG] Checking if load balancer process is running..."
+    srun --nodes=1 --ntasks=1 -w "$CUDAGYM_LB_NODE" ps aux | grep -E "(cudagym_load_balancer|python.*${LB_PORT})" || echo "No load balancer process found"
+    echo "[ERROR] Cancelling job ${SLURM_JOB_ID} due to load balancer failure."
+    scancel "$SLURM_JOB_ID" 2>/dev/null || true
+    exit 1
+  fi
+
+  # Expose the unified CudaGym endpoint (load balancer) to the training driver.
+  # Inherited by the ray-head/ray-worker srun invocations below (srun propagates
+  # the full environment by default; pyxis/enroot forwards it into the container).
+  export CUDAGYM_UNIFIED_SERVER_URL="http://${CUDAGYM_LB_NODE_IP}:${LB_PORT}"
+  echo "[INFO] CUDAGYM_UNIFIED_SERVER_URL=$CUDAGYM_UNIFIED_SERVER_URL"
+elif [[ "$CUDAGYM_MODE" == "remote" ]]; then
+  # Remote CudaGym: do NOT launch any in-allocation servers. The training driver
+  # reaches a remote (e.g. Modal) endpoint carried by the recipe
+  # (env.cudagym.<arch>.server_url) / Gym resources-server config. Auth/URL env
+  # vars (CUDAGYM_AUTH_TOKEN and any user-exported CUDAGYM_UNIFIED_SERVER_URL) are
+  # inherited by the ray-head/ray-worker srun invocations below: COMMON_SRUN_ARGS
+  # sets no --export, so srun propagates the full submission environment
+  # (SLURM_EXPORT_ENV defaults to ALL) and pyxis/enroot forwards it into the
+  # container -- the same mechanism used for HF_TOKEN/WANDB_API_KEY. Nothing to add.
+  echo "[INFO] CUDAGYM_MODE=remote: no in-allocation CudaGym; using remote endpoint (${CUDAGYM_UNIFIED_SERVER_URL:-from recipe})."
+fi
+
 # Write the topology probe script that runs inside each container.
 # Both head_cmd and worker_cmd source this to avoid duplication.
 # The script sets two variables: CLUSTER_UUID and TOPO_RANK.
@@ -1040,27 +1250,30 @@ log_phase "launching Ray head + worker sruns"
 srun $COMMON_SRUN_ARGS --container-name=ray-head --nodes=1 --ntasks=1 --cpus-per-task=$CPUS_PER_WORKER -w "$head_node" -o $LOG_DIR/ray-head.log bash -x -c "$head_cmd" &
 SRUN_PIDS["ray-head"]=$!
 
-# Start the Ray workers (all nodes except the head) with a single batched srun, so
-# the number of srun/slurmctld RPCs stays constant regardless of node count. In
+# Start the Ray workers (all train nodes except the head) with a single batched srun,
+# so the number of srun/slurmctld RPCs stays constant regardless of node count. In
 # single-node mode there are no workers: the head already registers its GPUs as Ray
-# resources.
-_num_workers=$((SLURM_JOB_NUM_NODES - 1))
+# resources. Workers are pinned to nodes_array[1..TRAIN_NUM_NODES-1]: in disjoint
+# CudaGym mode the trailing CUDAGYM_NUM_NODES nodes must NOT join the Ray cluster,
+# so excluding just the head node would let Slurm place workers on them.
+_num_workers=$((TRAIN_NUM_NODES - 1))
 if [[ $_num_workers -gt 0 ]]; then
   # srun -o with %t produces per-task log files; zero-pad to the worker-count
   # width so ray-worker-*.log filenames sort naturally (e.g. ray-worker-007.log).
   _task_digits=${#_num_workers}
+  _worker_nodes=$(IFS=,; echo "${nodes_array[*]:1:$_num_workers}")
   srun $COMMON_SRUN_ARGS --container-name=ray-worker --exact \
     --nodes=$_num_workers \
     --ntasks=$_num_workers \
     --ntasks-per-node=1 \
     --cpus-per-task=$CPUS_PER_WORKER \
     --kill-on-bad-exit=0 \
-    --exclude="$head_node" \
+    -w "$_worker_nodes" \
     -o "$LOG_DIR/ray-worker-%0${_task_digits}t.log" \
     bash -x -c "$worker_cmd" &
   SRUN_PIDS["ray-workers"]=$!
 else
-  echo "[INFO] Single-node mode: head node is the only compute node, no workers to launch"
+  echo "[INFO] No separate worker nodes to launch (the head is the only Ray/train node)"
 fi
 
 # Wait for the head container to report, via a shared-FS file, that the Ray head
@@ -1120,7 +1333,7 @@ else
   log_phase "generating attach helper (scontrol show job)"
   CONTAINER_CWD=$(scontrol show job $SLURM_JOB_ID | grep -oP 'WorkDir=\K[^ ]+' | head -1)
   echo "[INFO]: Ray Cluster is idled, run this on the slurm head node to get a shell to the head node:"
-  cat <<EOF >$SLURM_SUBMIT_DIR/${SLURM_JOB_ID}-attach.sh
+  cat <<EOF >$LOG_DIR/attach.sh
 # No args launches on the head node (node 0)
 # Args 1-N launch on worker nodes (nodes 1 through N-1)
 # Optional: set COMMAND='...' to run non-interactively instead of opening an interactive shell
