@@ -122,7 +122,9 @@ def prepare_cuda_dataset(
         train_formatted, val_formatted = formatted_ds, val_formatted_ds
 
     # Duplicate the (usually small) problem set so one epoch covers max_num_steps.
-    num_prompts_per_step = grpo_config.get("num_prompts_per_step") if grpo_config else None
+    num_prompts_per_step = (
+        grpo_config.get("num_prompts_per_step") if grpo_config else None
+    )
     max_num_steps = grpo_config.get("max_num_steps") if grpo_config else None
     if duplicate_train_data and num_prompts_per_step and max_num_steps:
         original_train_size = len(train_formatted)
@@ -180,7 +182,9 @@ class GRPODriverDataset:
 # -- Kernel-Factory-Bench helpers (build a dataset JSONL from a KFB checkout) --
 
 
-def load_sol_anchors(sol_latencies_csv: str, artifact_id: str) -> dict[str, dict[str, float]]:
+def load_sol_anchors(
+    sol_latencies_csv: str, artifact_id: str
+) -> dict[str, dict[str, float]]:
     """Per-workload SOL / human-best anchors for one problem, from a KFB latency CSV.
 
     Returns ``{workload_uuid: {"human_best_latency_ms", "sol_latency_ms"}}`` for every
@@ -201,7 +205,9 @@ def load_sol_anchors(sol_latencies_csv: str, artifact_id: str) -> dict[str, dict
         for row in csv.DictReader(f):
             if row.get("artifact_id") != artifact_id:
                 continue
-            raw_hb = row.get("human_best_latency_ms") or row.get("optimized_baseline_latency_ms")
+            raw_hb = row.get("human_best_latency_ms") or row.get(
+                "optimized_baseline_latency_ms"
+            )
             try:
                 human_best = float(raw_hb)
             except (TypeError, ValueError):
@@ -254,8 +260,13 @@ def kfb_problem_to_row(
         else {}
     )
     return {
-        "definition": definition,
-        "workloads": workloads,
+        # definition/workloads are stored as JSON strings (like sol_anchors) so the
+        # HuggingFace dataset schema stays uniform across structurally-different KFB
+        # problems -- disjoint nested axes/inputs keys would otherwise make
+        # Dataset.from_json raise or silently null-fill the inferred struct. They are
+        # parsed back in run_grpo_cuda's data processor.
+        "definition": json.dumps(definition),
+        "workloads": json.dumps(workloads),
         "language": language,
         "target_hardware": target_hardware,
         "destination_passing_style": destination_passing_style,

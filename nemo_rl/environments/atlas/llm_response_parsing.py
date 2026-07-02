@@ -32,10 +32,15 @@ __all__ = ["check_inline_format", "get_code"]
 
 
 def check_inline_format(completion: str, fence_lang: str = "python") -> bool:
-    """Validate a single-turn completion's structure.
+    r"""Validate a single-turn completion's structure.
 
     Expects: a ``<think>\\n ... \\n</think>`` block, then anything, then a
-    ```` ```<fence_lang> ... ``` ```` code fence.
+    ```` ```<fence_lang>\\n ... \\n``` ```` code fence.
+
+    The fence sub-pattern is kept identical to ``get_code`` (newline right after the
+    fence tag and before the closing fence) so that a completion which passes this
+    check is guaranteed to be extractable by ``get_code`` -- otherwise a well-formed
+    -looking kernel could earn the format reward yet fail extraction and score 0.
 
     Args:
         completion: the model's raw completion text.
@@ -44,7 +49,7 @@ def check_inline_format(completion: str, fence_lang: str = "python") -> bool:
     Returns:
         True iff the completion matches the expected think-then-fence shape.
     """
-    pattern = rf"^<think>\n.*?\n</think>\n.*?```{fence_lang}.*?```.*?$"
+    pattern = rf"^<think>\n.*?\n</think>\n.*?```{fence_lang}\n.*?\n```.*?$"
     return bool(re.search(pattern, completion, re.DOTALL | re.MULTILINE))
 
 
@@ -65,6 +70,4 @@ def get_code(completion: str, fence_lang: str = "python") -> str:
     match = re.search(rf"```{fence_lang}\n(.*?)\n```", completion, re.DOTALL)
     if match:
         return match.group(1).strip()
-    raise ValueError(
-        f"No ```{fence_lang} ... ``` code block found in the completion"
-    )
+    raise ValueError(f"No ```{fence_lang} ... ``` code block found in the completion")

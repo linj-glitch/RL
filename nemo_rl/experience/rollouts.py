@@ -663,6 +663,54 @@ def calculate_rewards(
     )
 
 
+def _aggregate_env_metrics(
+    rollout_metrics: dict[str, Any],
+    task_names: Optional[list],
+    metadata_list: Optional[list],
+    task_to_env: dict[str, EnvironmentInterface],
+) -> None:
+    """Merge per-env online metrics into ``rollout_metrics`` in place.
+
+    Groups samples by ``task_name`` and, for envs that wrote per-sample kernel-eval
+    metadata (a dict carrying the cudagym signature ``sol_score`` + ``human_best_speedup``),
+    calls the env's ``global_post_process_and_metrics`` on that metadata and merges
+    the result as ``{task_name}/{metric}``. Envs that don't populate such metadata
+    (math/code/...) are skipped: their ``global_post_process_and_metrics`` expects a
+    fully-processed batch (``is_end``/``generation_lengths``/...) not available at
+    rollout time. Best-effort, per task -- metric aggregation must never crash a
+    rollout. Shared by the sync + async native rollout paths so both log identically.
+    """
+    if metadata_list is None or task_names is None:
+        return
+    task_to_indices: dict[str, list[int]] = {}
+    for idx, task_name in enumerate(task_names):
+        task_to_indices.setdefault(task_name, []).append(idx)
+
+    for task_name, indices in task_to_indices.items():
+        if task_name not in task_to_env:
+            continue
+        task_metadata = [metadata_list[i] for i in indices]
+        if not any(
+            isinstance(m, dict) and "sol_score" in m and "human_best_speedup" in m
+            for m in task_metadata
+        ):
+            continue  # not a kernel-eval env (see note above)
+        env = task_to_env[task_name]
+        try:
+            # cudagym's global_post_process_and_metrics reads only "metadata".
+            sub_batch = BatchedDataDict({"metadata": task_metadata})
+            # Envs are Ray actors in the training loop but may be local in tests.
+            post_process = env.global_post_process_and_metrics
+            if hasattr(post_process, "remote"):
+                _, env_metrics = ray.get(post_process.remote(sub_batch))
+            else:
+                _, env_metrics = post_process(sub_batch)
+            for k, v in env_metrics.items():
+                rollout_metrics[f"{task_name}/{k}"] = v
+        except Exception as e:
+            print(f"\n  ⚠️ Error aggregating '{task_name}' env metrics: {e}")
+
+
 def run_multi_turn_rollout(
     policy_generation: GenerationInterface,
     input_batch: BatchedDataDict[DatumSpec],
@@ -927,38 +975,15 @@ def run_multi_turn_rollout(
         ),
     }
 
-    # Aggregate environment-specific online metrics via each env's
-    # global_post_process_and_metrics, grouped by task_name (e.g. GPU arch), and
-    # merge them into rollout_metrics as ``{task_name}/{metric}``. Best-effort:
-    # metric aggregation must never crash a rollout.
-    try:
-        task_names = current_batch["task_name"]
-        task_to_indices: dict[str, list[int]] = {}
-        for idx, task_name in enumerate(task_names):
-            task_to_indices.setdefault(task_name, []).append(idx)
-
-        for task_name, indices in task_to_indices.items():
-            if task_name not in task_to_env:
-                continue
-            env = task_to_env[task_name]
-            sub_batch = BatchedDataDict(
-                {
-                    "metadata": [current_batch["metadata"][i] for i in indices],
-                    "rewards": total_rewards[indices]
-                    if isinstance(total_rewards, torch.Tensor)
-                    else total_rewards,
-                }
-            )
-            # Envs are Ray actors in the training loop but may be local in tests.
-            post_process = env.global_post_process_and_metrics
-            if hasattr(post_process, "remote"):
-                _, env_metrics = ray.get(post_process.remote(sub_batch))
-            else:
-                _, env_metrics = post_process(sub_batch)
-            for k, v in env_metrics.items():
-                rollout_metrics[f"{task_name}/{k}"] = v
-    except Exception as e:
-        print(f"\n  ⚠️ Error aggregating environment metrics: {e}")
+    # Merge per-env (kernel-eval) online metrics into rollout_metrics. Only envs
+    # that wrote per-sample "correctness" metadata (cudagym) are aggregated; others
+    # are skipped (see _aggregate_env_metrics).
+    _aggregate_env_metrics(
+        rollout_metrics,
+        current_batch.get("task_name"),
+        current_batch.get("metadata"),
+        task_to_env,
+    )
 
     return current_batch, rollout_metrics
 
@@ -1075,6 +1100,9 @@ async def run_sample_multi_turn_rollout(
     terminated = False
     truncated = False
     max_turns_reached = False
+    # Latest env metadata for this sample (single-turn cudagym writes correctness/
+    # speedup/sol_score here) — collected for _aggregate_env_metrics.
+    last_env_metadata: dict | None = None
 
     # Track per-turn metrics
     turn_gen_tokens = []
@@ -1147,6 +1175,11 @@ async def run_sample_multi_turn_rollout(
         env_output = await asyncio.to_thread(
             calculate_rewards, sample_batch, task_to_env
         )
+        # Track the latest env metadata (kernel-eval fields for metric aggregation).
+        try:
+            last_env_metadata = env_output.metadata[0]
+        except (IndexError, TypeError):
+            last_env_metadata = None
         # Update total reward and optional per-component reward signals.
         if isinstance(env_output.rewards, dict):
             multi_reward_seen = True
@@ -1210,6 +1243,7 @@ async def run_sample_multi_turn_rollout(
         "total_reward": torch.tensor(total_reward),
         "stop_strings": current_stop_strings,
         "idx": sample_idx,
+        "metadata": last_env_metadata,
     }
     if multi_reward_seen:
         for name, acc in reward_acc_dict.items():
@@ -2501,24 +2535,30 @@ def _postprocess_single_nemo_gym_group(
         }
 
     # Kernel reward-observability metrics (M0/M1 parity): when the NeMo-Gym verifier
-    # surfaced cudagym fields (correctness/speedup/sol_score/human_best_speedup) on
-    # full_result, aggregate them with the SAME helper + names/semantics as the M0
-    # native path (correctness_rate, avg_speedup_over_ref/baseline, avg_sol_score,
-    # perf_ref_fallback_rate). Guarded so non-cudagym NeMo-Gym runs are unaffected.
-    kernel_keys = ("sol_score", "correctness", "speedup", "human_best_speedup")
+    # surfaced cudagym fields on full_result, aggregate them with the SAME helper +
+    # names/semantics as the M0 native path (correctness_rate,
+    # avg_speedup_over_ref/baseline, avg_sol_score, perf_ref_fallback_rate). Require
+    # the distinctive (sol_score + human_best_speedup) pair so a non-cudagym env that
+    # merely exposes a "correctness"/"speedup" field doesn't trip this and emit
+    # misleading cudagym metrics. Best-effort: never crash a rollout.
     kernel_records = [
         r["full_result"]
         for r in results
-        if any(k in r["full_result"] for k in kernel_keys)
+        if isinstance(r.get("full_result"), dict)
+        and "sol_score" in r["full_result"]
+        and "human_best_speedup" in r["full_result"]
     ]
     if kernel_records:
-        # Local import keeps the core rollout path decoupled from the atlas env
-        # unless a cudagym NeMo-Gym rollout is actually running.
-        from nemo_rl.environments.atlas.cuda_kernel_utils import (
-            aggregate_kernel_metrics,
-        )
+        try:
+            # Local import keeps the core rollout path decoupled from the atlas env
+            # unless a cudagym NeMo-Gym rollout is actually running.
+            from nemo_rl.environments.atlas.cuda_kernel_utils import (
+                aggregate_kernel_metrics,
+            )
 
-        rollout_metrics.update(aggregate_kernel_metrics(kernel_records))
+            rollout_metrics.update(aggregate_kernel_metrics(kernel_records))
+        except Exception as e:
+            print(f"\n  ⚠️ Error aggregating cudagym NeMo-Gym metrics: {e}")
 
     # Per-agent misc metrics
     with timer.time(f"{timer_prefix}/per_agent_misc_metrics"):

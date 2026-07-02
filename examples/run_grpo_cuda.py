@@ -49,7 +49,10 @@ from nemo_rl.data.datasets.processed_dataset import AllTaskProcessedDataset
 from nemo_rl.data.interfaces import DatumSpec, LLMMessageLogType, TaskDataSpec
 from nemo_rl.distributed.ray_actor_environment_registry import get_actor_python_env
 from nemo_rl.distributed.virtual_cluster import init_ray
-from nemo_rl.environments.atlas.cuda_kernel_utils import entry_symbol_for, fence_lang_for
+from nemo_rl.environments.atlas.cuda_kernel_utils import (
+    entry_symbol_for,
+    fence_lang_for,
+)
 from nemo_rl.environments.atlas.cudagym_environment import CudaGymEnvironment
 from nemo_rl.environments.interfaces import EnvironmentInterface
 from nemo_rl.models.generation import configure_generation_config
@@ -78,7 +81,9 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
 # ===============================================================================
 #                           Prompt construction
 # ===============================================================================
-def _annotate_solbench_problem(definition: dict, destination_passing_style: bool) -> str:
+def _annotate_solbench_problem(
+    definition: dict, destination_passing_style: bool
+) -> str:
     """Render a SOLBench ``definition`` dict into a readable problem statement.
 
     Includes the description, the input/output tensor specs (shape + dtype), the
@@ -162,9 +167,16 @@ def cudagym_data_processor(
     """
     language = datum_dict["language"]
     destination_passing_style = datum_dict.get("destination_passing_style", True)
-    problem_text = _annotate_solbench_problem(
-        datum_dict["definition"], destination_passing_style
-    )
+    # definition/workloads are baked as JSON strings by the data layer (so the HF
+    # dataset schema stays uniform across structurally-different problems); parse
+    # them back here. Tolerate a raw dict/list for older datasets.
+    definition = datum_dict["definition"]
+    if isinstance(definition, str):
+        definition = json.loads(definition)
+    workloads = datum_dict["workloads"]
+    if isinstance(workloads, str):
+        workloads = json.loads(workloads)
+    problem_text = _annotate_solbench_problem(definition, destination_passing_style)
 
     # Render the prompt template (driver_code = the problem statement; kernel_lang
     # = the fence tag the model writes; entry_function = the symbol it must define).
@@ -207,8 +219,8 @@ def cudagym_data_processor(
 
     extra_env_info = {
         "language": language,
-        "definition": datum_dict["definition"],
-        "workloads": datum_dict["workloads"],
+        "definition": definition,
+        "workloads": workloads,
         "target_hardware": datum_dict.get("target_hardware"),
         "destination_passing_style": destination_passing_style,
         # Per-workload SOL/human-best anchors (parsed from the JSON string the data
@@ -237,9 +249,7 @@ def setup_data(
         data_config["dataset_path"]
     ]
     val_data_paths: list[str] = data_config.get("val_dataset_paths") or (
-        [data_config["val_dataset_path"]]
-        if data_config.get("val_dataset_path")
-        else []
+        [data_config["val_dataset_path"]] if data_config.get("val_dataset_path") else []
     )
     print(f"Train datasets: {data_paths}\nValidation datasets: {val_data_paths}")
 
@@ -324,7 +334,11 @@ def main() -> None:
 
     if not args.config:
         args.config = os.path.join(
-            os.path.dirname(__file__), "configs", "recipes", "atlas", "grpo_cuda_b200.yaml"
+            os.path.dirname(__file__),
+            "configs",
+            "recipes",
+            "atlas",
+            "grpo_cuda_b200.yaml",
         )
 
     config = load_config(args.config)
@@ -340,7 +354,9 @@ def main() -> None:
     config.logger["log_dir"] = get_next_experiment_dir(config.logger["log_dir"])
     print(f"📊 Using log directory: {config.logger['log_dir']}")
     if config.checkpointing["enabled"]:
-        print(f"📊 Using checkpoint directory: {config.checkpointing['checkpoint_dir']}")
+        print(
+            f"📊 Using checkpoint directory: {config.checkpointing['checkpoint_dir']}"
+        )
 
     init_ray()
 
@@ -348,7 +364,9 @@ def main() -> None:
     set_seed(config.grpo["seed"])
 
     tokenizer = get_tokenizer(config.policy["tokenizer"])
-    assert config.policy["generation"] is not None, "A generation config is required for GRPO"
+    assert config.policy["generation"] is not None, (
+        "A generation config is required for GRPO"
+    )
     config.policy["generation"] = configure_generation_config(
         config.policy["generation"], tokenizer
     )
