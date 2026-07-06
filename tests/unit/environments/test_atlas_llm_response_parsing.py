@@ -58,6 +58,28 @@ def test_cpp_fence():
     assert get_code(completion, "cpp") == "int main() { return 0; }"
 
 
+def test_draft_fence_inside_think_is_not_extracted():
+    # A draft kernel fenced INSIDE <think> must never be the one evaluated:
+    # get_code anchors extraction after the </think> close (same anchor as
+    # check_inline_format), so the FINAL kernel is compiled/rewarded.
+    completion = (
+        "<think>\nlet me sketch:\n```python\ndraft = 'WRONG KERNEL'\n```\n"
+        "no, better plan\n</think>\n"
+        "Final:\n```python\nfinal = 'RIGHT KERNEL'\n```\n"
+    )
+    assert check_inline_format(completion) is True
+    assert get_code(completion) == "final = 'RIGHT KERNEL'"
+
+
+def test_fence_only_inside_think_fails_extraction():
+    # If the only fence is inside the think block, the format check fails and
+    # extraction must raise (never silently evaluate a draft).
+    completion = "<think>\n```python\ndraft\n```\nstill thinking\n</think>\ndone."
+    assert check_inline_format(completion) is False
+    with pytest.raises(ValueError):
+        get_code(completion)
+
+
 @pytest.mark.parametrize(
     "completion",
     [

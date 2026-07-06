@@ -31,6 +31,7 @@ prompt/observation tokens are masked by provenance.
 """
 
 import asyncio
+import os
 from typing import TypedDict
 
 import ray
@@ -107,7 +108,11 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
         if self.eval_config.server_url:
             self._client = CudaGymClient(
                 server_url=self.eval_config.server_url,
-                auth_token=self.eval_config.auth_token,
+                # An explicit server_url should still honor the ambient token
+                # (from_env() reads it, but that path is skipped here) — e.g.
+                # remote/Modal endpoints with a recipe-pinned URL.
+                auth_token=self.eval_config.auth_token
+                or os.environ.get("CUDAGYM_AUTH_TOKEN"),
             )
         else:
             self._client = CudaGymClient.from_env()
@@ -156,7 +161,20 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
 
         # Observation = human-readable eval feedback. Unused after a single turn
         # (the episode terminates) but kept for parity with the agentic path and
-        # for debugging printed rollouts.
+        # for debugging printed rollouts. result.metadata can carry FULL compile/
+        # runtime logs — clip it hard: the rollout loop appends+tokenizes the
+        # observation even on terminated episodes, so an unclipped multi-KB log
+        # pads the training sequence with masked tokens and falsely flips the
+        # sample's `truncated` flag (poisoning truncation metrics and, with
+        # grpo.overlong_filtering, silently zeroing failed-kernel gradients).
+        def _clip(text: object, limit: int = 2000) -> str:
+            s = str(text)
+            return (
+                s
+                if len(s) <= limit
+                else s[:limit] + f"...[clipped {len(s) - limit} chars]"
+            )
+
         observations = [
             {
                 "role": "environment",
@@ -166,7 +184,7 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
                     f"Executed: {result.executed}\n"
                     f"Correct: {result.correctness}\n"
                     f"Speedup: {result.speedup:.3f}x\n"
-                    f"Metadata: {result.metadata}\n"
+                    f"Metadata: {_clip(result.metadata)}\n"
                 ),
             }
             for rew, result in zip(rewards, results)

@@ -287,10 +287,99 @@ def write_kfb_dataset(
     Returns the number of rows written. Point ``data.dataset_path`` at ``out_path``.
     Pass ``sol_latencies_csv`` (e.g. ``data/benchmark/latencies_b200.csv``) to bake
     per-problem SOL/human-best anchors into each row for the SOL-score reward.
+
+    Problem-set note: ``data/sol_execbench_external`` (245 problems + ``sol_latencies.csv``)
+    is the preferred default — its SOL anchors are real (non-zero) on every covered
+    workload and its references are torch-only, so the SOL-score reward anchors
+    properly and the eval server needs only the ``sol_execbench_external`` profile.
+    ``data/benchmark`` (204 problems, ``latencies_b200.csv``) has ``sol_latency_ms == 0``
+    everywhere (the score degrades to bounded speedup-over-human-best) and its
+    references import flashinfer/einops (``kernel_factory`` server profile).
     """
     rows = [
         kfb_problem_to_row(
             d, language, target_hardware, destination_passing_style, sol_latencies_csv
+        )
+        for d in problem_dirs
+    ]
+    with open(out_path, "w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+    return len(rows)
+
+
+def kfb_problem_to_gym_seed(
+    problem_dir: str,
+    language: str,
+    target_hardware: str = "B200",
+    destination_passing_style: bool = True,
+    sol_latencies_csv: Optional[str] = None,
+    agent_name: str = "cudagym_cuda_agent",
+) -> dict[str, Any]:
+    """One NeMo-Gym task-seed row for the agentic (M1) ``cuda_agent`` path.
+
+    Matches the Gym cudagym resources server's expected shape (see
+    3rdparty/Gym-workspace/Gym/resources_servers/cudagym/data/example.jsonl):
+    ``responses_create_params.input`` = a single user turn describing the task
+    (the sandbox carries the full problem files), and ``verifier_metadata`` =
+    the problem the agent server seeds + the verifier scores. Unlike
+    ``kfb_problem_to_row``, nested objects stay PARSED dicts/lists — Gym reads
+    plain JSON rows, so there is no HuggingFace schema-uniformity constraint —
+    and ``agent_ref`` is baked in (rollout routing; no ``ng_prepare_data`` pass
+    needed).
+    """
+    pdir = Path(problem_dir)
+    definition = json.loads((pdir / "definition.json").read_text())
+    workloads = [
+        json.loads(line)
+        for line in (pdir / "workload.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    name = definition.get("name", pdir.name)
+    anchors = load_sol_anchors(sol_latencies_csv, name) if sol_latencies_csv else {}
+    desc = " ".join((definition.get("description") or "").split()) or "see ./problem/"
+    prompt = (
+        f"Optimize a fast GPU kernel for the `{name}` problem: {desc} "
+        f"The full definition, workloads and reference implementation are in ./problem/. "
+        f"Iterate with the cudagym CLI and leave your final kernel file in the sandbox."
+    )
+    return {
+        "responses_create_params": {"input": [{"role": "user", "content": prompt}]},
+        "verifier_metadata": {
+            "language": language,
+            "target_hardware": target_hardware,
+            "destination_passing_style": destination_passing_style,
+            "definition": definition,
+            "workloads": workloads,
+            "sol_anchors": anchors,
+        },
+        "agent_ref": {"type": "responses_api_agents", "name": agent_name},
+    }
+
+
+def write_kfb_gym_seeds(
+    problem_dirs: list[str],
+    out_path: str,
+    language: str,
+    target_hardware: str = "B200",
+    destination_passing_style: bool = True,
+    sol_latencies_csv: Optional[str] = None,
+    agent_name: str = "cudagym_cuda_agent",
+) -> int:
+    """Write NeMo-Gym task-seed JSONL (M1 agentic RL) from KFB problem dirs.
+
+    Returns the number of rows written. Point the agentic recipe's
+    ``data.train.data_path`` / ``data.validation.data_path`` at the outputs
+    (grpo_cuda_agentic_*.yaml).
+    """
+    rows = [
+        kfb_problem_to_gym_seed(
+            d,
+            language,
+            target_hardware,
+            destination_passing_style,
+            sol_latencies_csv,
+            agent_name,
         )
         for d in problem_dirs
     ]

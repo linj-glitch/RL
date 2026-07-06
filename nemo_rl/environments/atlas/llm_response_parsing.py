@@ -54,20 +54,35 @@ def check_inline_format(completion: str, fence_lang: str = "python") -> bool:
 
 
 def get_code(completion: str, fence_lang: str = "python") -> str:
-    """Return the content of the first ```` ```<fence_lang> ... ``` ```` block.
+    r"""Return the kernel from the first fence AFTER the ``</think>`` close.
+
+    Anchoring matters: a completion may contain DRAFT fenced blocks inside the
+    ``<think>`` region; extracting the first fence anywhere would compile and
+    reward the draft instead of the final kernel. This uses the same anchor as
+    ``check_inline_format`` (the first ``\n</think>\n``), so any completion that
+    passes the format check extracts the block the check validated. When no
+    think block is present, falls back to the first fence in the completion.
 
     Args:
         completion: the model's raw completion text.
         fence_lang: the markdown fence tag whose block content to extract.
 
     Returns:
-        The (stripped) code inside the first matching fence.
+        The (stripped) code inside the matching fence.
 
     Raises:
-        ValueError: if no fence with ``fence_lang`` is present — the caller
+        ValueError: if no fence with ``fence_lang`` is present after the think
+            block (or anywhere, when there is no think block) — the caller
             records this as a format error (no reward beyond 0).
     """
-    match = re.search(rf"```{fence_lang}\n(.*?)\n```", completion, re.DOTALL)
+    anchor = completion.find("\n</think>\n")
+    search_region = (
+        completion[anchor + len("\n</think>\n") :] if anchor != -1 else completion
+    )
+    match = re.search(rf"```{fence_lang}\n(.*?)\n```", search_region, re.DOTALL)
     if match:
         return match.group(1).strip()
-    raise ValueError(f"No ```{fence_lang} ... ``` code block found in the completion")
+    raise ValueError(
+        f"No ```{fence_lang} ... ``` code block found in the completion"
+        + (" after the </think> block" if anchor != -1 else "")
+    )
