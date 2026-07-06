@@ -15,6 +15,7 @@
 # this script is responsible for uploading the code to the cluster and submitting jobs from a remote machine
 
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -276,11 +277,26 @@ def validate_cluster_paths(paths: dict) -> None:
             )
 
 
-def fill_template(sbatch_script: str, var_name: str, value: str | int) -> str:
-    """Replace DEFAULT_<VAR> with a value in the sbatch script text."""
+def fill_template(sbatch_script: str, var_name: str, value) -> str:
+    """Replace the DEFAULT_<VAR> token with a value in the sbatch script text.
+
+    Token-EXACT: a negative lookahead stops ``DEFAULT_ARTIFACTS`` from eating the
+    prefix of ``DEFAULT_ARTIFACTS_DIR`` (a plain str.replace mangled such pairs
+    into ``"<value>"_DIR``). None renders as an empty quoted string rather than
+    the literal ``None``; Path and other non-numeric values are quoted like str.
+    """
     var = var_name.upper()
-    value_str = f'"{value}"' if isinstance(value, str) else str(value)
-    return sbatch_script.replace(f"DEFAULT_{var}", value_str)
+    if value is None:
+        value_str = '""'
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        value_str = str(value)
+    else:
+        value_str = f'"{value}"'
+    return re.sub(
+        rf"DEFAULT_{re.escape(var)}(?![A-Za-z0-9_])",
+        lambda _m: value_str,
+        sbatch_script,
+    )
 
 
 def upload_text_as_file(ssh_tunnel: SSHTunnel, text: str, remote_path: Path) -> None:

@@ -32,6 +32,9 @@ export CUDAGYM_CONTAINER=${CUDAGYM_CONTAINER:-DEFAULT_CUDAGYM_CONTAINER}
 export ARTIFACTS_DIR=${ARTIFACTS_DIR:-DEFAULT_ARTIFACTS_DIR}
 export CCACHE_DIR=${CCACHE_DIR:-DEFAULT_CCACHE_DIR}
 export CUDAGYM_NUM_NODES=${CUDAGYM_NUM_NODES:-DEFAULT_CUDAGYM_NUM_NODES}
+# remote mode: the eval endpoint URL (Astra/Modal or a hand-started server). Colocated/
+# disjoint modes ignore this — ray.sub exports the in-allocation LB URL instead.
+export CUDAGYM_UNIFIED_SERVER_URL=${CUDAGYM_UNIFIED_SERVER_URL:-DEFAULT_CUDAGYM_UNIFIED_SERVER_URL}
 
 # API keys
 export WANDB_PROJECT="${WANDB_PROJECT:-atlas_nemorl}"
@@ -51,14 +54,31 @@ export OUTPUT_DIR=${OUTPUT_ROOT}/${EXP_NAME}
 
 export SKIP_GRES_ARG=${SKIP_GRES_ARG:-DEFAULT_SKIP_GRES_ARG}
 
-export COMMAND="uv run ./examples/run_grpo_cuda.py \
+# In disjoint mode the trailing CUDAGYM_NUM_NODES nodes host CudaGym and never
+# join Ray — the training config must only request the nodes Ray actually has,
+# or virtual-cluster placement fails after full bringup.
+if [ "${CUDAGYM_MODE}" = "disjoint" ]; then
+    export TRAIN_NUM_NODES=$(( NUM_NODES - ${CUDAGYM_NUM_NODES:-0} ))
+else
+    export TRAIN_NUM_NODES=${NUM_NODES}
+fi
+
+# Runner + uv extras are recipe-dependent (submit_grpo.py fills them):
+#   M0 native   -> examples/run_grpo_cuda.py           + "--extra atlas"
+#   M1 nemo-gym -> examples/nemo_gym/run_grpo_nemo_gym.py + "--extra atlas --extra nemo_gym"
+# --extra atlas pulls the cudagym SDK (thin client) into the venv; the driver and
+# the SYSTEM-venv env actors import cudagym.sdk/cudagym.contracts.
+export RUN_SCRIPT=${RUN_SCRIPT:-DEFAULT_RUN_SCRIPT}
+export UV_EXTRAS=${UV_EXTRAS:-DEFAULT_UV_EXTRAS}
+
+export COMMAND="uv run ${UV_EXTRAS} ${RUN_SCRIPT} \
     --config examples/configs/recipes/atlas/${CONFIG_NAME} \
     checkpointing.checkpoint_dir=${OUTPUT_DIR}/ckpts \
     logger.log_dir=${OUTPUT_DIR}/logs/wandb \
     logger.wandb.project=${WANDB_PROJECT} \
     logger.wandb.name=${EXP_NAME} \
     logger.wandb_enabled=true \
-    cluster.num_nodes=${NUM_NODES} \
+    cluster.num_nodes=${TRAIN_NUM_NODES} \
     cluster.gpus_per_node=${GPUS_PER_NODE:-8} \
     ${EXTRA_CONFIG_OPTS}
 "
@@ -90,11 +110,15 @@ echo NUM_NODES: $NUM_NODES
 echo TIME: $TIME
 echo ======================================================
 
+# Account/partition come from the cluster yaml (submit_grpo.py fills them).
+export SLURM_ACCOUNT=${SLURM_ACCOUNT:-DEFAULT_SLURM_ACCOUNT}
+export SLURM_PARTITION=${SLURM_PARTITION:-DEFAULT_SLURM_PARTITION}
+
 SBATCH_ARGS=(
     --nodes=${NUM_NODES} \
-    --account=coreai_nvfm_cupilot \
-    --job-name=coreai_nvfm_cupilot-atlas.grpo.${EXP_NAME} \
-    --partition=batch \
+    --account=${SLURM_ACCOUNT} \
+    --job-name=${SLURM_ACCOUNT}-atlas.grpo.${EXP_NAME} \
+    --partition=${SLURM_PARTITION} \
     --dependency=singleton \
     --time=${TIME} \
     --output=${BASE_LOG_DIR}/slurm-%j.out \

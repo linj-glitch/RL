@@ -69,7 +69,7 @@ def main():
     parser.add_argument(
         "--config",
         type=str,
-        default="sft_megatron_qwen3-32b.yaml",
+        default="sft_cuda_agentic_qwen3-8b.yaml",
         choices=get_available_configs(CONFIG_PATH, "sft*.yaml", return_stems=False),
     )
     parser.add_argument(
@@ -151,17 +151,29 @@ def main():
         args.extra_config_opts + " " + cluster_config["extra_config_opts"]
     ).strip()
 
+    # Unset local secrets must not leak into the job as the literal string "None".
+    secrets = {}
+    for name in ("HF_TOKEN", "WANDB_API_KEY"):
+        val = os.getenv(name)
+        if not val:
+            print(f"⚠️  {name} is not set locally — the job will run without it.")
+        secrets[name] = val or ""
+
     sbatch_vars = {
         "EXP_NAME": args.exp_name,
-        "CONFIG_NAME": Path(args.config).resolve().relative_to(Path(__file__).parent),
+        # sft.sh prefixes examples/configs/recipes/atlas/ itself — pass the bare
+        # filename (a resolve().relative_to() here was cwd-dependent and crashed
+        # when submitting from outside the repo root).
+        "CONFIG_NAME": Path(args.config).name,
         "EXTRA_CONFIG_OPTS": extra_config_opts,
         "TIME": args.time,
         "NUM_NODES": args.num_nodes,
-        "HF_TOKEN": os.getenv("HF_TOKEN"),
-        "WANDB_API_KEY": os.getenv("WANDB_API_KEY"),
+        **secrets,
         "OUTPUT_DIR": output_dir,
         "GPUS_PER_NODE": cluster_config["gpus_per_node"],
         "SKIP_GRES_ARG": "1" if args.cluster == "eos" else "",
+        "SLURM_ACCOUNT": cluster_config.get("account", "coreai_nvfm_cupilot"),
+        "SLURM_PARTITION": cluster_config.get("partition", "batch"),
     } | {**cluster_config["paths"]}
 
     for k, v in sbatch_vars.items():

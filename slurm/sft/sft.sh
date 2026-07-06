@@ -46,7 +46,6 @@ export COMMAND="uv run ./examples/run_sft.py \
     --config examples/configs/recipes/atlas/${CONFIG_NAME} \
     checkpointing.checkpoint_dir=${OUTPUT_DIR}/ckpts \
     logger.log_dir=${OUTPUT_DIR}/logs/wandb \
-    logger.wandb.name=${EXP_NAME} \
     cluster.num_nodes=${NUM_NODES} \
     logger.wandb.project=${WANDB_PROJECT} \
     logger.wandb.name=${EXP_NAME} \
@@ -86,11 +85,15 @@ echo NUM_NODES: $NUM_NODES
 echo TIME: $TIME
 echo ======================================================
 
+# Account/partition come from the cluster yaml (submit_sft.py fills them).
+export SLURM_ACCOUNT=${SLURM_ACCOUNT:-DEFAULT_SLURM_ACCOUNT}
+export SLURM_PARTITION=${SLURM_PARTITION:-DEFAULT_SLURM_PARTITION}
+
 SBATCH_ARGS=(
     --nodes=${NUM_NODES} \
-    --account=coreai_nvfm_cupilot \
-    --job-name=coreai_nvfm_cupilot-atlas.sft.${EXP_NAME} \
-    --partition=batch \
+    --account=${SLURM_ACCOUNT} \
+    --job-name=${SLURM_ACCOUNT}-atlas.sft.${EXP_NAME} \
+    --partition=${SLURM_PARTITION} \
     --time=${TIME} \
     --dependency=singleton \
     --output=${BASE_LOG_DIR}/slurm-%j.out \

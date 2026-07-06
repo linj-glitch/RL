@@ -559,32 +559,46 @@ if [[ "${CUDAGYM_ENABLED:-0}" == "1" ]]; then
   echo "[INFO] Launching CudaGym services on selected nodes..."
   CUDAGYM_CONTAINER_MOUNTS="${MOUNTS},${ARTIFACTS_DIR}:${ARTIFACTS_DIR},${CCACHE_DIR}:${CCACHE_DIR}"
   CUDAGYM_SRUN_COMMON="--no-container-mount-home --mpi=pmix --container-image=${CUDAGYM_CONTAINER} --container-mounts=${CUDAGYM_CONTAINER_MOUNTS} --container-workdir=$SLURM_SUBMIT_DIR --overlap"
+  # Modern cudagym (>=1.9) ships ONE unified server (cudagym.servers.serve) run in
+  # compile-only / gpu-only mode; the vendored source at 3rdparty/cudagym/src rides
+  # PYTHONPATH so the checkout wins over whatever the container baked. The container
+  # must still provide the server runtime deps (fastapi/uvicorn/torch + the compile
+  # toolchain from the matching docker/<profile> image).
+  # In colocated mode the training processes own the GPUs too, so the GPU server
+  # must tolerate pre-existing GPU processes.
+  ALLOW_PROCS_ARG=""
+  if [[ "$CUDAGYM_MODE" != "disjoint" ]]; then
+    ALLOW_PROCS_ARG="--allow-existing-procs"
+  fi
   ANY_SERVER_FAILED=false
   for ((i = CUDAGYM_NODE_START; i < CUDAGYM_NODE_END; i++)); do
     node_i=${nodes_array[$i]}
 
     echo "[INFO] Starting services on node ${node_i}..."
 
-    # Launch CompileServer
+    # Launch the compile-only server
     srun $CUDAGYM_SRUN_COMMON --nodes=1 --ntasks=1 -w "$node_i" \
          -o "$LOG_DIR/cudagym/compile/${node_i}_compile.out" \
-         bash -lc "export PYTHONPATH=$SLURM_SUBMIT_DIR/3rdparty/cudagym/src:\${PYTHONPATH}; python -m cudagym.servers.compile.serve \
+         bash -lc "export PYTHONPATH=$SLURM_SUBMIT_DIR/3rdparty/cudagym/src:\${PYTHONPATH}; python -m cudagym.servers.serve \
+                   --compile-server-only \
                    --host 0.0.0.0 \
                    --port ${COMPILE_PORT} \
                    --artifacts-dir ${ARTIFACTS_DIR} \
                    --ccache-dir ${CCACHE_DIR} \
-                   --num-workers ${CPUS_PER_WORKER}" &
+                   --num-cpu-workers ${CPUS_PER_WORKER}" &
     SRUN_PIDS["cudagym-compile-$i"]=$!
 
     # Let SLURM recover
     sleep 2
 
-    # Launch GPUServer
+    # Launch the GPU-only server
     srun $CUDAGYM_SRUN_COMMON $GRES_ARG --nodes=1 --ntasks=1 -w "$node_i" \
          -o "$LOG_DIR/cudagym/gpu/${node_i}_gpu.out" \
-         bash -lc "export PYTHONPATH=$SLURM_SUBMIT_DIR/3rdparty/cudagym/src:\${PYTHONPATH}; python -m cudagym.servers.gpu.serve \
+         bash -lc "export PYTHONPATH=$SLURM_SUBMIT_DIR/3rdparty/cudagym/src:\${PYTHONPATH}; python -m cudagym.servers.serve \
+                   --gpu-server-only ${ALLOW_PROCS_ARG} \
                    --host 0.0.0.0 \
-                   --port ${GPU_PORT}" &
+                   --port ${GPU_PORT} \
+                   --artifacts-dir ${ARTIFACTS_DIR}" &
     SRUN_PIDS["cudagym-gpu-$i"]=$!
 
     # Let SLURM recover
@@ -594,28 +608,28 @@ if [[ "${CUDAGYM_ENABLED:-0}" == "1" ]]; then
   echo "[INFO] Waiting for CudaGym services to start..."
   sleep 30
 
+  # First-boot container import + torch init can exceed a single fixed wait; retry
+  # each server a few times before declaring failure.
+  check_cudagym_health() {
+    local node=$1 port=$2 label=$3
+    for attempt in {1..4}; do
+      if srun $CUDAGYM_SRUN_COMMON --nodes=1 --ntasks=1 -w "$node" \
+           bash -lc "curl -sf --connect-timeout 5 http://127.0.0.1:${port}/health >/dev/null"; then
+        echo "[OK] ${label} on $node healthy"
+        return 0
+      fi
+      echo "[INFO] ${label} on $node not ready (attempt $attempt/4)..."
+      sleep 15
+    done
+    echo "[ERR] ${label} on $node not responding"
+    return 1
+  }
+
   echo "[INFO] Checking CudaGym service status..."
   for ((i = CUDAGYM_NODE_START; i < CUDAGYM_NODE_END; i++)); do
     node_i=${nodes_array[$i]}
-    ip_i=${ip_addresses_array[$i]}
-
-    echo "[CHECK][$node_i] CompileServer: http://${ip_i}:${COMPILE_PORT}/health"
-    if ! srun $CUDAGYM_SRUN_COMMON --nodes=1 --ntasks=1 -w "$node_i" \
-         bash -lc "curl -sf --connect-timeout 5 http://127.0.0.1:${COMPILE_PORT}/health >/dev/null"; then
-      echo "[ERR] CompileServer on $node_i not responding"
-      ANY_SERVER_FAILED=true
-    else
-      echo "[OK] CompileServer on $node_i healthy"
-    fi
-
-    echo "[CHECK][$node_i] GPUServer: http://${ip_i}:${GPU_PORT}/health"
-    if ! srun $CUDAGYM_SRUN_COMMON --nodes=1 --ntasks=1 -w "$node_i" \
-         bash -lc "curl -sf --connect-timeout 5 http://127.0.0.1:${GPU_PORT}/health >/dev/null"; then
-      echo "[ERR] GPUServer on $node_i not responding"
-      ANY_SERVER_FAILED=true
-    else
-      echo "[OK] GPUServer on $node_i healthy"
-    fi
+    check_cudagym_health "$node_i" "$COMPILE_PORT" "CompileServer" || ANY_SERVER_FAILED=true
+    check_cudagym_health "$node_i" "$GPU_PORT" "GPUServer" || ANY_SERVER_FAILED=true
   done
 
   # Cancel the job if any server failed
@@ -628,7 +642,7 @@ if [[ "${CUDAGYM_ENABLED:-0}" == "1" ]]; then
   echo "[INFO] Launching load balancer on node $CUDAGYM_LB_NODE..."
   srun $CUDAGYM_SRUN_COMMON --nodes=1 --ntasks=1 -w "$CUDAGYM_LB_NODE" \
        -o "$LOG_DIR/cudagym/loadbalancer/${CUDAGYM_LB_NODE}_lb.out" \
-       bash -lc "export PYTHONPATH=$SLURM_SUBMIT_DIR/3rdparty/cudagym/src:\${PYTHONPATH}; python 3rdparty/cudagym/examples/multi_node/cudagym_load_balancer.py \
+       bash -lc "export PYTHONPATH=$SLURM_SUBMIT_DIR/3rdparty/cudagym/src:\${PYTHONPATH}; python 3rdparty/cudagym/deployments/multi_node/cudagym_load_balancer.py \
                  ${LB_PORT} \
                  '$COMPILE_SERVERS' \
                  '$GPU_SERVERS' \

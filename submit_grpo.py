@@ -338,6 +338,16 @@ def main():
         default=0,
         help="Number of trailing nodes reserved for CudaGym when --cudagym-mode=disjoint.",
     )
+    parser.add_argument(
+        "--cudagym-url",
+        type=str,
+        default=None,
+        help=(
+            "CudaGym endpoint for --cudagym-mode=remote (exported as "
+            "CUDAGYM_UNIFIED_SERVER_URL in the job). Alternatives: set the env var "
+            "locally at submit time, or pin env.cudagym.<arch>.server_url in the recipe."
+        ),
+    )
     args = parser.parse_args()
 
     if args.cudagym_mode == "disjoint" and not (
@@ -477,18 +487,52 @@ def main():
         ).strip()
     )
 
+    # Pick the runner + uv extras from the recipe: the NeMo-Gym (M1 agentic) path
+    # uses a different driver script and needs the nemo_gym extra on top of atlas.
+    recipe_cfg = OmegaConf.load(CONFIG_PATH / args.config)
+    uses_nemo_gym = bool(
+        OmegaConf.select(recipe_cfg, "env.should_use_nemo_gym", default=False)
+    )
+    if uses_nemo_gym:
+        run_script = "examples/nemo_gym/run_grpo_nemo_gym.py"
+        uv_extras = "--extra atlas --extra nemo_gym"
+    else:
+        run_script = "./examples/run_grpo_cuda.py"
+        uv_extras = "--extra atlas"
+
+    # Unset local secrets must not leak into the job as the literal string "None";
+    # fill with "" and tell the user (the template's ${VAR:-...} then sees empty).
+    secrets = {}
+    for name in ("HF_TOKEN", "WANDB_API_KEY", "CUDAGYM_AUTH_TOKEN"):
+        val = os.getenv(name)
+        if not val:
+            print(f"⚠️  {name} is not set locally — the job will run without it.")
+        secrets[name] = val or ""
+
     sbatch_vars = {
         "EXP_NAME": args.exp_name,
         "CONFIG_NAME": args.config,
         "EXTRA_CONFIG_OPTS": extra_config_opts,
+        "RUN_SCRIPT": run_script,
+        "UV_EXTRAS": uv_extras,
         "TIME": args.time,
         "NUM_NODES": args.num_nodes,
-        "HF_TOKEN": os.getenv("HF_TOKEN"),
-        "WANDB_API_KEY": os.getenv("WANDB_API_KEY"),
-        "CUDAGYM_AUTH_TOKEN": os.getenv("CUDAGYM_AUTH_TOKEN"),
+        **secrets,
         "OUTPUT_DIR": output_dir,
         "GPUS_PER_NODE": cluster_config["gpus_per_node"],
         "SKIP_GRES_ARG": "1" if args.cluster == "eos" else "",
+        # account/partition are cluster-specific; the yaml may override the defaults.
+        "SLURM_ACCOUNT": cluster_config.get("account", "coreai_nvfm_cupilot"),
+        "SLURM_PARTITION": cluster_config.get("partition", "batch"),
+        # Always present so no DEFAULT_* token leaks into the job env when a mode
+        # doesn't set them (ray.sub tests CUDAGYM_ENABLED == "1").
+        "CUDAGYM_ENABLED": "0",
+        "CUDAGYM_CONTAINER": "",
+        "ARTIFACTS_DIR": "",
+        "CCACHE_DIR": "",
+        "CUDAGYM_UNIFIED_SERVER_URL": args.cudagym_url
+        or os.getenv("CUDAGYM_UNIFIED_SERVER_URL")
+        or "",
     } | {**cluster_config["paths"]}
 
     # Resolve the effective CudaGym hosting mode. An explicit --cudagym-mode wins;
@@ -499,6 +543,13 @@ def main():
         cudagym_mode = "colocated" if colocated_cudagym_found else ""
     sbatch_vars["CUDAGYM_MODE"] = cudagym_mode
     sbatch_vars["CUDAGYM_NUM_NODES"] = args.cudagym_num_nodes
+
+    if cudagym_mode == "remote" and not sbatch_vars["CUDAGYM_UNIFIED_SERVER_URL"]:
+        print(
+            "⚠️  --cudagym-mode=remote with no --cudagym-url / CUDAGYM_UNIFIED_SERVER_URL: "
+            "the job only works if the recipe pins env.cudagym.<arch>.server_url — "
+            "otherwise the env actor fails at init with 'server_url is required'."
+        )
 
     # If we are hosting CudaGym in-allocation (colocated or disjoint), pass the
     # server sbatch vars consumed by ray.sub. Remote mode launches no servers in
