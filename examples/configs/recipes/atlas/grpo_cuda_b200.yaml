@@ -28,8 +28,11 @@ grpo:
 checkpointing:
   enabled: true
   checkpoint_dir: "results/grpo-cuda-b200"
-  # Our env reports correctness_rate + avg_speedup via global_post_process_and_metrics.
-  metric_name: "val:correctness_rate"
+  # TRAIN-side metric: the cudagym env metrics land in the per-step train metrics
+  # as {task_name}/{metric} (rollouts._aggregate_env_metrics). The native validate()
+  # path reports only accuracy/avg_length, so a "val:correctness_rate" here would
+  # raise "Metric not found" at the first save step.
+  metric_name: "train:b200/correctness_rate"
   higher_is_better: true
   keep_top_k: 5
   save_period: 20
@@ -39,10 +42,12 @@ policy:
   max_total_sequence_length: 16384  # generous for <think> + a kernel; raise for big problems
   tokenizer:
     name: ${policy.model_name}
-    # Minimal chat template that PRESERVES <think> verbatim (Qwen-family / <|im_start|>
-    # style; swap to match the SFT'd model). Single-turn inline-code needs no tool
-    # rendering. See plan §3.2 (prefix-stability) on why a think-preserving template matters.
-    chat_template: "{%- for message in messages %}{%- if message.role == 'system' %}\n<|im_start|>system\n{{- message.content }}<|im_end|>\n{%- elif message.role == 'user' %}\n<|im_start|>user\n{{- message.content }}<|im_end|>\n<|im_start|>assistant\n{%- elif message.role == 'assistant' %}\n{{- message.content }}<|im_end|>{%- endif %}{%- endfor %}"
+    # THE shared atlas template (think+tools-preserving, prefix-stable) — the SAME
+    # file the SFT recipe (sft_cuda_agentic_qwen3-8b.yaml) pins, so the M0 rollout
+    # surface renders byte-identically to the SFT training surface. The SFT
+    # checkpoint's tokenizer also embeds it, which is what M1's NeMo-Gym vLLM
+    # server picks up. Single-turn M0 exercises the no-tools path of the template.
+    chat_template: "examples/prompts/atlas_preserving_chat_template.jinja"
   train_global_batch_size: 32
   train_micro_batch_size: 1
   precision: "bfloat16"
@@ -68,7 +73,21 @@ data:
   max_input_seq_length: ${policy.max_total_sequence_length}
   prompt_file: "examples/prompts/cudagym.txt"
   system_prompt_file: null
-  dataset_path: "/datasets/SET_ME_kfb_solbench.jsonl"
+  # Build from a Kernel-Factory-Bench checkout. PREFER data/sol_execbench_external
+  # (245 problems; REAL non-zero SOL anchors on every covered workload, so the
+  # SOL-score reward anchors properly; torch-only references -> the eval server
+  # only needs the sol_execbench_external profile):
+  #   python -c "
+  #   from pathlib import Path
+  #   from nemo_rl.data.atlas_datasets.grpo_cuda_dataset import write_kfb_dataset
+  #   kfb = Path('<KFB>/data/sol_execbench_external')
+  #   dirs = sorted(str(p.parent) for p in kfb.rglob('definition.json'))
+  #   write_kfb_dataset(dirs, 'solbench_sol_execbench_b200.jsonl', language='triton',
+  #                     destination_passing_style=False,
+  #                     sol_latencies_csv=str(kfb / 'sol_latencies.csv'))"
+  # (data/benchmark also works — 204 problems, kernel_factory server profile — but
+  #  its sol_latency_ms is 0 everywhere, so SOL degrades to speedup-over-human-best.)
+  dataset_path: "/datasets/solbench_sol_execbench_b200.jsonl"
   duplicate_train_data: true
   test_size: 0.1
   add_system_prompt: false

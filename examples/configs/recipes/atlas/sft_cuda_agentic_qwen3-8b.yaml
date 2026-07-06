@@ -1,0 +1,274 @@
+# Atlas SFT: agentic CUDA-kernel-optimization traces (Solswarm extraction) on Qwen3-8B.
+#
+# Data: NeMo-RL `openai_format` rows emitted by scripts/traces_to_sft.py in the
+# sft-solswarm-traces repo — {messages, tools} with multi-turn assistant
+# tool_calls (dict or string arguments), role:tool results, and <think> CoT in
+# assistant content. Single-turn (M0-style) rows load through the exact same
+# path (empty tools, system+user+assistant).
+#
+# Template convergence (the load-bearing choice):
+#   * policy.tokenizer.chat_template pins examples/prompts/atlas_preserving_chat_template.jinja
+#     — think+tools-preserving, prefix-stable under get_formatted_message_log's
+#     incremental render (verified on the real extracted rows: 80/80 strict-prefix
+#     + exact chunk reconstruction, all <think> blocks preserved).
+#   * The checkpoint's tokenizer carries this template (tokenizer.save_pretrained),
+#     so M0 GRPO rollouts and M1 NeMo-Gym vLLM serving render IDENTICALLY at RL time.
+#   * Stock Qwen3's template is NOT safe here: it strips <think> from prior turns
+#     and merges consecutive tool messages — both break the unguarded prefix diff
+#     in llm_message_utils.get_first_index_that_differs and corrupt token spans.
+#
+# data.add_generation_prompt MUST stay false: with true, get_formatted_message_log
+# appends the assistant generation prompt to every user/tool-tail render; on
+# agentic data with CONSECUTIVE tool/user messages the next render contradicts it
+# (non-prefix) and the spans silently corrupt. With false, each assistant chunk
+# carries its own '<|im_start|>assistant\n' header into the loss — intended.
+#
+# Sequence length: measured on the current extraction (out/sweep/combined.jsonl,
+# chars/3.8 estimate): median ~86k tok, p90 ~142k, max ~204k. 131072 covers ~88%
+# of rows; overflow rows get loss_multiplier=0 (dropped from loss, not a crash).
+# Raise to 262144 (and CP) to cover everything, or re-emit with a tighter
+# --max-context-chars budget.
+#
+# Launch (see submit_sft.py / slurm/sft/sft.sh):
+#   uv run ./examples/run_sft.py --config examples/configs/recipes/atlas/sft_cuda_agentic_qwen3-8b.yaml
+
+sft:
+  max_num_epochs: 4          # small curated set today; re-tune as extraction grows
+  max_num_steps: 1000000
+
+  val_period: 10
+  val_batches: 0             # 0 = validate on ALL val batches. Do not set >0 with
+                             # multiple/merged val sets: the val loader is unshuffled
+                             # concatenation, so a positive count only sees the head set.
+  val_global_batch_size: 8
+  val_micro_batch_size: 1
+  val_at_start: true
+  val_at_end: true
+  seed: 42
+  only_unmask_final: false   # train ALL assistant turns (multi-turn agentic SFT)
+
+checkpointing:
+  enabled: true
+  checkpoint_dir: "results/sft_cuda_agentic_qwen3_8b"
+  metric_name: "val:val_loss"
+  higher_is_better: false
+  keep_top_k: 3
+  save_period: 10
+  checkpoint_must_save_by: null
+  save_optimizer: true
+
+policy:
+  model_name: "Qwen/Qwen3-8B"   # or a local path; DeepSeek-R1-0528-Qwen3-8B also works
+                                # (same Qwen3 tokenizer family) — re-run the template
+                                # gate (scripts/verify_sft.py) whenever this changes.
+  tokenizer:
+    name: ${policy.model_name}
+    # THE pinned template — shared with the M0 GRPO recipe and carried into the
+    # checkpoint for M1 vLLM serving. See header comment.
+    chat_template: "examples/prompts/atlas_preserving_chat_template.jinja"
+    chat_template_kwargs: null
+  train_global_batch_size: 8    # scale up with dataset size
+  train_micro_batch_size: 1
+  max_total_sequence_length: 131072
+  precision: "bfloat16"
+
+  offload_optimizer_for_logprob: false
+
+  dtensor_cfg:
+    _v2: true
+    enabled: true
+    env_vars: {}
+    cpu_offload: False
+    sequence_parallel: true
+    activation_checkpointing: true
+    tensor_parallel_size: 2
+    context_parallel_size: 8    # 131k tokens / CP8 = 16k per rank
+    dp_replicate_size: 1
+    custom_parallel_plan: null
+    automodel_kwargs: {}
+    lora_cfg:
+      enabled: False
+      target_modules: []
+      exclude_modules: []
+      match_all_linear: true
+      dim: 8
+      alpha: 32
+      dropout: 0.0
+      dropout_position: "post"
+      lora_A_init: "xavier"
+      use_triton: true
+
+  dynamic_batching:
+    enabled: false
+    train_mb_tokens: ${mul:${policy.max_total_sequence_length}, ${policy.train_micro_batch_size}}
+    sequence_length_round: 64
+
+  sequence_packing:
+    enabled: False              # enable for throughput once the run is validated;
+    train_mb_tokens: ${mul:${policy.max_total_sequence_length}, ${policy.train_micro_batch_size}}
+    algorithm: "modified_first_fit_decreasing"
+    sequence_length_round: 64
+
+  make_sequence_length_divisible_by: ${policy.dtensor_cfg.tensor_parallel_size}
+  max_grad_norm: 1.0
+
+  optimizer:
+    name: "torch.optim.AdamW"
+    kwargs:
+      lr: 5.0e-5                # from the prior atlas SFT recipes (a6cdd0804)
+      weight_decay: 0.1
+      betas: [0.9, 0.98]
+      eps: 1e-8
+      foreach: False
+      fused: False
+
+  ## ignored since enabled=false; present so the config schema stays complete.
+  megatron_cfg:
+    enabled: false
+    use_linear_ce_fusion_loss: false
+    linear_ce_fusion_chunk_size: 256
+    force_reconvert_from_hf: False
+    env_vars: {}
+    empty_unused_memory_level: 1
+    activation_checkpointing: false
+    recompute_granularity: "full"
+    recompute_modules: null
+    tensor_model_parallel_size: 4
+    expert_tensor_parallel_size: 1
+    expert_model_parallel_size: 1
+    pipeline_model_parallel_size: 1
+    context_parallel_size: 4
+    pipeline_dtype: ${policy.precision}
+    num_layers_in_first_pipeline_stage: null
+    num_layers_in_last_pipeline_stage: null
+    sequence_parallel: false
+    freeze_moe_router: false
+    moe_router_dtype: null
+    moe_router_load_balancing_type: "aux_loss"
+    moe_router_bias_update_rate: 1e-3
+    moe_permute_fusion: true
+    apply_rope_fusion: True
+    bias_activation_fusion: True
+    defer_fp32_logits: False
+    moe_per_layer_logging: False
+    moe_enable_deepep: false
+    moe_token_dispatcher_type: "alltoall"
+    moe_shared_expert_overlap: false
+    gradient_accumulation_fusion: false
+    use_fused_weighted_squared_relu: false
+
+    peft:
+      enabled: false
+      target_modules: []
+      exclude_modules: []
+      dim: 8
+      alpha: 32
+      dropout: 0.0
+      dropout_position: "post"
+      lora_A_init_method: "xavier"
+      lora_B_init_method: "zero"
+      a2a_experimental: false
+      lora_dtype: None
+
+    optimizer:
+      optimizer: "adam"
+      lr: 5.0e-5
+      min_lr: 0.0
+      weight_decay: 0.1
+      bf16: true
+      fp16: false
+      params_dtype: "float32"
+      adam_beta1: 0.9
+      adam_beta2: 0.98
+      adam_eps: 1e-8
+      sgd_momentum: 0.9
+      use_distributed_optimizer: true
+      use_precision_aware_optimizer: true
+      clip_grad: ${policy.max_grad_norm}
+      optimizer_cpu_offload: false
+      optimizer_offload_fraction: 0.0
+
+    scheduler:
+      start_weight_decay: ${policy.megatron_cfg.optimizer.weight_decay}
+      end_weight_decay: ${policy.megatron_cfg.optimizer.weight_decay}
+      weight_decay_incr_style: "constant"
+      lr_decay_style: "cosine"
+      lr_decay_iters: 400
+      lr_warmup_iters: 10
+      lr_warmup_init: 5.0e-6
+
+    distributed_data_parallel_config:
+      grad_reduce_in_fp32: false
+      overlap_grad_reduce: true
+      overlap_param_gather: true
+      data_parallel_sharding_strategy: "optim_grads_params"
+      use_custom_fsdp: false
+
+    fp8_cfg:
+      enabled: false
+      fp8: "e4m3"
+      fp8_recipe: "blockwise"
+      fp8_param: false
+
+data:
+  max_input_seq_length: ${policy.max_total_sequence_length}
+  add_bos: true                # Qwen3 has no BOS token — harmless warning, kept
+                               # true so the recipe stays correct for BOS models.
+  add_eos: true
+  add_generation_prompt: false # REQUIRED false — see header comment.
+  shuffle: true
+  num_workers: 1
+
+  # Emit with (sft-solswarm-traces repo):
+  #   uv run scripts/extract_traces.py --campaign-id <id> --model claude-opus-4-6 ...
+  #   uv run scripts/traces_to_sft.py --in out/traces/<campaign> --out train.jsonl \
+  #       --format openai --tool-arg-format object
+  # then hold out a validation split (OpenAIFormatDataset has no split option).
+  # ALWAYS gate a new data drop + template/model pairing with scripts/verify_sft.py.
+  train:
+    - dataset_name: "openai_format"
+      data_path: "/datasets/SET_ME_atlas_sft/train.jsonl"
+      use_preserving_dataset: true
+      chat_key: "messages"
+      tool_key: "tools"
+  validation:
+    - dataset_name: "openai_format"
+      data_path: "/datasets/SET_ME_atlas_sft/val.jsonl"
+      use_preserving_dataset: true
+      chat_key: "messages"
+      tool_key: "tools"
+  default:
+    prompt_file: null           # system context lives IN the rows; no extra wrapping
+    system_prompt_file: null
+    processor: "sft_processor"  # REQUIRED: registry default is math_hf_data_processor,
+                                # which does not understand {messages, tools} rows.
+
+logger:
+  log_dir: "logs"
+  wandb_enabled: true
+  tensorboard_enabled: true
+  mlflow_enabled: false
+  swanlab_enabled: false
+  monitor_gpus: true
+  wandb:
+    project: "atlas-cuda-sft"
+    name: "sft-cuda-agentic-qwen3-8b"   # literal: data.train is a list, so the
+                                        # upstream ${data.train.dataset_name} interp
+                                        # would fail here.
+  swanlab:
+    project: "atlas-cuda-sft"
+    name: "sft-cuda-agentic-qwen3-8b"
+  tensorboard:
+    log_dir: "tb_logs-sft-cuda-agentic-qwen3-8b"
+  mlflow:
+    experiment_name: "atlas-cuda-sft"
+    run_name: "sft-cuda-agentic-qwen3-8b"
+    tracking_uri: "http://localhost:5000"
+  gpu_monitoring:
+    collection_interval: 10
+    flush_interval: 10
+
+cluster:
+  gpus_per_node: 8
+  num_nodes: 2                  # TP2 x CP8 = 16 GPUs for the 131k context
+  segment_size: null
