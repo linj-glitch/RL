@@ -1,0 +1,43 @@
+# Atlas overlay on the NeMo-RL training image: everything the agentic (M1)
+# CudaGym path needs INSIDE the training container, where the NeMo-Gym servers
+# and the OpenCode subprocesses run (grpo spins Gym up on the driver node with
+# NodeAffinity + inherited os.environ — there is no separate agent container).
+#
+# Build (from the nemo-rl repo root, after building/pulling the base image):
+#   docker build -f docker/Dockerfile.atlas --build-arg BASE_IMAGE=<nemo-rl image> -t nemo-rl-atlas .
+#   # then squash for pyxis/enroot:  enroot import -o nemorl-atlas.sqsh dockerd://nemo-rl-atlas
+#   # and point slurm/clusters/<cluster>.yaml paths.container at the .sqsh.
+#
+# What this adds and why:
+#   * node + opencode-ai: cuda_agent shells out to the `opencode` CLI
+#     (responses_api_agents/cuda_agent). Pre-baking pins the version and avoids
+#     setup_opencode.py's npm-install-at-server-boot (which needs egress and a
+#     writable global prefix on the compute node).
+#   * cudagym (editable, from 3rdparty/cudagym): the `cudagym` CLI the sandboxed
+#     agent calls + the SDK the Gym cudagym resources server imports. The nemorl
+#     venv itself gets it via `uv run --extra atlas` (pyproject atlas extra).
+#
+# The EVAL-side CudaGym servers (compile/GPU, colocated/disjoint modes) run in a
+# SEPARATE image (slurm/clusters/*.yaml paths.cudagym_container) built from the
+# cudagym repo's docker/<profile> (use `sol_execbench_external` for the 245-problem
+# set with real SOL anchors, `kernel_factory` for data/benchmark). The stale
+# cudagym-0.5.1.sqsh images predate the unified `cudagym.servers.serve` entrypoint
+# ray.sub now uses — REBUILD them from thirdparty/cudagym HEAD.
+
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+# Node 22 (matches responses_api_agents/opencode_agent/setup_opencode.py) + a
+# pinned opencode (matches cudagym_cuda_agent.yaml opencode_version).
+ARG NODE_VERSION=22.15.0
+ARG OPENCODE_VERSION=1.17.11
+RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/').tar.xz" \
+      | tar -xJ -C /usr/local --strip-components=1 \
+ && npm install -g "opencode-ai@${OPENCODE_VERSION}" \
+ && opencode --version
+
+# CudaGym SDK + CLI available system-wide (the Gym server venvs also install it
+# editable from 3rdparty/cudagym via their requirements.txt; this system copy is
+# what the agent SANDBOX's PATH sees for `cudagym` / `kf`).
+COPY 3rdparty/cudagym /opt/cudagym
+RUN pip install --no-cache-dir -e /opt/cudagym

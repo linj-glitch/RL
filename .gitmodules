@@ -13,3 +13,6 @@
 	url = ssh://git@gitlab-master.nvidia.com:12051/atlas/nemogym.git
 	branch = main
 	shallow = true
+[submodule "3rdparty/cudagym"]
+	path = 3rdparty/cudagym
+	url = ssh://git@gitlab-master.nvidia.com:12051/atlas/cudagym.git
