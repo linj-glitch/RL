@@ -16,7 +16,7 @@ import logging
 import sys
 import threading
 import time
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from typing import Callable, Generator, Optional, Sequence, Union
 
 import numpy as np
@@ -401,24 +401,6 @@ class ThreadSafeTimer(Timer):
     def reset(self, label: Optional[str] = None) -> None:
         with self._lock:
             super().reset(label)
-
-
-def create_timer_context(timer: Timer = None, label: str = None):
-    """Creates a timer context, or a nullcontext that does nothing when timer is None.
-
-    Args:
-        timer: Timer instance to use for timing, or None to use a nullcontext
-        label: The label to use for this timing (required when timer is not None)
-
-    Yields:
-        None
-    """
-    if timer is not None:
-        if label is None:
-            raise ValueError("label is required when timer is not None")
-        return timer.time(label)
-    else:
-        return nullcontext()
 
 
 def convert_to_seconds(time_string: str) -> int:

@@ -57,7 +57,9 @@ from nemo_rl.models.generation.interfaces import (
     GenerationOutputSpec,
     GenerationSamplingParams,
 )
-from nemo_rl.utils.timer import Timer, create_timer_context
+from contextlib import nullcontext
+
+from nemo_rl.utils.timer import Timer
 
 TokenizerType = PreTrainedTokenizerBase
 
@@ -810,7 +812,7 @@ def run_multi_turn_rollout(
             generation_input_data["vllm_audios"] = active_batch["vllm_audios"]
 
         # generate_responses updates active_batch["message_log"] in-place
-        with create_timer_context(timer, "rollouts/generate_responses"):
+        with timer.time("rollouts/generate_responses") if timer else nullcontext():
             active_batch, generated_ids, gen_metrics = generate_responses(
                 policy_generation,
                 generation_input_data,
@@ -836,7 +838,7 @@ def run_multi_turn_rollout(
         total_gen_tokens_per_turn.append(sum(len(ids) for ids in generated_ids))
 
         # Calculate rewards and get environment feedback
-        with create_timer_context(timer, "rollouts/calculate_rewards"):
+        with timer.time("rollouts/calculate_rewards") if timer else nullcontext():
             env_output: EnvironmentReturn = calculate_rewards(active_batch, task_to_env)
 
         # Accumulate rewards: env returns dict[str, Tensor] for multi-reward, Tensor for single-reward.
@@ -2534,13 +2536,10 @@ def _postprocess_single_nemo_gym_group(
             # / batch_size,
         }
 
-    # Kernel reward-observability metrics (M0/M1 parity): when the NeMo-Gym verifier
-    # surfaced cudagym fields on full_result, aggregate them with the SAME helper +
-    # names/semantics as the M0 native path (correctness_rate,
-    # avg_speedup_over_ref/baseline, avg_sol_score, perf_ref_fallback_rate). Require
-    # the distinctive (sol_score + human_best_speedup) pair so a non-cudagym env that
-    # merely exposes a "correctness"/"speedup" field doesn't trip this and emit
-    # misleading cudagym metrics. Best-effort: never crash a rollout.
+    # Kernel reward-observability metrics: same helper/names as the M0 native path.
+    # Gate on the distinctive (sol_score + human_best_speedup) pair so a non-cudagym
+    # env exposing a generic "correctness" field doesn't emit misleading metrics.
+    # Best-effort: never crash a rollout.
     kernel_records = [
         r["full_result"]
         for r in results

@@ -13,7 +13,8 @@ paths:
   workspace: /lustre/fs1/portfolios/coreai/projects/coreai_nvfm_cupilot/users/alexandery
   cache: ${paths.workspace}/.cache
   container: ${paths.workspace}/containers/nemorl-1120-arm64.sqsh
-  cudagym_container: ${paths.workspace}/containers/cudagym-0.5.1-arm64.sqsh
+  # build from thirdparty/cudagym docker/<profile>; pre-1.9 images lack cudagym.servers.serve
+  cudagym_container: ${paths.workspace}/containers/cudagym-1.9-arm64.sqsh
   models: ${paths.workspace}/models
   output: ${paths.workspace}/experiments/nemorl
   datasets: ${paths.workspace}/datasets/post_training

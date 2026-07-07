@@ -17,12 +17,10 @@
 #     agent calls + the SDK the Gym cudagym resources server imports. The nemorl
 #     venv itself gets it via `uv run --extra atlas` (pyproject atlas extra).
 #
-# The EVAL-side CudaGym servers (compile/GPU, colocated/disjoint modes) run in a
-# SEPARATE image (slurm/clusters/*.yaml paths.cudagym_container) built from the
-# cudagym repo's docker/<profile> (use `sol_execbench_external` for the 245-problem
-# set with real SOL anchors, `kernel_factory` for data/benchmark). The stale
-# cudagym-0.5.1.sqsh images predate the unified `cudagym.servers.serve` entrypoint
-# ray.sub now uses — REBUILD them from thirdparty/cudagym HEAD.
+# Eval-side CudaGym servers use a SEPARATE image (slurm/clusters/*.yaml
+# paths.cudagym_container) built from the cudagym repo's docker/<profile>
+# (sol_execbench_external or kernel_factory). Images predating
+# cudagym.servers.serve won't work — rebuild from thirdparty/cudagym.
 
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}

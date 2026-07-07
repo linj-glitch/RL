@@ -138,5 +138,5 @@ JOB_ID=$(sbatch ${SBATCH_ARGS[@]} | awk '{print $4}')
 echo "Submitted batch job ${JOB_ID}"
 
 if [ "$1" == "-i" ]; then
-    echo "Please run \"bash ${BASE_LOG_DIR}/${JOB_ID}/attach.sh\" on the cluster to attach to the job."
+    echo "Please run \"bash $(pwd)/${JOB_ID}-attach.sh\" on the cluster to attach to the job."
 fi

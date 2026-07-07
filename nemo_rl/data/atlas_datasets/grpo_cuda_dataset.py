@@ -288,13 +288,9 @@ def write_kfb_dataset(
     Pass ``sol_latencies_csv`` (e.g. ``data/benchmark/latencies_b200.csv``) to bake
     per-problem SOL/human-best anchors into each row for the SOL-score reward.
 
-    Problem-set note: ``data/sol_execbench_external`` (245 problems + ``sol_latencies.csv``)
-    is the preferred default — its SOL anchors are real (non-zero) on every covered
-    workload and its references are torch-only, so the SOL-score reward anchors
-    properly and the eval server needs only the ``sol_execbench_external`` profile.
-    ``data/benchmark`` (204 problems, ``latencies_b200.csv``) has ``sol_latency_ms == 0``
-    everywhere (the score degrades to bounded speedup-over-human-best) and its
-    references import flashinfer/einops (``kernel_factory`` server profile).
+    Check the CSV has non-zero ``sol_latency_ms`` (data/sol_execbench_external does;
+    data/benchmark is all zeros, so SOL degrades to speedup-over-human-best). The
+    problem set also fixes the eval-server profile.
     """
     rows = [
         kfb_problem_to_row(

@@ -37,7 +37,7 @@ from cudagym.sdk import CudaGymClient
 from cudagym.sdk.errors import CudaGymCompilationError, CudaGymExecutionError
 
 from . import cudagym_client, reward
-from .cuda_kernel_utils import CudaGymEvalConfig, KernelEvalResult
+from .cuda_kernel_utils import CudaGymEvalConfig, KernelEvalResult, fence_lang_for
 from .llm_response_parsing import check_inline_format, get_code
 
 
@@ -79,7 +79,7 @@ class BaseCudaEvaluator(ABC):
             result = results[idx]
             meta = metadata_list[idx]
             language = meta["language"]
-            fence_lang = cudagym_client.fence_lang_for(language)
+            fence_lang = fence_lang_for(language)
 
             # Stage 1 (format): parse <think>+fenced code -> typed Solution.
             if not check_inline_format(completions[idx], fence_lang):
@@ -94,8 +94,11 @@ class BaseCudaEvaluator(ABC):
                     code=code,
                     language=language,
                     definition_name=definition.name,
-                    target_hardware=meta.get("target_hardware") or self.eval_config.arch,
-                    destination_passing_style=meta.get("destination_passing_style", True),
+                    target_hardware=meta.get("target_hardware")
+                    or self.eval_config.arch,
+                    destination_passing_style=meta.get(
+                        "destination_passing_style", True
+                    ),
                 )
             except Exception as e:  # noqa: BLE001 - any parse/validation error is a format error
                 result.metadata["format_error"] = f"failed to build solution: {e}"

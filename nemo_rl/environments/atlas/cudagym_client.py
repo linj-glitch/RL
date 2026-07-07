@@ -49,7 +49,6 @@ from .cuda_kernel_utils import (
     LANGUAGE_DEFAULTS,
     CudaGymEvalConfig,
     KernelEvalResult,
-    fence_lang_for,  # re-exported for the env side (cudagym_base) — noqa: F401
     geomean,
     sol_score,
 )
@@ -107,7 +106,9 @@ def build_solution(
             f"Unsupported language {language!r}; expected one of {list(LANGUAGE_DEFAULTS)}"
         )
     if not target_hardware:
-        raise ValueError("target_hardware is required to build a Solution (set env arch)")
+        raise ValueError(
+            "target_hardware is required to build a Solution (set env arch)"
+        )
     filename, entry_point, _ = LANGUAGE_DEFAULTS[language]
     # Content hash keeps the solution name (and cudagym's build cache key) stable
     # across identical completions and distinct across edits.
@@ -142,7 +143,11 @@ async def evaluate_solution(
     ``CudaGymExecutionError`` if the GPU job itself crashes; per-workload
     correctness/runtime failures are returned inside the ``Trace`` instead.
     """
-    config = EvalConfig(**eval_config.benchmark_config) if eval_config.benchmark_config else None
+    config = (
+        EvalConfig(**eval_config.benchmark_config)
+        if eval_config.benchmark_config
+        else None
+    )
     # GPU timeout scales with the workload count (the SDK default is per-run).
     timeout = float(eval_config.execution_timeout_per_trial * max(1, len(workloads)))
     return await workflows.evaluate(
@@ -177,7 +182,9 @@ def update_result_from_trace(
 
     evaluations = [wt.evaluation for wt in workload_traces]
     statuses = [e.status if e is not None else None for e in evaluations]
-    result.metadata["workload_statuses"] = [s.value if s else "MISSING" for s in statuses]
+    result.metadata["workload_statuses"] = [
+        s.value if s else "MISSING" for s in statuses
+    ]
 
     def _first_log(predicate) -> str:
         for e in evaluations:
@@ -188,7 +195,9 @@ def update_result_from_trace(
     # Reward hacking is a hard correctness failure regardless of other stages.
     reward_hacked = any(s == EvaluationStatus.REWARD_HACK for s in statuses)
     if reward_hacked:
-        result.metadata["reward_hack"] = _first_log(lambda s: s == EvaluationStatus.REWARD_HACK)
+        result.metadata["reward_hack"] = _first_log(
+            lambda s: s == EvaluationStatus.REWARD_HACK
+        )
 
     result.compiled = all(s not in _COMPILE_FAIL for s in statuses)
     if not result.compiled:
@@ -202,7 +211,9 @@ def update_result_from_trace(
 
     result.correctness = (not reward_hacked) and all(s in _CORRECT_OK for s in statuses)
     if not result.correctness:
-        result.metadata["correctness_error"] = _first_log(lambda s: s not in _CORRECT_OK)
+        result.metadata["correctness_error"] = _first_log(
+            lambda s: s not in _CORRECT_OK
+        )
         return
 
     # Eager-reference speedup/latency (cudagym's own metric) — kept for logging
@@ -235,11 +246,15 @@ def update_result_from_trace(
             if not anchor or human_best <= 0.0:
                 continue
             t_k = float(evaluation.performance.latency_ms)
-            scores.append(sol_score(t_k, human_best, float(anchor.get("sol_latency_ms") or 0.0)))
+            scores.append(
+                sol_score(t_k, human_best, float(anchor.get("sol_latency_ms") or 0.0))
+            )
             if t_k > 0:
                 human_best_speedups.append(human_best / t_k)
         if scores:
-            result.sol_score = sum(scores) / len(scores)  # avg SOL score (KFB convention)
+            result.sol_score = sum(scores) / len(
+                scores
+            )  # avg SOL score (KFB convention)
             result.metadata["sol_scores"] = scores
             if human_best_speedups:
                 result.human_best_speedup = geomean(human_best_speedups)

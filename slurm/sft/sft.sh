@@ -55,7 +55,8 @@ export COMMAND="uv run ./examples/run_sft.py \
 "
 if [ -n "$CONVERT_STEP" ]; then
     export CONVERT_PATH="../ckpts/step_${CONVERT_STEP}"
-    COMMAND="uv run --extra mcore 3rdparty/Megatron-Bridge-workspace/Megatron-Bridge/examples/models/checkpoint_conversion.py export --hf-model /models/Qwen3-32B --megatron-path ${CONVERT_PATH}/policy/weights/iter_0000000 --hf-path ${CONVERT_PATH}/hf"
+    # CONVERT_HF_MODEL = the HF base the megatron checkpoint was trained from.
+    COMMAND="uv run --extra mcore 3rdparty/Megatron-Bridge-workspace/Megatron-Bridge/examples/models/checkpoint_conversion.py export --hf-model ${CONVERT_HF_MODEL:?set CONVERT_HF_MODEL (e.g. Qwen/Qwen3-8B)} --megatron-path ${CONVERT_PATH}/policy/weights/iter_0000000 --hf-path ${CONVERT_PATH}/hf"
 fi
 
 cwd=$(pwd -P)
@@ -113,5 +114,5 @@ JOB_ID=$(sbatch ${SBATCH_ARGS[@]} | awk '{print $4}')
 echo "Submitted batch job ${JOB_ID}"
 
 if [ "$1" == "-i" ]; then
-    echo "Please run \"bash ${BASE_LOG_DIR}/${JOB_ID}/attach.sh\" on the cluster to attach to the job."
+    echo "Please run \"bash $(pwd)/${JOB_ID}-attach.sh\" on the cluster to attach to the job."
 fi

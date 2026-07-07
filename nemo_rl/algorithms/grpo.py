@@ -2945,16 +2945,10 @@ def grpo_train(
                         repeated_batch, master_config.grpo.reward_shaping
                     )
 
-                # Calculate rewards & advantages
-                memory_tracker.snapshot_start_of_stage("Processing rewards", dir())
-                print("▶ Processing rewards...,", flush=True)
-                with timer.time("reward_calculation"):
-                    # Extract rewards from final_batch
-                    rewards = repeated_batch["total_reward"]
-
-                    # Log rollout conversations (+ rewards / task names) to table
-                    # backends (e.g. W&B) for observability. Best-effort: never let
-                    # table logging interrupt training.
+                # Optionally log rollout conversations (+ rewards / task names) to
+                # table backends (W&B). Off by default: serializing full
+                # trajectories every step is expensive. Best-effort.
+                if master_config.logger.get("log_conversations", False):
                     try:
                         logger.log_conversations_from_message_logs(
                             message_logs=repeated_batch["message_log"],
@@ -2965,6 +2959,13 @@ def grpo_train(
                         )
                     except Exception as e:
                         print(f"\n  ⚠️ Error logging conversations table: {str(e)}")
+
+                # Calculate rewards & advantages
+                memory_tracker.snapshot_start_of_stage("Processing rewards", dir())
+                print("▶ Processing rewards...,", flush=True)
+                with timer.time("reward_calculation"):
+                    # Extract rewards from final_batch
+                    rewards = repeated_batch["total_reward"]
 
                     print("▶ Computing advantages...", flush=True)
                     # For DAPO with reward shaping, compute std on the raw

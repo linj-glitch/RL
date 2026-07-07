@@ -687,14 +687,9 @@ if [[ "${CUDAGYM_ENABLED:-0}" == "1" ]]; then
   export CUDAGYM_UNIFIED_SERVER_URL="http://${CUDAGYM_LB_NODE_IP}:${LB_PORT}"
   echo "[INFO] CUDAGYM_UNIFIED_SERVER_URL=$CUDAGYM_UNIFIED_SERVER_URL"
 elif [[ "$CUDAGYM_MODE" == "remote" ]]; then
-  # Remote CudaGym: do NOT launch any in-allocation servers. The training driver
-  # reaches a remote (e.g. Modal) endpoint carried by the recipe
-  # (env.cudagym.<arch>.server_url) / Gym resources-server config. Auth/URL env
-  # vars (CUDAGYM_AUTH_TOKEN and any user-exported CUDAGYM_UNIFIED_SERVER_URL) are
-  # inherited by the ray-head/ray-worker srun invocations below: COMMON_SRUN_ARGS
-  # sets no --export, so srun propagates the full submission environment
-  # (SLURM_EXPORT_ENV defaults to ALL) and pyxis/enroot forwards it into the
-  # container -- the same mechanism used for HF_TOKEN/WANDB_API_KEY. Nothing to add.
+  # Remote: no in-allocation servers; the recipe (env.cudagym.<arch>.server_url)
+  # or CUDAGYM_UNIFIED_SERVER_URL carries the endpoint. CUDAGYM_* env vars reach
+  # the containers the same way as HF_TOKEN (srun exports all + pyxis forwards).
   echo "[INFO] CUDAGYM_MODE=remote: no in-allocation CudaGym; using remote endpoint (${CUDAGYM_UNIFIED_SERVER_URL:-from recipe})."
 fi
 
@@ -1347,7 +1342,7 @@ else
   log_phase "generating attach helper (scontrol show job)"
   CONTAINER_CWD=$(scontrol show job $SLURM_JOB_ID | grep -oP 'WorkDir=\K[^ ]+' | head -1)
   echo "[INFO]: Ray Cluster is idled, run this on the slurm head node to get a shell to the head node:"
-  cat <<EOF >$LOG_DIR/attach.sh
+  cat <<EOF >$SLURM_SUBMIT_DIR/${SLURM_JOB_ID}-attach.sh
 # No args launches on the head node (node 0)
 # Args 1-N launch on worker nodes (nodes 1 through N-1)
 # Optional: set COMMAND='...' to run non-interactively instead of opening an interactive shell

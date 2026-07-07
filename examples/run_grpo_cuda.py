@@ -294,7 +294,6 @@ def setup_data(
 
 def setup_environments(
     env_configs: dict[str, Any],
-    cluster_config: Any,
 ) -> tuple[dict[str, EnvironmentInterface], dict[str, Any]]:
     """Create one ``CudaGymEnvironment`` Ray actor per arch under ``env.cudagym``.
 
@@ -302,7 +301,6 @@ def setup_environments(
     URL is resolved by ``CudaGymClient.from_env()`` unless the env block sets
     ``server_url``; colocated mode injects ``CUDAGYM_UNIFIED_SERVER_URL`` into the
     environment, which is forwarded to the actor via ``runtime_env.env_vars``.
-    ``cluster_config`` is accepted for parity / future colocation logic.
     """
     task_to_env: dict[str, EnvironmentInterface] = {}
     task_to_env_config: dict[str, Any] = {}
@@ -338,7 +336,7 @@ def main() -> None:
             "configs",
             "recipes",
             "atlas",
-            "grpo_cuda_b200.yaml",
+            "grpo_cuda_qwen3-8b.yaml",
         )
 
     config = load_config(args.config)
@@ -372,7 +370,7 @@ def main() -> None:
     )
 
     print("\n▶ Setting up environments...")
-    task_to_env, task_to_env_config = setup_environments(config.env, config.cluster)
+    task_to_env, task_to_env_config = setup_environments(config.env)
 
     dataset, val_dataset = setup_data(
         tokenizer, config.data, config.grpo, task_to_env_config

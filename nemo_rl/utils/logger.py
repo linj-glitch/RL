@@ -13,14 +13,12 @@
 # limitations under the License.
 
 
-import csv
 import glob
 import json
 import logging
 import os
 import re
 import subprocess
-import tempfile
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -93,6 +91,8 @@ class LoggerConfig(TypedDict):
     monitor_gpus: bool
     gpu_monitoring: GPUMonitoringConfig
     num_val_samples_to_print: NotRequired[int]
+    # log per-step rollout conversations as a table (W&B); expensive, default off
+    log_conversations: NotRequired[bool]
 
 
 def should_log_nemo_gym_full_result_tables(
@@ -132,7 +132,6 @@ class LoggerInterface(ABC):
         """Log a matplotlib figure."""
         pass
 
-    @abstractmethod
     def log_table(
         self,
         name: str,
@@ -142,11 +141,8 @@ class LoggerInterface(ABC):
     ) -> None:
         """Log a tabular dataset.
 
-        Args:
-            name: Name/key under which to log the table
-            columns: Column names
-            rows: Table rows (list of lists)
-            step: Optional step index to associate with this log
+        Default: no-op (only some backends have a native table artifact; see
+        WandbLogger).
         """
         pass
 
@@ -156,7 +152,6 @@ class TensorboardLogger(LoggerInterface):
 
     def __init__(self, cfg: TensorboardConfig, log_dir: Optional[str] = None):
         self.writer = SummaryWriter(log_dir=log_dir)
-        self.log_dir = log_dir or "."
         print(f"Initialized TensorboardLogger at {log_dir}")
 
     @staticmethod
@@ -231,33 +226,6 @@ class TensorboardLogger(LoggerInterface):
             step: Global step value
         """
         self.writer.add_figure(name, figure, step)
-
-    def log_table(
-        self,
-        name: str,
-        columns: list[str],
-        rows: list[list[Any]],
-        step: Optional[int] = None,
-    ) -> None:
-        """Persist the table as a CSV and reference it in TensorBoard text.
-
-        TensorBoard has no native table artifact; we store a CSV alongside logs
-        and add a text note with the file path.
-        """
-        try:
-            os.makedirs(self.log_dir, exist_ok=True)
-            step_suffix = f"_{step}" if step is not None else ""
-            csv_path = os.path.join(
-                self.log_dir, f"{name.replace('/', '_')}{step_suffix}.csv"
-            )
-            with open(csv_path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow(columns)
-                for row in rows:
-                    writer.writerow(row)
-            self.writer.add_text(f"{name}/csv_path", csv_path, global_step=step or 0)
-        except Exception as e:
-            print(f"Error logging table to TensorBoard: {e}")
 
 
 class WandbLogger(LoggerInterface):
@@ -511,7 +479,6 @@ class SwanlabLogger(LoggerInterface):
             log_dir (Optional[str]): Optional offline log directory passed to Swanlab's init.
         """
         self.run = swanlab.init(**cfg, logdir=log_dir)
-        self.log_dir = log_dir or "."
         print(
             f"Initialized SwanlabLogger for project {cfg.get('project')}, run {cfg.get('name')} (with offline logdir={log_dir})"
         )
@@ -560,32 +527,6 @@ class SwanlabLogger(LoggerInterface):
     def log_histogram(self, histogram: list[Any], step: int, name: str) -> None:
         """Log histogram metrics to swanlab."""
         return
-
-    def log_table(
-        self,
-        name: str,
-        columns: list[str],
-        rows: list[list[Any]],
-        step: Optional[int] = None,
-    ) -> None:
-        """Persist the table as a CSV alongside logs.
-
-        SwanLab has no native table artifact wired here; we store a CSV under the
-        run's log directory so the data is preserved.
-        """
-        try:
-            os.makedirs(self.log_dir, exist_ok=True)
-            step_suffix = f"_{step}" if step is not None else ""
-            csv_path = os.path.join(
-                self.log_dir, f"{name.replace('/', '_')}{step_suffix}.csv"
-            )
-            with open(csv_path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow(columns)
-                for row in rows:
-                    writer.writerow(row)
-        except Exception as e:
-            print(f"Error logging table to SwanLab: {e}")
 
 
 class GpuMetricSnapshot(TypedDict):
@@ -1046,28 +987,6 @@ class MLflowLogger(LoggerInterface):
     def log_histogram(self, histogram: list[Any], step: int, name: str) -> None:
         """Log histogram metrics to MLflow."""
         return
-
-    def log_table(
-        self,
-        name: str,
-        columns: list[str],
-        rows: list[list[Any]],
-        step: Optional[int] = None,  # unused
-    ) -> None:
-        """Persist a CSV and log it as an artifact under tables/{name}."""
-        try:
-            with tempfile.NamedTemporaryFile(
-                suffix=".csv", delete=False, mode="w", newline="", encoding="utf-8"
-            ) as tmp_file:
-                writer = csv.writer(tmp_file)
-                writer.writerow(columns)
-                for row in rows:
-                    writer.writerow(row)
-                tmp_path = tmp_file.name
-            mlflow.log_artifact(tmp_path, f"tables/{name}")
-            os.remove(tmp_path)
-        except Exception as e:
-            print(f"Error logging table to MLflow: {e}")
 
     def __del__(self) -> None:
         """Clean up resources when the logger is destroyed."""

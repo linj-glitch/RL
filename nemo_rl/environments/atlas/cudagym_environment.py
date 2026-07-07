@@ -159,14 +159,11 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
         )
         rewards = [self.get_reward(result) for result in results]
 
-        # Observation = human-readable eval feedback. Unused after a single turn
-        # (the episode terminates) but kept for parity with the agentic path and
-        # for debugging printed rollouts. result.metadata can carry FULL compile/
-        # runtime logs — clip it hard: the rollout loop appends+tokenizes the
-        # observation even on terminated episodes, so an unclipped multi-KB log
-        # pads the training sequence with masked tokens and falsely flips the
-        # sample's `truncated` flag (poisoning truncation metrics and, with
-        # grpo.overlong_filtering, silently zeroing failed-kernel gradients).
+        # Observation = human-readable eval feedback (episode terminates after it).
+        # Clip hard: the rollout loop appends+tokenizes the observation even on
+        # terminated episodes, so an unclipped multi-KB log pads the sequence and
+        # falsely flips `truncated` (and with grpo.overlong_filtering would zero
+        # failed-kernel gradients).
         def _clip(text: object, limit: int = 2000) -> str:
             s = str(text)
             return (
