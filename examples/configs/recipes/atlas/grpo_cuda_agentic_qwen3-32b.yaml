@@ -1,0 +1,25 @@
+# Agentic (M1) CudaGym GRPO on a Qwen3-32B SFT checkpoint — same Gym/agent/
+# constraints as the 8B recipe (see grpo_cuda_agentic_qwen3-8b.yaml header:
+# temperature/top_p MUST stay 1.0, compaction off via big window); only model +
+# parallelism differ.
+defaults: "grpo_cuda_agentic_qwen3-8b.yaml"
+
+checkpointing:
+  checkpoint_dir: "results/grpo-cuda-agentic-qwen3-32b"
+
+policy:
+  model_name: "/models/SET_ME_solswarm_sft_checkpoint_32b"
+  dtensor_cfg:
+    tensor_parallel_size: 8
+    context_parallel_size: 4
+  generation:
+    vllm_cfg:
+      tensor_parallel_size: 4   # 131k-context serving for a 32B
+      gpu_memory_utilization: 0.65
+
+logger:
+  log_dir: "logs/grpo-cuda-agentic-qwen3-32b"
+
+cluster:
+  gpus_per_node: 8
+  num_nodes: 4                  # TP8 x CP4 = 32 training GPUs

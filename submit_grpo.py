@@ -17,7 +17,7 @@ Usage:
     python submit_grpo.py --exp-name <exp-name> --config <config-path> --cluster <cluster-name>
 
     # atlas cpp->cuda 32b
-    python submit_grpo.py --exp-name cuda_b200 --config grpo_cuda_b200.yaml --cluster dfw --num-nodes 16 --cudagym-mode colocated
+    python submit_grpo.py --exp-name cuda_qwen3_8b --config grpo_cuda_qwen3-8b.yaml --cluster dfw --num-nodes 16 --cudagym-mode colocated
 """
 
 import argparse
@@ -268,7 +268,7 @@ def main():
     parser.add_argument(
         "--config",
         type=str,
-        default="grpo_cuda_b200.yaml",
+        default="grpo_cuda_qwen3-8b.yaml",
         choices=get_available_configs(CONFIG_PATH, "grpo*.yaml", return_stems=False),
     )
     parser.add_argument(

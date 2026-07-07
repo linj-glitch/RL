@@ -1,36 +1,19 @@
-# Atlas SFT: agentic CUDA-kernel-optimization traces (Solswarm extraction) on Qwen3-8B.
+# Atlas SFT on Qwen3-8B: Solswarm CUDA-kernel traces in NeMo-RL `openai_format`
+# ({messages, tools} from scripts/traces_to_sft.py; single-turn rows load the same way).
 #
-# Data: NeMo-RL `openai_format` rows emitted by scripts/traces_to_sft.py in the
-# sft-solswarm-traces repo — {messages, tools} with multi-turn assistant
-# tool_calls (dict or string arguments), role:tool results, and <think> CoT in
-# assistant content. Single-turn (M0-style) rows load through the exact same
-# path (empty tools, system+user+assistant).
+# Load-bearing constraints:
+#   * policy.tokenizer.chat_template pins the atlas preserving template (see the
+#     .jinja header for why stock Qwen3 is unsafe). The checkpoint's tokenizer
+#     carries it (save_pretrained), so M0/M1 RL serving renders identically.
+#   * data.add_generation_prompt MUST stay false: on agentic data with
+#     consecutive tool/user messages, gen-prompt renders are not prefix-stable
+#     and get_formatted_message_log silently corrupts token spans. With false,
+#     each assistant chunk carries its own header into the loss — intended.
+#   * max_total_sequence_length 131072 covers ~88% of the current extraction
+#     (median ~86k tok, p90 ~142k, max ~204k); overflow rows get
+#     loss_multiplier=0. Gate any new data/model pairing with scripts/verify_sft.py.
 #
-# Template convergence (the load-bearing choice):
-#   * policy.tokenizer.chat_template pins examples/prompts/atlas_preserving_chat_template.jinja
-#     — think+tools-preserving, prefix-stable under get_formatted_message_log's
-#     incremental render (verified on the real extracted rows: 80/80 strict-prefix
-#     + exact chunk reconstruction, all <think> blocks preserved).
-#   * The checkpoint's tokenizer carries this template (tokenizer.save_pretrained),
-#     so M0 GRPO rollouts and M1 NeMo-Gym vLLM serving render IDENTICALLY at RL time.
-#   * Stock Qwen3's template is NOT safe here: it strips <think> from prior turns
-#     and merges consecutive tool messages — both break the unguarded prefix diff
-#     in llm_message_utils.get_first_index_that_differs and corrupt token spans.
-#
-# data.add_generation_prompt MUST stay false: with true, get_formatted_message_log
-# appends the assistant generation prompt to every user/tool-tail render; on
-# agentic data with CONSECUTIVE tool/user messages the next render contradicts it
-# (non-prefix) and the spans silently corrupt. With false, each assistant chunk
-# carries its own '<|im_start|>assistant\n' header into the loss — intended.
-#
-# Sequence length: measured on the current extraction (out/sweep/combined.jsonl,
-# chars/3.8 estimate): median ~86k tok, p90 ~142k, max ~204k. 131072 covers ~88%
-# of rows; overflow rows get loss_multiplier=0 (dropped from loss, not a crash).
-# Raise to 262144 (and CP) to cover everything, or re-emit with a tighter
-# --max-context-chars budget.
-#
-# Launch (see submit_sft.py / slurm/sft/sft.sh):
-#   uv run ./examples/run_sft.py --config examples/configs/recipes/atlas/sft_cuda_agentic_qwen3-8b.yaml
+# Launch: uv run ./examples/run_sft.py --config examples/configs/recipes/atlas/sft_cuda_qwen3-8b.yaml
 
 sft:
   max_num_epochs: 4          # small curated set today; re-tune as extraction grows

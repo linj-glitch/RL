@@ -69,7 +69,7 @@ def main():
     parser.add_argument(
         "--config",
         type=str,
-        default="sft_cuda_agentic_qwen3-8b.yaml",
+        default="sft_cuda_qwen3-8b.yaml",
         choices=get_available_configs(CONFIG_PATH, "sft*.yaml", return_stems=False),
     )
     parser.add_argument(

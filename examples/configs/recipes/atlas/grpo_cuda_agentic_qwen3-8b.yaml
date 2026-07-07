@@ -11,7 +11,7 @@
 #   * policy.model_name  -> the SFT'd checkpoint (its tokenizer already embeds the
 #                           atlas preserving chat template from the SFT recipe).
 #   * data.*.data_path   -> Gym seed rows built by
-#                           nemo_rl.data.atlas_datasets.write_kfb_dataset(..., emit="gym-seeds")
+#                           nemo_rl.data.atlas_datasets.grpo_cuda_dataset.write_kfb_gym_seeds
 #                           (each row: responses_create_params + verifier_metadata + agent_ref).
 #   * CUDAGYM_UNIFIED_SERVER_URL / CUDAGYM_AUTH_TOKEN -> B200 eval endpoint
 #     (M1 default hosting = remote/Modal; disjoint in-cluster also works — see ray.sub).
@@ -58,7 +58,7 @@ policy:
   tokenizer:
     name: ${policy.model_name}
     # "default" = the checkpoint's own template — which IS the atlas preserving
-    # template if the checkpoint came from sft_cuda_agentic_qwen3-8b.yaml
+    # template if the checkpoint came from sft_cuda_qwen3-8b.yaml
     # (tokenizer.save_pretrained carries it). Do NOT override with a different
     # template here or the RL serving surface diverges from SFT.
     chat_template: "default"
