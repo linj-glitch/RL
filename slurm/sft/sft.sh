@@ -86,9 +86,10 @@ echo NUM_NODES: $NUM_NODES
 echo TIME: $TIME
 echo ======================================================
 
-# Account/partition come from the cluster yaml (submit_sft.py fills them).
+# Account/partition/qos come from the cluster yaml (submit_sft.py fills them).
 export SLURM_ACCOUNT=${SLURM_ACCOUNT:-DEFAULT_SLURM_ACCOUNT}
 export SLURM_PARTITION=${SLURM_PARTITION:-DEFAULT_SLURM_PARTITION}
+export SLURM_QOS=${SLURM_QOS:-DEFAULT_SLURM_QOS}
 
 SBATCH_ARGS=(
     --nodes=${NUM_NODES} \
@@ -99,6 +100,13 @@ SBATCH_ARGS=(
     --dependency=singleton \
     --output=${BASE_LOG_DIR}/slurm-%j.out \
 )
+# QoS-scheduled clusters (MARS GB200, e.g. aws-dfw-cs-001) reject jobs submitted
+# without --qos; partition-scheduled clusters leave qos empty in the yaml.
+if [ -n "$SLURM_QOS" ]; then
+    SBATCH_ARGS+=(
+        --qos=${SLURM_QOS} \
+    )
+fi
 if [ -z "$SKIP_GRES_ARG" ]; then
     # EOS does not support --gpus-per-node argument
     SBATCH_ARGS+=(

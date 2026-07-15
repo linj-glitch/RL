@@ -41,6 +41,10 @@ export WANDB_PROJECT="${WANDB_PROJECT:-atlas_nemorl}"
 export WANDB_API_KEY=${WANDB_API_KEY:-DEFAULT_WANDB_API_KEY}
 export HF_TOKEN=${HF_TOKEN:-DEFAULT_HF_TOKEN}
 export CUDAGYM_AUTH_TOKEN=${CUDAGYM_AUTH_TOKEN:-DEFAULT_CUDAGYM_AUTH_TOKEN}
+# Modal edge proxy-auth for .modal.run eval endpoints (remote mode); the cudagym
+# SDK picks these up from the environment and sends Modal-Key/Modal-Secret.
+export MODAL_PROXY_TOKEN_ID=${MODAL_PROXY_TOKEN_ID:-DEFAULT_MODAL_PROXY_TOKEN_ID}
+export MODAL_PROXY_TOKEN_SECRET=${MODAL_PROXY_TOKEN_SECRET:-DEFAULT_MODAL_PROXY_TOKEN_SECRET}
 
 # Slurm allocation options
 export NUM_NODES=${NUM_NODES:-DEFAULT_NUM_NODES}
@@ -110,9 +114,10 @@ echo NUM_NODES: $NUM_NODES
 echo TIME: $TIME
 echo ======================================================
 
-# Account/partition come from the cluster yaml (submit_grpo.py fills them).
+# Account/partition/qos come from the cluster yaml (submit_grpo.py fills them).
 export SLURM_ACCOUNT=${SLURM_ACCOUNT:-DEFAULT_SLURM_ACCOUNT}
 export SLURM_PARTITION=${SLURM_PARTITION:-DEFAULT_SLURM_PARTITION}
+export SLURM_QOS=${SLURM_QOS:-DEFAULT_SLURM_QOS}
 
 SBATCH_ARGS=(
     --nodes=${NUM_NODES} \
@@ -123,6 +128,13 @@ SBATCH_ARGS=(
     --time=${TIME} \
     --output=${BASE_LOG_DIR}/slurm-%j.out \
 )
+# QoS-scheduled clusters (MARS GB200, e.g. aws-dfw-cs-001) reject jobs submitted
+# without --qos; partition-scheduled clusters leave qos empty in the yaml.
+if [ -n "$SLURM_QOS" ]; then
+    SBATCH_ARGS+=(
+        --qos=${SLURM_QOS} \
+    )
+fi
 # EOS does not support --gpus-per-node argument
 if [ -z "$SKIP_GRES_ARG" ]; then
     SBATCH_ARGS+=(

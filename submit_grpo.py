@@ -502,8 +502,17 @@ def main():
 
     # Unset local secrets must not leak into the job as the literal string "None";
     # fill with "" and tell the user (the template's ${VAR:-...} then sees empty).
+    # MODAL_PROXY_TOKEN_ID/SECRET: the cudagym SDK injects them as Modal-Key/
+    # Modal-Secret headers whenever the eval endpoint is under .modal.run
+    # (remote mode against the managed Modal fleet); harmless otherwise.
     secrets = {}
-    for name in ("HF_TOKEN", "WANDB_API_KEY", "CUDAGYM_AUTH_TOKEN"):
+    for name in (
+        "HF_TOKEN",
+        "WANDB_API_KEY",
+        "CUDAGYM_AUTH_TOKEN",
+        "MODAL_PROXY_TOKEN_ID",
+        "MODAL_PROXY_TOKEN_SECRET",
+    ):
         val = os.getenv(name)
         if not val:
             print(f"⚠️  {name} is not set locally — the job will run without it.")
@@ -521,9 +530,12 @@ def main():
         "OUTPUT_DIR": output_dir,
         "GPUS_PER_NODE": cluster_config["gpus_per_node"],
         "SKIP_GRES_ARG": "1" if args.cluster == "eos" else "",
-        # account/partition are cluster-specific; the yaml may override the defaults.
+        # account/partition/qos are cluster-specific; the yaml may override the
+        # defaults. qos is only emitted when the cluster yaml sets one (QoS-based
+        # scheduling, e.g. the MARS GB200 clusters).
         "SLURM_ACCOUNT": cluster_config.get("account", "coreai_nvfm_cupilot"),
         "SLURM_PARTITION": cluster_config.get("partition", "batch"),
+        "SLURM_QOS": cluster_config.get("qos", ""),
         # Always present so no DEFAULT_* token leaks into the job env when a mode
         # doesn't set them (ray.sub tests CUDAGYM_ENABLED == "1").
         "CUDAGYM_ENABLED": "0",

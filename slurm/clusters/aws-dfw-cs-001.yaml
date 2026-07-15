@@ -1,0 +1,36 @@
+host: aws-dfw-cs-001
+# -01 login nodes are often oversubscribed; prefer -02.
+hostname: aws-dfw-cs-001-login-02.nvidia.com
+arch: gb200
+gpus_per_node: 4
+
+paths:
+  # AWS MARS GB200 cluster, llmservice portfolio, PROJECT-scoped lustre layout.
+  # VERIFY on first login (onboarding writes "portfolio" singular here; PPP = your
+  # project code):  ls -d /lustre/fsw/portfolio*/llmservice/projects/*/users/$USER
+  workspace: /lustre/fsw/portfolio/llmservice/projects/SET_ME_PPP/users/alexandery
+  cache: ${paths.workspace}/.cache
+  # ARM cluster: every image here must be aarch64. The nemorl image must include
+  # the atlas overlay (docker/Dockerfile.atlas: node + opencode + cudagym) for M1
+  # agentic runs; the overlay is a superset of what M0 needs.
+  container: ${paths.workspace}/containers/nemorl-atlas-arm64.sqsh
+  # build from thirdparty/cudagym docker/<profile>; pre-1.9 images lack cudagym.servers.serve
+  cudagym_container: ${paths.workspace}/containers/cudagym-1.9-arm64.sqsh
+  models: ${paths.workspace}/models
+  output: ${paths.workspace}/experiments/nemorl
+  datasets: ${paths.workspace}/datasets/post_training
+  artifacts: ${paths.workspace}/cudagym_cache/artifacts
+  ccache: ${paths.workspace}/cudagym_cache/ccache
+
+# QoS-BASED scheduling (MARS): jobs are rejected without --qos. Find your account
+# and the QoS values you may use, on a login node:
+#   sacctmgr show assoc user=$USER format=account%40,qos%60 -P | sort -u
+# Partitions still exist on MARS QoS clusters (see the "aws-dfw-cs-001 Partitions"
+# Confluence page); verify the name with `sinfo -s`.
+account: SET_ME_account
+partition: batch
+qos: SET_ME_qos
+
+# 4 GB200s per node (NVL72; B200 silicon, sm_100), 192GB per GPU — same
+# parallelism overrides as hsg (the other GB200 cluster).
+extra_config_opts: "++policy.dtensor_cfg.tensor_parallel_size=4 ++policy.megatron_cfg.tensor_model_parallel_size=4 ++policy.generation.vllm_cfg.tensor_parallel_size=4 ++policy.train_micro_batch_size=2"

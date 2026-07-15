@@ -1,0 +1,30 @@
+host: aws-iad-cs-002
+# -01 login nodes are often oversubscribed; prefer -02 or -03.
+hostname: aws-iad-cs-002-login-02.nvidia.com
+arch: h100
+gpus_per_node: 8
+
+paths:
+  # AWS MARS H100 cluster, llmservice portfolio, USER-scoped lustre layout.
+  # VERIFY on first login:  ls -d /lustre/fsw/portfolios/llmservice/users/$USER
+  workspace: /lustre/fsw/portfolios/llmservice/users/alexandery
+  cache: ${paths.workspace}/.cache
+  # x86_64 images. The nemorl image must include the atlas overlay
+  # (docker/Dockerfile.atlas: node + opencode + cudagym) for M1 agentic runs.
+  container: ${paths.workspace}/containers/nemorl-atlas.sqsh
+  # build from thirdparty/cudagym docker/<profile>; pre-1.9 images lack cudagym.servers.serve
+  cudagym_container: ${paths.workspace}/containers/cudagym-1.9.sqsh
+  models: ${paths.workspace}/models
+  output: ${paths.workspace}/experiments/nemorl
+  datasets: ${paths.workspace}/datasets/post_training
+  artifacts: ${paths.workspace}/cudagym_cache/artifacts
+  ccache: ${paths.workspace}/cudagym_cache/ccache
+
+# Partition-based scheduling (no QoS flag mentioned in onboarding; leave qos
+# empty unless `sacctmgr show assoc user=$USER format=account%40,qos%60 -P`
+# says otherwise). Verify account/partition names on a login node.
+account: SET_ME_account
+partition: batch
+qos: ""
+
+extra_config_opts: ""

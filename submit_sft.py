@@ -174,6 +174,7 @@ def main():
         "SKIP_GRES_ARG": "1" if args.cluster == "eos" else "",
         "SLURM_ACCOUNT": cluster_config.get("account", "coreai_nvfm_cupilot"),
         "SLURM_PARTITION": cluster_config.get("partition", "batch"),
+        "SLURM_QOS": cluster_config.get("qos", ""),
     } | {**cluster_config["paths"]}
 
     for k, v in sbatch_vars.items():
