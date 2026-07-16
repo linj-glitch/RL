@@ -15,11 +15,11 @@
 """Atlas: GRPO on CudaGym / SOLBench kernel-optimization problems.
 
 Two rollout shapes share one core:
-  * **M0 (single-turn)** — a native ``EnvironmentInterface``
+  * **single-turn** — a native ``EnvironmentInterface``
     (``cudagym_environment.CudaGymEnvironment``): the policy emits one
     ``<think>`` + fenced-kernel completion, the env evaluates it on CudaGym and
     returns a staged reward. Lives in this package.
-  * **M1 (agentic)** — a NeMo-Gym ``cuda_agent`` wrapping OpenCode (see
+  * **agentic** — a NeMo-Gym ``cuda_agent`` wrapping OpenCode (see
     ``3rdparty/Gym-workspace/Gym/responses_api_agents/cuda_agent``); the policy
     iterates write -> ``cudagym evaluate`` -> read across turns.
 

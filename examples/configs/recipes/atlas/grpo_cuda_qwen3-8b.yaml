@@ -1,14 +1,14 @@
-# Single-turn (M0) GRPO on CudaGym / SOLBench (Kernel-Factory-Bench) kernel
+# Single-turn GRPO on CudaGym / SOLBench (Kernel-Factory-Bench) kernel
 # problems, evaluated on B200. Launch: `uv run examples/run_grpo_cuda.py --config <this>`.
 #
 # Inherits all unspecified fields (loss_fn, full policy/data defaults, ...) from
-# grpo_math_1B.yaml and overrides only the CudaGym-specific bits. SET_ME markers
-# below MUST be filled in:
-#   * policy.model_name      -> the SFT'd checkpoint to RL on (see plan §11.5 SFT prereq)
+# grpo_math_1B.yaml and overrides only the CudaGym-specific bits. Before running:
+#   * policy.model_name      -> base Qwen3-8B by default; swap in the SFT'd
+#                               kernel checkpoint once one exists
 #   * data.dataset_path      -> a SOLBench problem JSONL (build from a KFB checkout
 #                               with nemo_rl.data.atlas_datasets.write_kfb_dataset)
 #   * CUDAGYM_UNIFIED_SERVER_URL / CUDAGYM_AUTH_TOKEN in the environment (or set
-#     env.cudagym.b200.server_url) -> the B200 CudaGym eval server (plan §11.12).
+#     env.cudagym.b200.server_url) -> the B200 CudaGym eval server.
 defaults: "../../grpo_math_1B.yaml"
 
 grpo:
@@ -38,15 +38,15 @@ checkpointing:
   save_period: 20
 
 policy:
-  model_name: "/models/SET_ME_solswarm_sft_checkpoint"
+  model_name: "Qwen/Qwen3-8B"  # base model for now; swap in the SFT'd kernel checkpoint
   max_total_sequence_length: 16384  # generous for <think> + a kernel; raise for big problems
   tokenizer:
     name: ${policy.model_name}
     # THE shared atlas template (think+tools-preserving, prefix-stable) — the SAME
-    # file the SFT recipe (sft_cuda_qwen3-8b.yaml) pins, so the M0 rollout
+    # file the SFT recipe (sft_cuda_qwen3-8b.yaml) pins, so the RL rollout
     # surface renders byte-identically to the SFT training surface. The SFT
-    # checkpoint's tokenizer also embeds it, which is what M1's NeMo-Gym vLLM
-    # server picks up. Single-turn M0 exercises the no-tools path of the template.
+    # checkpoint's tokenizer also embeds it, which is what the agentic path's NeMo-Gym vLLM
+    # server picks up. The single-turn recipe exercises the no-tools path of the template.
     chat_template: "examples/prompts/atlas_preserving_chat_template.jinja"
   train_global_batch_size: 32
   train_micro_batch_size: 1

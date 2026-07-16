@@ -4,8 +4,8 @@
   This is the ONE template pinned across the whole atlas pipeline:
     * SFT   — recipes set `policy.tokenizer.chat_template` to this file; the
               checkpoint's tokenizer then carries it (tokenizer.save_pretrained),
-    * M0 RL — grpo_cuda recipe points at the same file,
-    * M1 RL — Gym's vllm_model serves the SFT checkpoint, whose tokenizer
+    * single-turn RL — grpo_cuda recipe points at the same file,
+    * agentic RL — Gym's vllm_model serves the SFT checkpoint, whose tokenizer
               config already embeds this template.
 
   Why not the stock Qwen3 template:

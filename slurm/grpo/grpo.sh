@@ -41,8 +41,7 @@ export WANDB_PROJECT="${WANDB_PROJECT:-atlas_nemorl}"
 export WANDB_API_KEY=${WANDB_API_KEY:-DEFAULT_WANDB_API_KEY}
 export HF_TOKEN=${HF_TOKEN:-DEFAULT_HF_TOKEN}
 export CUDAGYM_AUTH_TOKEN=${CUDAGYM_AUTH_TOKEN:-DEFAULT_CUDAGYM_AUTH_TOKEN}
-# Modal edge proxy-auth for .modal.run eval endpoints (remote mode); the cudagym
-# SDK picks these up from the environment and sends Modal-Key/Modal-Secret.
+# Modal edge proxy-auth for .modal.run eval endpoints (remote mode).
 export MODAL_PROXY_TOKEN_ID=${MODAL_PROXY_TOKEN_ID:-DEFAULT_MODAL_PROXY_TOKEN_ID}
 export MODAL_PROXY_TOKEN_SECRET=${MODAL_PROXY_TOKEN_SECRET:-DEFAULT_MODAL_PROXY_TOKEN_SECRET}
 
@@ -68,8 +67,8 @@ else
 fi
 
 # Runner + uv extras are recipe-dependent (submit_grpo.py fills them):
-#   M0 native   -> examples/run_grpo_cuda.py           + "--extra atlas"
-#   M1 nemo-gym -> examples/nemo_gym/run_grpo_nemo_gym.py + "--extra atlas --extra nemo_gym"
+#   single-turn -> examples/run_grpo_cuda.py           + "--extra atlas"
+#   agentic     -> examples/nemo_gym/run_grpo_nemo_gym.py + "--extra atlas --extra nemo_gym"
 # --extra atlas pulls the cudagym SDK (thin client) into the venv; the driver and
 # the SYSTEM-venv env actors import cudagym.sdk/cudagym.contracts.
 export RUN_SCRIPT=${RUN_SCRIPT:-DEFAULT_RUN_SCRIPT}
@@ -92,6 +91,8 @@ cwd_parent=$(dirname $cwd)
 
 export MOUNTS="$cwd_parent:$cwd_parent,$cwd:/opt/nemo-rl,$WORKSPACE_PATH:$WORKSPACE_PATH,$WORKSPACE_PATH:/cluster_workspace,$MODELS_PATH:/models,$DATASETS_PATH:/datasets"
 export PYTHONPATH="$cwd/3rdparty/cudagym/src:${PYTHONPATH}"
+# SolSwarm surface assets (prompts/skills/context) for the cuda_agent sandbox_profile.
+export SOLSWARM_SURFACE_ROOT="$cwd/3rdparty/solswarm"
 
 # if -i flag is provided, run the command interactively
 if [ "$1" == "-i" ]; then
@@ -128,8 +129,7 @@ SBATCH_ARGS=(
     --time=${TIME} \
     --output=${BASE_LOG_DIR}/slurm-%j.out \
 )
-# QoS-scheduled clusters (MARS GB200, e.g. aws-dfw-cs-001) reject jobs submitted
-# without --qos; partition-scheduled clusters leave qos empty in the yaml.
+# QoS-scheduled clusters reject jobs submitted without --qos; empty = no flag.
 if [ -n "$SLURM_QOS" ]; then
     SBATCH_ARGS+=(
         --qos=${SLURM_QOS} \

@@ -13,9 +13,9 @@
 # limitations under the License.
 """Tests for the shared cudagym reward-observability metric aggregation.
 
-``aggregate_kernel_metrics`` is the single source of truth for the M0 (native
-``run_multi_turn_rollout``) and M1 (NeMo-Gym) metric names/semantics, so both
-paths log identical W&B keys.
+``aggregate_kernel_metrics`` is the single source of truth for the single-turn
+(native ``run_multi_turn_rollout``) and agentic (NeMo-Gym) metric names/semantics,
+so both paths log identical W&B keys.
 """
 
 from nemo_rl.environments.atlas.cuda_kernel_utils import aggregate_kernel_metrics

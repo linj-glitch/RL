@@ -173,7 +173,7 @@ def update_result_from_trace(
                           (REWARD_HACK / INCORRECT_* deny correctness).
       * ``speedup``/``runtime`` — mean over benchmarked workloads (``trace.summary``).
     The first failing log + per-workload statuses are stored in ``metadata`` so
-    the agent (M1) can read the compiler/runtime error and revise next turn.
+    the agent can read the compiler/runtime error and revise next turn.
     """
     workload_traces = trace.workload_traces
     if not workload_traces:

@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Parse a single-turn (M0) model completion into kernel source code.
+"""Parse a single-turn model completion into kernel source code.
 
-The M0 prompt asks the policy for ``<think>...</think>`` reasoning followed by a
+The single-turn prompt asks the policy for ``<think>...</think>`` reasoning followed by a
 single fenced code block holding the kernel (one file). ``check_inline_format``
 validates that shape and ``get_code`` extracts the block. ``fence_lang`` is the
 markdown fence tag the model writes (e.g. ``python``, ``cpp``), which is *not*
@@ -22,7 +22,7 @@ the cudagym ``SupportedLanguages`` value (e.g. ``triton``, ``cuda_cpp``) — the
 mapping from a cudagym language to its fence tag lives in ``cudagym_client``.
 
 Multi-file C++/CUDA solutions (kernel.cu + main.cpp pybind wrapper) are not
-expressible in one fenced block; those are produced by the agentic path (M1),
+expressible in one fenced block; those are produced by the agentic path,
 where the policy writes files directly in its sandbox.
 """
 

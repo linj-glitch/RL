@@ -1,4 +1,4 @@
-# Atlas overlay on the NeMo-RL training image: everything the agentic (M1)
+# Atlas overlay on the NeMo-RL training image: everything the agentic
 # CudaGym path needs INSIDE the training container, where the NeMo-Gym servers
 # and the OpenCode subprocesses run (grpo spins Gym up on the driver node with
 # NodeAffinity + inherited os.environ — there is no separate agent container).

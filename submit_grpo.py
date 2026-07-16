@@ -102,7 +102,7 @@ def generate_cudagym_script(
 
     # Run generate_slurm_scripts.py on the remote cluster
     generate_cmd = (
-        f"cd {code_upload_path}/3rdparty/cudagym/examples/multi_node/slurm && "
+        f"cd {code_upload_path}/3rdparty/cudagym/deployments/multi_node/slurm && "
         f"python generate_slurm_scripts.py --clusters {service_cluster} --nodes {num_service_nodes}"
     )
 
@@ -129,7 +129,7 @@ def run_proxy(
     """Run proxy.sh on a cluster."""
     # If using a service script, check that it exists
     if mode == "service":
-        script_remote_path = f"{code_upload_path}/3rdparty/cudagym/examples/multi_node/slurm/scripts/{service_url_or_script}"
+        script_remote_path = f"{code_upload_path}/3rdparty/cudagym/deployments/multi_node/slurm/scripts/{service_url_or_script}"
         rc_chk, _, _ = ssh_tunnel.run_command(f"test -f {script_remote_path}")
         if rc_chk != 0:
             raise ValueError(
@@ -141,7 +141,7 @@ def run_proxy(
     print(
         f"🌐 Starting proxy at http://{ssh_tunnel.host}:{port}, forwarding requests to {service_url_or_script} service"
     )
-    base_cmd = f"cd {code_upload_path}/3rdparty/cudagym && ./examples/multi_cluster/proxy.sh start"
+    base_cmd = f"cd {code_upload_path}/3rdparty/cudagym && ./deployments/multi_cluster/proxy.sh start"
     if mode == "service-url":
         cmd = f"{base_cmd} --service-url {service_url_or_script} --port {port} --force"
     elif mode == "service":
@@ -323,13 +323,16 @@ def main():
         help=(
             "How CudaGym compile/GPU servers are hosted for this run. "
             "'colocated': servers on every node, load balancer on the ray head "
-            "(eval time-shares training GPUs; M0 single-turn). "
+            "(eval time-shares training GPUs; typical for single-turn). "
             "'disjoint': the trailing --cudagym-num-nodes nodes are carved out of the "
-            "ray cluster and dedicated to CudaGym (M1 in-cluster). "
+            "ray cluster and dedicated to CudaGym (in-cluster eval). "
             "'remote': no in-allocation servers; the driver talks to a remote endpoint "
-            "carried by the recipe (env.cudagym.<arch>.server_url; M1 default). "
-            "If omitted, falls back to the recipe-derived behavior (colocated when the "
-            "recipe declares an in-cluster env, disabled otherwise)."
+            "carried by the recipe (env.cudagym.<arch>.server_url; the agentic default). "
+            "If omitted, NO in-allocation servers are launched and the eval endpoint "
+            "must come from --cudagym-url / CUDAGYM_UNIFIED_SERVER_URL / the recipe's "
+            "server_url — i.e. de-facto remote; with none of those set the env actor "
+            "fails at init. (Legacy recipes declaring an SSH-remote in-cluster env "
+            "still auto-select colocated.)"
         ),
     )
     parser.add_argument(
@@ -487,7 +490,7 @@ def main():
         ).strip()
     )
 
-    # Pick the runner + uv extras from the recipe: the NeMo-Gym (M1 agentic) path
+    # Pick the runner + uv extras from the recipe: the NeMo-Gym agentic path
     # uses a different driver script and needs the nemo_gym extra on top of atlas.
     recipe_cfg = OmegaConf.load(CONFIG_PATH / args.config)
     uses_nemo_gym = bool(
@@ -502,9 +505,8 @@ def main():
 
     # Unset local secrets must not leak into the job as the literal string "None";
     # fill with "" and tell the user (the template's ${VAR:-...} then sees empty).
-    # MODAL_PROXY_TOKEN_ID/SECRET: the cudagym SDK injects them as Modal-Key/
-    # Modal-Secret headers whenever the eval endpoint is under .modal.run
-    # (remote mode against the managed Modal fleet); harmless otherwise.
+    # MODAL_PROXY_TOKEN_ID/SECRET: the cudagym SDK sends them as Modal-Key/
+    # Modal-Secret headers to .modal.run eval endpoints.
     secrets = {}
     for name in (
         "HF_TOKEN",
@@ -530,9 +532,7 @@ def main():
         "OUTPUT_DIR": output_dir,
         "GPUS_PER_NODE": cluster_config["gpus_per_node"],
         "SKIP_GRES_ARG": "1" if args.cluster == "eos" else "",
-        # account/partition/qos are cluster-specific; the yaml may override the
-        # defaults. qos is only emitted when the cluster yaml sets one (QoS-based
-        # scheduling, e.g. the MARS GB200 clusters).
+        # account/partition/qos come from the cluster yaml; qos empty = no --qos flag.
         "SLURM_ACCOUNT": cluster_config.get("account", "coreai_nvfm_cupilot"),
         "SLURM_PARTITION": cluster_config.get("partition", "batch"),
         "SLURM_QOS": cluster_config.get("qos", ""),
@@ -561,6 +561,13 @@ def main():
             "⚠️  --cudagym-mode=remote with no --cudagym-url / CUDAGYM_UNIFIED_SERVER_URL: "
             "the job only works if the recipe pins env.cudagym.<arch>.server_url — "
             "otherwise the env actor fails at init with 'server_url is required'."
+        )
+    if uses_nemo_gym and cudagym_mode == "colocated":
+        print(
+            "⚠️  Agentic (NeMo-Gym) recipe with --cudagym-mode=colocated: kernel eval "
+            "time-shares the training GPUs, so timing (the performance reward) is "
+            "unreliable and clocks can't be locked. OK for smoke tests; use "
+            "--cudagym-mode=disjoint or remote for real runs."
         )
 
     # If we are hosting CudaGym in-allocation (colocated or disjoint), pass the

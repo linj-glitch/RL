@@ -16,3 +16,8 @@
 [submodule "3rdparty/cudagym"]
 	path = 3rdparty/cudagym
 	url = ssh://git@gitlab-master.nvidia.com:12051/atlas/cudagym.git
+[submodule "3rdparty/solswarm"]
+	path = 3rdparty/solswarm
+	url = ssh://git@gitlab-master.nvidia.com:12051/atlas/solswarm.git
+	branch = main
+	shallow = true

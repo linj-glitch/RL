@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Tests for the single-turn (M0) completion parser.
+"""Tests for the single-turn completion parser.
 
 Key invariant: ``check_inline_format`` must agree with ``get_code`` -- a
 completion that passes the format gate must be extractable, otherwise a

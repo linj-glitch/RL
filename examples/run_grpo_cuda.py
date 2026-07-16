@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Single-turn (M0) GRPO on CudaGym / SOLBench kernel problems.
+"""Single-turn GRPO on CudaGym / SOLBench kernel problems.
 
 End-to-end wiring (current NeMo-RL ``setup``/``grpo_train`` API):
 
@@ -28,7 +28,7 @@ End-to-end wiring (current NeMo-RL ``setup``/``grpo_train`` API):
      it and returns the staged reward (single-turn, ``done=1``); assistant tokens
      (``<think>`` + code) train, prompt tokens are masked.
 
-The agentic path (M1) reuses the env's evaluation+reward via a NeMo-Gym
+The agentic path reuses the env's evaluation+reward via a NeMo-Gym
 ``cuda_agent``; this file is the single-turn baseline.
 """
 

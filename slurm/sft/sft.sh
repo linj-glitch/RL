@@ -100,8 +100,7 @@ SBATCH_ARGS=(
     --dependency=singleton \
     --output=${BASE_LOG_DIR}/slurm-%j.out \
 )
-# QoS-scheduled clusters (MARS GB200, e.g. aws-dfw-cs-001) reject jobs submitted
-# without --qos; partition-scheduled clusters leave qos empty in the yaml.
+# QoS-scheduled clusters reject jobs submitted without --qos; empty = no flag.
 if [ -n "$SLURM_QOS" ]; then
     SBATCH_ARGS+=(
         --qos=${SLURM_QOS} \

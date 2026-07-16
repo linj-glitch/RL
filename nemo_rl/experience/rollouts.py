@@ -22,6 +22,7 @@ import statistics
 import warnings
 from collections import defaultdict
 from collections.abc import AsyncGenerator, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -57,8 +58,6 @@ from nemo_rl.models.generation.interfaces import (
     GenerationOutputSpec,
     GenerationSamplingParams,
 )
-from contextlib import nullcontext
-
 from nemo_rl.utils.timer import Timer
 
 TokenizerType = PreTrainedTokenizerBase
@@ -2536,7 +2535,7 @@ def _postprocess_single_nemo_gym_group(
             # / batch_size,
         }
 
-    # Kernel reward-observability metrics: same helper/names as the M0 native path.
+    # Kernel reward-observability metrics: same helper/names as the native single-turn path.
     # Gate on the distinctive (sol_score + human_best_speedup) pair so a non-cudagym
     # env exposing a generic "correctness" field doesn't emit misleading metrics.
     # Best-effort: never crash a rollout.

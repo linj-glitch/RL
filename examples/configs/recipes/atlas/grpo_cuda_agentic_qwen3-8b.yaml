@@ -1,20 +1,21 @@
-# Agentic (M1) GRPO on CudaGym/SOLBench kernel problems: NeMo-Gym drives the
+# Agentic GRPO on CudaGym/SOLBench kernel problems: NeMo-Gym drives the
 # OpenCode-based `cuda_agent` (Gym branch: cuda_agent + cudagym resources server
 # on the tokenid-core base), which writes/iterates a kernel in a seeded sandbox;
 # the cudagym server scores the SUBMITTED kernel with the same staged reward as
-# M0. Token-ids ride the /runs/<token> buffering path (no OpenCode fork).
+# the single-turn env. Token-ids ride the /runs/<token> buffering path (no OpenCode fork).
 #
 # Launch: `uv run --extra atlas --extra nemo_gym examples/nemo_gym/run_grpo_nemo_gym.py --config <this>`
 # (submit_grpo.py picks the runner automatically from env.should_use_nemo_gym).
 #
-# SET_ME markers:
-#   * policy.model_name  -> the SFT'd checkpoint (its tokenizer already embeds the
-#                           atlas preserving chat template from the SFT recipe).
+# Before running:
+#   * policy.model_name  -> base Qwen3-8B by default; swap in the SFT'd kernel
+#                           checkpoint once one exists (its tokenizer embeds the
+#                           atlas preserving chat template).
 #   * data.*.data_path   -> Gym seed rows built by
 #                           nemo_rl.data.atlas_datasets.grpo_cuda_dataset.write_kfb_gym_seeds
 #                           (each row: responses_create_params + verifier_metadata + agent_ref).
 #   * CUDAGYM_UNIFIED_SERVER_URL / CUDAGYM_AUTH_TOKEN -> B200 eval endpoint
-#     (M1 default hosting = remote/Modal; disjoint in-cluster also works — see ray.sub).
+#     (default hosting = remote/Modal; disjoint in-cluster also works — see ray.sub).
 #
 # HARD CONSTRAINTS (verified against the tokenid-core + nemorl code):
 #   * generation temperature/top_p MUST be 1.0: Gym's vllm_model pins run-scoped
@@ -45,7 +46,7 @@ grpo:
 checkpointing:
   enabled: true
   checkpoint_dir: "results/grpo-cuda-agentic"
-  # M1 kernel metrics are unprefixed train-side keys (run_async_nemo_gym_rollout
+  # Agentic-path kernel metrics are unprefixed train-side keys (run_async_nemo_gym_rollout
   # merges aggregate_kernel_metrics into rollout_metrics).
   metric_name: "train:correctness_rate"
   higher_is_better: true
@@ -53,14 +54,16 @@ checkpointing:
   save_period: 20
 
 policy:
-  model_name: "/models/SET_ME_solswarm_sft_checkpoint"
+  model_name: "Qwen/Qwen3-8B"  # base model for now; swap in the SFT'd kernel checkpoint
   max_total_sequence_length: 131072   # big-window compaction mitigation (see header)
   tokenizer:
     name: ${policy.model_name}
-    # "default" = the checkpoint's own template — which IS the atlas preserving
-    # template if the checkpoint came from sft_cuda_qwen3-8b.yaml
-    # (tokenizer.save_pretrained carries it). Do NOT override with a different
-    # template here or the RL serving surface diverges from SFT.
+    # "default" = the model's own template; an SFT checkpoint from
+    # sft_cuda_qwen3-8b.yaml embeds the atlas preserving template, so keep
+    # "default" (overriding would make serving diverge from SFT). Base-model
+    # caveat: stock Qwen3 templates strip <think> from earlier turns, so
+    # multi-turn token capture degrades to the final model call — acceptable
+    # for smoke runs; the SFT checkpoint fixes it.
     chat_template: "default"
   train_global_batch_size: 32
   train_micro_batch_size: 1
@@ -119,6 +122,9 @@ env:
     - responses_api_models/vllm_model/configs/vllm_model_for_training.yaml  # required, *_for_training
     - resources_servers/cudagym/configs/cudagym_cuda_agent.yaml
     - resources_servers/cudagym/configs/cudagym_cuda_agent_training.yaml    # adds model_server -> policy_model (token capture)
+    # Optional full SolSwarm parity (optimizer.md prompt + skills + /context + real
+    # /submit flow; needs SOLSWARM_SURFACE_ROOT -> 3rdparty/solswarm, exported by grpo.sh):
+    # - resources_servers/cudagym/configs/cudagym_cuda_agent_solswarm.yaml
     policy_model:
       responses_api_models:
         vllm_model:

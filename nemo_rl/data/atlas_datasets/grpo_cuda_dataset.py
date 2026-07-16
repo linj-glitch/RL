@@ -312,7 +312,7 @@ def kfb_problem_to_gym_seed(
     sol_latencies_csv: Optional[str] = None,
     agent_name: str = "cudagym_cuda_agent",
 ) -> dict[str, Any]:
-    """One NeMo-Gym task-seed row for the agentic (M1) ``cuda_agent`` path.
+    """One NeMo-Gym task-seed row for the agentic ``cuda_agent`` path.
 
     Matches the Gym cudagym resources server's expected shape (see
     3rdparty/Gym-workspace/Gym/resources_servers/cudagym/data/example.jsonl):
@@ -362,7 +362,7 @@ def write_kfb_gym_seeds(
     sol_latencies_csv: Optional[str] = None,
     agent_name: str = "cudagym_cuda_agent",
 ) -> int:
-    """Write NeMo-Gym task-seed JSONL (M1 agentic RL) from KFB problem dirs.
+    """Write NeMo-Gym task-seed JSONL (agentic RL) from KFB problem dirs.
 
     Returns the number of rows written. Point the agentic recipe's
     ``data.train.data_path`` / ``data.validation.data_path`` at the outputs

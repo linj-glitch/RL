@@ -32,7 +32,7 @@ class CudaGymEvalConfig:
     """Per-environment evaluation settings. One instance per registered GPU arch.
 
     Reward weights / perf-normalization defaults match the reference so reward
-    magnitudes are comparable across the single-turn (M0) and agentic (M1) paths.
+    magnitudes are comparable across the single-turn and agentic paths.
     """
 
     # GPU architecture the kernel is evaluated on. Must be a cudagym
@@ -102,19 +102,19 @@ class KernelEvalResult:
     runtime: float = -1.0  # mean custom-kernel latency in ms
     ref_exec_eager_time: float = -1.0  # mean reference latency in ms
     # Free-form diagnostics (compile/exec errors, per-workload statuses, ...);
-    # surfaced into the env observation so the agent can react (M1).
+    # surfaced into the env observation so the agent can react.
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
 # Language -> (source filename, entry "<file>::run", markdown fence tag).
 # ---------------------------------------------------------------------------
-# Single-turn (M0) solutions are ONE file exposing a ``run`` entry. This map is
+# Single-turn solutions are ONE file exposing a ``run`` entry. This map is
 # defined here -- which imports nothing from ``cudagym`` -- so the data processor
 # can read the fence tag / entry symbol inside DataLoader worker subprocesses
 # without the heavy dependency. ``cudagym_client`` reuses it (filename + entry)
 # when building the typed ``Solution``. Multi-file C++/CUDA solutions
-# (kernel.cu + main.cpp pybind) are produced agent-side in M1; for M0 prefer a
+# (kernel.cu + main.cpp pybind) are produced agent-side in the agentic path; for single-turn prefer a
 # Python/Triton target (no separate compile phase, single-file ``run``).
 LANGUAGE_DEFAULTS: dict[str, tuple[str, str, str]] = {
     "python": ("kernel.py", "kernel.py::run", "python"),
@@ -124,7 +124,7 @@ LANGUAGE_DEFAULTS: dict[str, tuple[str, str, str]] = {
     "cute_dsl": ("kernel.py", "kernel.py::run", "python"),
     "cutile": ("kernel.py", "kernel.py::run", "python"),
     "cudnn_frontend": ("kernel.py", "kernel.py::run", "python"),
-    # C++ family: single host-compiled entry; realistic kernels are multi-file (M1).
+    # C++ family: single host-compiled entry; realistic kernels are multi-file (agentic path).
     "cuda_cpp": ("main.cpp", "main.cpp::run", "cpp"),
     "cutlass": ("main.cu", "main.cu::run", "cpp"),
     "cudnn": ("main.cpp", "main.cpp::run", "cpp"),
@@ -181,7 +181,7 @@ def geomean(values: list[float]) -> float:
 
 
 def aggregate_kernel_metrics(records: list[dict[str, Any]]) -> dict[str, float]:
-    """Aggregate per-kernel eval records into observability metrics (shared M0/M1).
+    """Aggregate per-kernel eval records into observability metrics (shared by the single-turn and agentic paths).
 
     Each record carries ``correctness`` (bool) and the perf signals ``speedup`` (over
     the eager PyTorch reference), ``human_best_speedup`` (over the human-best baseline),
@@ -195,8 +195,9 @@ def aggregate_kernel_metrics(records: list[dict[str, Any]]) -> dict[str, float]:
       * ``perf_ref_fallback_rate`` — fraction of correct records whose performance reward
         fell back to speedup-over-ref for lack of a SOL/human-best anchor (``sol_score < 0``).
 
-    This is the single source of truth for the reward-observability metrics so the M0
-    (native ``run_multi_turn_rollout``) and M1 (NeMo-Gym) paths log identical names/semantics.
+    This is the single source of truth for the reward-observability metrics so the
+    single-turn (native ``run_multi_turn_rollout``) and agentic (NeMo-Gym) paths log
+    identical names/semantics.
     """
     if not records:
         return {}

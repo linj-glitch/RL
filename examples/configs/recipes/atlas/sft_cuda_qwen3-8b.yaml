@@ -4,7 +4,7 @@
 # Load-bearing constraints:
 #   * policy.tokenizer.chat_template pins the atlas preserving template (see the
 #     .jinja header for why stock Qwen3 is unsafe). The checkpoint's tokenizer
-#     carries it (save_pretrained), so M0/M1 RL serving renders identically.
+#     carries it (save_pretrained), so single-turn and agentic RL serving render identically.
 #   * data.add_generation_prompt MUST stay false: on agentic data with
 #     consecutive tool/user messages, gen-prompt renders are not prefix-stable
 #     and get_formatted_message_log silently corrupts token spans. With false,
@@ -46,8 +46,8 @@ policy:
                                 # gate (scripts/verify_sft.py) whenever this changes.
   tokenizer:
     name: ${policy.model_name}
-    # THE pinned template — shared with the M0 GRPO recipe and carried into the
-    # checkpoint for M1 vLLM serving. See header comment.
+    # THE pinned template — shared with the GRPO CUDA recipe and carried into the
+    # checkpoint for agentic vLLM serving. See header comment.
     chat_template: "examples/prompts/atlas_preserving_chat_template.jinja"
     chat_template_kwargs: null
   train_global_batch_size: 8    # scale up with dataset size

@@ -12,12 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Single-turn (M0) CudaGym GRPO environment.
+"""Single-turn CudaGym GRPO environment.
 
 The policy emits ONE completion per prompt (``<think>...</think>`` + a fenced
 kernel); this env evaluates it on CudaGym and returns a staged reward, then
 terminates (``done = 1`` for every sample). It is the de-risking baseline for
-the agentic path (M1) and shares all evaluation + reward logic with it via
+the agentic path and shares all evaluation + reward logic with it via
 ``BaseCudaEvaluator`` (``cudagym_base``).
 
 Flow per ``step`` (everything is batched):
@@ -218,7 +218,7 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
         """Aggregate the step's reward-observability metrics.
 
         Delegates to ``cuda_kernel_utils.aggregate_kernel_metrics`` (shared with the
-        M1 NeMo-Gym path so both log identical names/semantics): ``correctness_rate``
+        NeMo-Gym agentic path so both log identical names/semantics): ``correctness_rate``
         over the batch; then, over the CORRECT kernels only, ``avg_speedup_over_ref``
         (vs the eager PyTorch reference), ``avg_speedup_over_baseline`` (vs the
         human-best baseline anchor), ``avg_sol_score`` (the anchored SOL score that IS

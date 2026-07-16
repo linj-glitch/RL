@@ -1,13 +1,12 @@
-# Single-turn (M0) CudaGym GRPO on a Qwen3-32B SFT checkpoint — same data/env/
-# reward as the 8B recipe (see grpo_cuda_qwen3-8b.yaml header); only model +
-# parallelism differ.
+# Single-turn CudaGym GRPO at Qwen3-32B scale — same data/env/reward as the 8B
+# recipe (see grpo_cuda_qwen3-8b.yaml header); only model + parallelism differ.
 defaults: "grpo_cuda_qwen3-8b.yaml"
 
 checkpointing:
   checkpoint_dir: "results/grpo-cuda-qwen3-32b"
 
 policy:
-  model_name: "/models/SET_ME_solswarm_sft_checkpoint_32b"
+  model_name: "Qwen/Qwen3-32B"  # base model for now; swap in the SFT'd kernel checkpoint
   dtensor_cfg:
     tensor_parallel_size: 8
   generation:

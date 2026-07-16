@@ -15,7 +15,7 @@
 """Staged, partial-credit reward for one CudaGym kernel evaluation.
 
 Logic ported from the reference ``cudagym_base.py`` so reward magnitudes match
-the single-turn baseline and are shared verbatim by the agentic path (M1). The
+the single-turn baseline and are shared verbatim by the agentic path. The
 reward is *staged*: a completion earns the ``format`` weight once it parses into
 a Solution, ``compiled`` once it builds, ``executed`` once it runs, ``correctness``
 once it matches the reference, and a log-scaled ``performance`` term for speedup

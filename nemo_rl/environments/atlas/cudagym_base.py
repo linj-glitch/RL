@@ -17,8 +17,8 @@
 ``BaseCudaEvaluator`` is a mixin: it turns (prompt, completion, problem-metadata)
 triples into ``KernelEvalResult``s (parse -> build typed ``Solution`` -> run the
 CudaGym SDK -> map the ``Trace``) and scores them with the staged, partial-credit
-reward (``reward.get_reward``). The single-turn env (M0) mixes this in; the
-agentic path (M1) reuses ``cudagym_client`` + ``reward`` directly.
+reward (``reward.get_reward``). The single-turn env mixes this in; the
+agentic path reuses ``cudagym_client`` + ``reward`` directly.
 
 Evaluation is async because the SDK client is aiohttp-based; the owning Ray
 actor supplies a live ``CudaGymClient`` as ``self._client`` and drives
