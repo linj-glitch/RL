@@ -91,6 +91,10 @@ cwd_parent=$(dirname $cwd)
 
 export MOUNTS="$cwd_parent:$cwd_parent,$cwd:/opt/nemo-rl,$WORKSPACE_PATH:$WORKSPACE_PATH,$WORKSPACE_PATH:/cluster_workspace,$MODELS_PATH:/models,$DATASETS_PATH:/datasets"
 export PYTHONPATH="$cwd/3rdparty/cudagym/src:${PYTHONPATH}"
+# The uploaded 3rdparty/cudagym tree has no .git, so setuptools-scm can't derive
+# its version when the venvs build it editable (uv atlas extra, Gym server
+# venvs) — pin it to the vendored tag (v2.2.3; keep in sync when bumping).
+export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CUDAGYM=2.2.3
 # SolSwarm surface assets (prompts/skills/context) for the cuda_agent sandbox_profile.
 export SOLSWARM_SURFACE_ROOT="$cwd/3rdparty/solswarm"
 
