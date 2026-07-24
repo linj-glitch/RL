@@ -30,7 +30,7 @@ GRPO then trains the assistant tokens (``<think>`` + code) against this reward;
 prompt/observation tokens are masked by provenance.
 """
 
-import asyncio
+import logging
 import os
 from typing import TypedDict
 
@@ -40,8 +40,14 @@ import torch
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 from nemo_rl.environments.interfaces import EnvironmentInterface, EnvironmentReturn
 
-from .cuda_kernel_utils import CudaGymEvalConfig, aggregate_kernel_metrics
+from .cuda_kernel_utils import (
+    CudaGymEvalConfig,
+    aggregate_kernel_metrics,
+    verify_health_payload,
+)
 from .cudagym_base import BaseCudaEvaluator
+
+LOG = logging.getLogger(__name__)
 
 
 class CudaGymEnvironmentMetadata(TypedDict, total=False):
@@ -56,7 +62,7 @@ class CudaGymEnvironmentMetadata(TypedDict, total=False):
     definition: dict  # a Definition dict (e.g. a KFB definition.json)
     workloads: list  # list of Workload dicts (e.g. KFB workload.jsonl lines)
     target_hardware: (
-        str  # cudagym SupportedHardware (e.g. "B200"); falls back to env arch
+        str  # cudagym SupportedHardware (e.g. "B200"); falls back to env sku
     )
     destination_passing_style: bool
     correctness: bool
@@ -68,13 +74,13 @@ class CudaGymEnvironmentMetadata(TypedDict, total=False):
 @ray.remote  # pragma: no cover
 class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
     def __init__(self, config: CudaGymEvalConfig | dict):
-        # Accept either a typed config or the raw YAML dict (env.cudagym.<arch>).
+        # Accept either a typed config or the raw YAML dict (env.cudagym.<sku>).
         if isinstance(config, CudaGymEvalConfig):
             self.eval_config = config
         else:
             defaults = CudaGymEvalConfig()
             self.eval_config = CudaGymEvalConfig(
-                arch=config.get("arch", defaults.arch),
+                sku=config.get("sku", defaults.sku),
                 weight=config.get("weight", defaults.weight),
                 compilation_timeout=config.get(
                     "compilation_timeout", defaults.compilation_timeout
@@ -91,42 +97,89 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
                 ),
                 server_url=config.get("server_url", defaults.server_url),
                 auth_token=config.get("auth_token", defaults.auth_token),
+                verify_endpoint_sku=config.get(
+                    "verify_endpoint_sku", defaults.verify_endpoint_sku
+                ),
             )
 
-        if not self.eval_config.arch:
+        if not self.eval_config.sku:
             raise ValueError(
-                "CudaGymEnvironment requires 'arch' (the target GPU, e.g. B200)"
+                "CudaGymEnvironment requires 'sku' (the target GPU, e.g. B200)"
             )
 
         # One transport client + one event loop per actor. The client is
         # imported here (not at module top) so the data layer can import the
-        # config without pulling in cudagym. When ``server_url`` is unset we use
-        # CudaGymClient.from_env() (reads CUDAGYM_UNIFIED_SERVER_URL/AUTH_TOKEN),
-        # which is how colocated mode injects the Ray-head address.
-        from cudagym.sdk import CudaGymClient
+        # config without pulling in cudagym. cudagym >= 2.x speaks split
+        # compile/GPU URLs; our launch plumbing carries ONE unified endpoint
+        # (the in-allocation LB or a managed remote), so it is passed as both.
+        # Resolution: recipe-pinned server_url -> CUDAGYM_UNIFIED_SERVER_URL /
+        # CUDAGYM_URL (how colocated mode injects the LB address) ->
+        # Client.from_env() (native split CUDAGYM_{COMPILE,GPU}_SERVER_URL;
+        # raises with a clear message when nothing is set).
+        from cudagym.sdk import Client
 
-        if self.eval_config.server_url:
-            self._client = CudaGymClient(
-                server_url=self.eval_config.server_url,
-                # An explicit server_url should still honor the ambient token
-                # (from_env() reads it, but that path is skipped here) — e.g.
-                # remote/Modal endpoints with a recipe-pinned URL.
+        server_url = (
+            self.eval_config.server_url
+            or os.environ.get("CUDAGYM_UNIFIED_SERVER_URL")
+            or os.environ.get("CUDAGYM_URL")
+        )
+        if server_url:
+            self._client = Client(
+                compile_server_url=server_url,
+                gpu_server_url=server_url,
+                # A pinned server_url should still honor the ambient token —
+                # e.g. remote/Modal endpoints with a recipe-pinned URL.
                 auth_token=self.eval_config.auth_token
                 or os.environ.get("CUDAGYM_AUTH_TOKEN"),
             )
         else:
-            self._client = CudaGymClient.from_env()
+            self._client = Client.from_env()
 
-        # aiohttp sessions bind to the running loop; always drive evaluate_batch
-        # on this single owned loop so the session stays consistent across steps.
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
+        # NOTE: evaluate_batch (BaseCudaEvaluator) is async, which makes Ray run
+        # this actor in asyncio mode: every method executes on the actor's own
+        # event loop, so async methods just `await` (aiohttp sessions stay bound
+        # to that one loop). Never call loop.run_until_complete in here — the
+        # loop is already running.
+
+    async def verify_endpoint_sku(self) -> None:
+        """Fail fast when the eval endpoint's silicon doesn't match ``sku``.
+
+        A mismatch is otherwise SILENT for Triton kernels (they JIT-compile on
+        whatever GPU serves the request and return that GPU's timings). Called
+        by the driver right after actor creation (run_grpo_cuda) — after
+        ray.sub's server/LB health gates, so the endpoint is already up.
+        No-op when the config disables it.
+        """
+        if not self.eval_config.verify_endpoint_sku:
+            return
+        resp = await self._client.health()
+        payloads = (
+            [s.get("health") or {} for s in resp["servers"]]
+            if "servers" in resp
+            else [resp.get("health") or {}]
+        )
+        if resp.get("status") != "healthy":
+            raise ValueError(
+                f"CudaGym endpoint unhealthy at env init (sku={self.eval_config.sku}): {resp}"
+            )
+        # Prefer a payload that actually reports a GPU (compile-only responders don't).
+        payload = next((p for p in payloads if p.get("gpu_model")), payloads[0])
+        ok, detail = verify_health_payload(payload, self.eval_config.sku or "")
+        if not ok:
+            raise ValueError(
+                f"CudaGym endpoint SKU mismatch for env sku={self.eval_config.sku}: {detail} "
+                f"(set verify_endpoint_sku: false to override deliberately)"
+            )
+        if detail.startswith("unverifiable"):
+            LOG.warning("cudagym endpoint SKU check (%s): %s", self.eval_config.sku, detail)
+        else:
+            LOG.info("cudagym endpoint SKU check (%s): %s", self.eval_config.sku, detail)
 
     def get_eval_config(self) -> CudaGymEvalConfig:
         """Return this env's evaluation config (read by run_grpo_cuda's data setup)."""
         return self.eval_config
 
-    def step(
+    async def step(
         self,
         message_log_batch: list[list[dict[str, str]]],
         metadata: list[CudaGymEnvironmentMetadata],
@@ -153,9 +206,9 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
             completion_batch.append(assistant_msgs[-1] if assistant_msgs else "")
 
         # Build the typed Solution per sample, compile+execute on CudaGym, and
-        # map each Trace -> KernelEvalResult (all concurrent, on the owned loop).
-        results = self._loop.run_until_complete(
-            self.evaluate_batch(user_prompt_batch, completion_batch, metadata)
+        # map each Trace -> KernelEvalResult (all concurrent on the actor loop).
+        results = await self.evaluate_batch(
+            user_prompt_batch, completion_batch, metadata
         )
         rewards = [self.get_reward(result) for result in results]
 
@@ -234,9 +287,6 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
             print(f"⚠️ Error aggregating cudagym metrics: {e}")
         return batch, metrics
 
-    def shutdown(self) -> None:
-        """Close the transport session + event loop."""
-        try:
-            self._loop.run_until_complete(self._client.close())
-        finally:
-            self._loop.close()
+    async def shutdown(self) -> None:
+        """Close the transport session."""
+        await self._client.close()

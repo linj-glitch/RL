@@ -23,7 +23,7 @@ of its ``workload.jsonl`` — use ``kfb_problem_to_row`` / ``write_kfb_dataset``
 build a dataset JSONL from a KFB checkout.
 
 ``format_cuda_problem`` assigns each row a ``task_name`` (which registered env /
-GPU arch evaluates it, sampled by env ``weight``) and passes the problem through.
+GPU SKU evaluates it, sampled by env ``weight``) and passes the problem through.
 The per-task data processor (``cudagym_data_processor`` in ``run_grpo_cuda.py``)
 later renders the prompt and stores the problem as ``extra_env_info``.
 
@@ -54,7 +54,7 @@ _SOLBENCH_FIELDS = (
 
 
 def _sample_task(task_to_env_config: dict[str, Any]) -> str:
-    """Sample a task name (registered env / GPU arch) by its config ``weight``."""
+    """Sample a task name (registered env / GPU SKU) by its config ``weight``."""
     tasks = list(task_to_env_config.keys())
     weights = [cfg.weight for cfg in task_to_env_config.values()]
     total = sum(weights)
@@ -70,7 +70,7 @@ def format_cuda_problem(
     Args:
         data: a raw SOLBench problem row (see module docstring).
         task_to_env_config: env-name -> ``CudaGymEvalConfig`` (carries ``weight``
-            and ``arch``); the chosen task selects which env evaluates this row.
+            and ``sku``); the chosen task selects which env evaluates this row.
     """
     chosen_task = _sample_task(task_to_env_config)
     return {
@@ -78,9 +78,9 @@ def format_cuda_problem(
         "definition": data["definition"],
         "workloads": data["workloads"],
         "language": data.get("language", "triton"),
-        # Fall back to the chosen env's arch when the row doesn't pin hardware.
+        # Fall back to the chosen env's sku when the row doesn't pin hardware.
         "target_hardware": data.get("target_hardware")
-        or getattr(task_to_env_config[chosen_task], "arch", None),
+        or getattr(task_to_env_config[chosen_task], "sku", None),
         "destination_passing_style": data.get("destination_passing_style", True),
         # Per-workload SOL/human-best anchors (JSON string) for the SOL-score reward.
         "sol_anchors": data.get("sol_anchors", "{}"),

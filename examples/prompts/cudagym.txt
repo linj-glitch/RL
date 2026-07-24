@@ -1,4 +1,5 @@
 Write a fast, numerically-correct GPU kernel that implements the following problem.
+Target GPU: {gpu_sku}. Kernel language: {language}.
 Your response must define a function called `{entry_function}` with the signature shown below.
 
 First reason step-by-step inside a single <think> ... </think> block. Then, after

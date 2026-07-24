@@ -29,17 +29,17 @@ from typing import Any, Optional
 
 @dataclass
 class CudaGymEvalConfig:
-    """Per-environment evaluation settings. One instance per registered GPU arch.
+    """Per-environment evaluation settings. One instance per registered GPU SKU.
 
     Reward weights / perf-normalization defaults match the reference so reward
     magnitudes are comparable across the single-turn and agentic paths.
     """
 
-    # GPU architecture the kernel is evaluated on. Must be a cudagym
+    # GPU SKU the kernel is evaluated on. Must be a cudagym
     # ``SupportedHardware`` value (e.g. "B200"); becomes ``Solution.spec.target_hardware``
     # and selects the compile SM version server-side. KFB problems target B200.
-    arch: Optional[str] = None
-    # Sampling weight when several cudagym envs/archs are registered (data mixing).
+    sku: Optional[str] = None
+    # Sampling weight when several cudagym envs/SKUs are registered (data mixing).
     weight: float = 1.0
     # cudagym compile/execute timeouts, in seconds.
     compilation_timeout: int = 120
@@ -68,11 +68,16 @@ class CudaGymEvalConfig:
     benchmark_config: dict[str, Any] = field(default_factory=dict)
 
     # CudaGym service location. ``server_url`` is the unified ``/compile``+``/gpu``
-    # endpoint. When None, the env falls back to ``CudaGymClient.from_env()``
-    # (reads ``CUDAGYM_UNIFIED_SERVER_URL`` / ``CUDAGYM_AUTH_TOKEN``); colocated
-    # mode injects the Ray-head address here at setup time (see run_grpo_cuda.py).
+    # endpoint. When None, the env falls back to CUDAGYM_UNIFIED_SERVER_URL /
+    # CUDAGYM_URL (+ CUDAGYM_AUTH_TOKEN) — how colocated mode injects the
+    # in-allocation load-balancer address — then to ``Client.from_env()``
+    # (the SDK's split CUDAGYM_{COMPILE,GPU}_SERVER_URL variables).
     server_url: Optional[str] = None
     auth_token: Optional[str] = None
+    # Fail fast at env init when the endpoint's /health reports a different GPU
+    # than ``sku`` — a mismatch is otherwise SILENT for Triton (kernels JIT on
+    # whatever GPU serves the request and return that GPU's timings).
+    verify_endpoint_sku: bool = True
 
 
 @dataclass
@@ -142,6 +147,51 @@ def entry_symbol_for(language: str) -> str:
     return LANGUAGE_DEFAULTS.get(language, LANGUAGE_DEFAULTS["python"])[1].split("::")[
         -1
     ]
+
+
+# ---------------------------------------------------------------------------
+# Endpoint-SKU verification (the runtime half of the launcher's preflight).
+# ---------------------------------------------------------------------------
+# SKU -> (accepted /health gpu_model substrings, expected sm_version prefix).
+# B200 accepts GB200: GB200 superchip nodes report "NVIDIA GB200" but run B200
+# silicon (sm_100). Kept in sync with slurm/cudagym_hosting.py and the Gym
+# cudagym resources server (intentional small duplication across packages).
+SKU_EXPECTATIONS: dict[str, tuple[tuple[str, ...], Optional[str]]] = {
+    "B200": (("B200", "GB200"), "sm_100"),
+    "H100": (("H100",), "sm_90"),
+    "H200": (("H200",), "sm_90"),
+    "GB10": (("GB10",), None),
+    "GB300": (("GB300",), "sm_103"),
+    "VR100": (("VR100",), None),
+}
+
+
+def verify_health_payload(payload: dict[str, Any], sku: str) -> tuple[bool, str]:
+    """Compare a cudagym ``/health`` payload against a declared GPU SKU.
+
+    Returns ``(ok, detail)``. Unverifiable payloads (no gpu fields — e.g. a
+    compile-only responder) and SKUs without recorded expectations are ``ok``
+    with an explanatory detail so callers can warn instead of fail.
+    """
+    gpu_model = payload.get("gpu_model") or ""
+    sm_version = payload.get("sm_version") or ""
+    if not gpu_model and not sm_version:
+        return True, "unverifiable: /health reports no gpu_model/sm_version"
+    expected = SKU_EXPECTATIONS.get(sku.upper())
+    if expected is None:
+        return True, f"unverifiable: no expectations recorded for sku {sku}"
+    models, sm_prefix = expected
+    if gpu_model and not any(m in gpu_model for m in models):
+        return (
+            False,
+            f"endpoint reports gpu_model={gpu_model!r}, expected one of {models} for {sku}",
+        )
+    if sm_version and sm_prefix and not sm_version.startswith(sm_prefix):
+        return (
+            False,
+            f"endpoint reports sm_version={sm_version!r}, expected {sm_prefix}* for {sku}",
+        )
+    return True, f"gpu_model={gpu_model or '?'} sm_version={sm_version or '?'}"
 
 
 # ---------------------------------------------------------------------------

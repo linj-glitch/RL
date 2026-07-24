@@ -25,7 +25,7 @@ code (``cudagym.envs.*`` was removed upstream). Responsibilities:
 
 The language -> (filename, entry, fence) map lives in ``cuda_kernel_utils``
 (cudagym-free) so the data layer can read it; this module owns all the actual
-``cudagym`` imports. The owning Ray actor passes in a live ``CudaGymClient``;
+``cudagym`` imports. The owning Ray actor passes in a live ``Client``;
 compile/exec *hard* failures surface as ``CudaGym{Compilation,Execution}Error``
 (caught by ``cudagym_base``), while per-workload correctness/runtime outcomes
 ride inside the returned ``Trace``.
@@ -43,7 +43,7 @@ from cudagym.contracts.evaluation import EvaluationStatus
 from cudagym.contracts.solution import BuildSpec, Solution, SupportedHardware
 from cudagym.contracts.trace import Trace
 from cudagym.contracts.workload import Workload
-from cudagym.sdk import CudaGymClient, workflows
+from cudagym.sdk import Client, workflows
 
 from .cuda_kernel_utils import (
     LANGUAGE_DEFAULTS,
@@ -107,7 +107,7 @@ def build_solution(
         )
     if not target_hardware:
         raise ValueError(
-            "target_hardware is required to build a Solution (set env arch)"
+            "target_hardware is required to build a Solution (set env sku)"
         )
     filename, entry_point, _ = LANGUAGE_DEFAULTS[language]
     # Content hash keeps the solution name (and cudagym's build cache key) stable
@@ -128,7 +128,7 @@ def build_solution(
 
 
 async def evaluate_solution(
-    client: CudaGymClient,
+    client: Client,
     solution: Solution,
     definition: Definition,
     workloads: list[Workload],

@@ -494,7 +494,7 @@ ip_head=$head_node_ip:$PORT
 #              and dedicated to CudaGym; load balancer on the first CudaGym node
 #              (in-cluster eval, e.g. nodes 1-8 train, 9-10 cudagym).
 #   remote:    no in-allocation servers; the driver reaches a remote endpoint carried
-#              by the recipe (env.cudagym.<arch>.server_url); the agentic default.
+#              by the recipe (env.cudagym.<sku>.server_url); the agentic default.
 CUDAGYM_MODE=${CUDAGYM_MODE:-}
 
 # Number of nodes dedicated to Ray training. Defaults to the full allocation so the
@@ -695,7 +695,7 @@ if [[ "${CUDAGYM_ENABLED:-0}" == "1" ]]; then
   export CUDAGYM_UNIFIED_SERVER_URL="http://${CUDAGYM_LB_NODE_IP}:${LB_PORT}"
   echo "[INFO] CUDAGYM_UNIFIED_SERVER_URL=$CUDAGYM_UNIFIED_SERVER_URL"
 elif [[ "$CUDAGYM_MODE" == "remote" ]]; then
-  # Remote: no in-allocation servers; the recipe (env.cudagym.<arch>.server_url)
+  # Remote: no in-allocation servers; the recipe (env.cudagym.<sku>.server_url)
   # or CUDAGYM_UNIFIED_SERVER_URL carries the endpoint. CUDAGYM_* env vars reach
   # the containers the same way as HF_TOKEN (srun exports all + pyxis forwards).
   echo "[INFO] CUDAGYM_MODE=remote: no in-allocation CudaGym; using remote endpoint (${CUDAGYM_UNIFIED_SERVER_URL:-from recipe})."

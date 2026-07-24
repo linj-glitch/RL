@@ -21,7 +21,7 @@ reward (``reward.get_reward``). The single-turn env mixes this in; the
 agentic path reuses ``cudagym_client`` + ``reward`` directly.
 
 Evaluation is async because the SDK client is aiohttp-based; the owning Ray
-actor supplies a live ``CudaGymClient`` as ``self._client`` and drives
+actor supplies a live ``Client`` as ``self._client`` and drives
 ``evaluate_batch`` on its own event loop. Hard build/run failures raise
 ``CudaGym{Compilation,Execution}Error`` (caught here so one bad completion can't
 fail the batch); per-workload correctness/runtime failures come back in the
@@ -33,7 +33,7 @@ from __future__ import annotations
 import asyncio
 from abc import ABC
 
-from cudagym.sdk import CudaGymClient
+from cudagym.sdk import Client
 from cudagym.sdk.errors import CudaGymCompilationError, CudaGymExecutionError
 
 from . import cudagym_client, reward
@@ -45,11 +45,11 @@ class BaseCudaEvaluator(ABC):
     """Evaluate + reward a batch of kernel completions against CudaGym.
 
     Subclasses (the Ray actors) must set ``self.eval_config`` (a
-    ``CudaGymEvalConfig``) and ``self._client`` (a ``CudaGymClient``).
+    ``CudaGymEvalConfig``) and ``self._client`` (a ``Client``).
     """
 
     eval_config: CudaGymEvalConfig
-    _client: CudaGymClient
+    _client: Client
 
     async def evaluate_batch(
         self,
@@ -95,7 +95,7 @@ class BaseCudaEvaluator(ABC):
                     language=language,
                     definition_name=definition.name,
                     target_hardware=meta.get("target_hardware")
-                    or self.eval_config.arch,
+                    or self.eval_config.sku,
                     destination_passing_style=meta.get(
                         "destination_passing_style", True
                     ),

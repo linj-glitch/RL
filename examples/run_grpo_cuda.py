@@ -17,9 +17,9 @@
 End-to-end wiring (current NeMo-RL ``setup``/``grpo_train`` API):
 
   1. ``setup_environments`` builds one ``CudaGymEnvironment`` Ray actor per GPU
-     arch in ``env.cudagym`` (a thin CudaGym HTTP client, ``num_gpus=0``).
+     SKU in ``env.cudagym`` (a thin CudaGym HTTP client, ``num_gpus=0``).
   2. ``setup_data`` loads SOLBench problem rows (``GRPODriverDataset``), tags
-     each with a sampled task (arch), and wraps them in ``AllTaskProcessedDataset``
+     each with a sampled task (SKU), and wraps them in ``AllTaskProcessedDataset``
      with ``cudagym_data_processor``.
   3. ``cudagym_data_processor`` renders the problem into a single ``user`` prompt
      (``<think>`` + fenced kernel requested), applies the chat template, stores
@@ -179,7 +179,9 @@ def cudagym_data_processor(
     problem_text = _annotate_solbench_problem(definition, destination_passing_style)
 
     # Render the prompt template (driver_code = the problem statement; kernel_lang
-    # = the fence tag the model writes; entry_function = the symbol it must define).
+    # = the fence tag the model writes; entry_function = the symbol it must define;
+    # gpu_sku/language = the eval target, stated explicitly so the model knows what
+    # hardware and kernel dialect it is writing for).
     user_content = problem_text
     if task_data_spec.prompt:
         user_content = task_data_spec.prompt.format(
@@ -187,6 +189,8 @@ def cudagym_data_processor(
             driver_lang="python",  # the SOLBench reference is always Python
             kernel_lang=fence_lang_for(language),
             entry_function=entry_symbol_for(language),
+            gpu_sku=datum_dict["target_hardware"],
+            language=language,
         )
 
     messages = []
@@ -254,7 +258,7 @@ def setup_data(
     print(f"Train datasets: {data_paths}\nValidation datasets: {val_data_paths}")
 
     # task_to_env_config (env_name -> CudaGymEvalConfig) is passed so the dataset
-    # can sample which arch/env evaluates each problem by its ``weight``.
+    # can sample which SKU/env evaluates each problem by its ``weight``.
     data = GRPODriverDataset(
         json_file_paths=data_paths,
         val_json_file_paths=val_data_paths,
@@ -295,10 +299,10 @@ def setup_data(
 def setup_environments(
     env_configs: dict[str, Any],
 ) -> tuple[dict[str, EnvironmentInterface], dict[str, Any]]:
-    """Create one ``CudaGymEnvironment`` Ray actor per arch under ``env.cudagym``.
+    """Create one ``CudaGymEnvironment`` Ray actor per GPU SKU under ``env.cudagym``.
 
     Each actor is a thin CudaGym HTTP client (``num_gpus=0``). The CudaGym server
-    URL is resolved by ``CudaGymClient.from_env()`` unless the env block sets
+    URL is resolved from ``CUDAGYM_UNIFIED_SERVER_URL`` unless the env block sets
     ``server_url``; colocated mode injects ``CUDAGYM_UNIFIED_SERVER_URL`` into the
     environment, which is forwarded to the actor via ``runtime_env.env_vars``.
     """
@@ -308,7 +312,7 @@ def setup_environments(
     if "cudagym" in env_configs:
         for env_name, cfg in env_configs["cudagym"].items():
             cfg = dict(cfg)
-            cfg.setdefault("arch", env_name)  # default arch = env name (e.g. "b200")
+            cfg.setdefault("sku", env_name)  # default sku = env name (e.g. "b200")
             env = CudaGymEnvironment.options(  # type: ignore[attr-defined]
                 num_gpus=0,  # HTTP client only; GPU work runs on the CudaGym server
                 runtime_env={
@@ -319,6 +323,9 @@ def setup_environments(
             ).remote(cfg)
             task_to_env[env_name] = env
             task_to_env_config[env_name] = ray.get(env.get_eval_config.remote())
+            # Fail fast if the eval endpoint reports different silicon than the
+            # entry's sku (no-op when verify_endpoint_sku is false).
+            ray.get(env.verify_endpoint_sku.remote())
 
     if not task_to_env:
         raise ValueError(f"No 'cudagym' environment found in env config: {env_configs}")
