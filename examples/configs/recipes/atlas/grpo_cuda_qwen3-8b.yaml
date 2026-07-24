@@ -7,8 +7,9 @@
 #                               kernel checkpoint once one exists
 #   * data.dataset_path      -> a SOLBench problem JSONL (build from a KFB checkout
 #                               with nemo_rl.data.atlas_datasets.write_kfb_dataset)
-#   * CUDAGYM_UNIFIED_SERVER_URL / CUDAGYM_AUTH_TOKEN in the environment (or set
-#     env.cudagym.b200.server_url) -> the B200 CudaGym eval server.
+#   * env.cudagym.b200.hosting -> where the B200 CudaGym eval servers live
+#     (submit_grpo.py validates + preflights it; see slurm/cudagym_hosting.py
+#     and endpoints/*.yaml).
 defaults: "../../grpo_math_1B.yaml"
 
 grpo:
@@ -84,11 +85,21 @@ data:
 
 env:
   cudagym:
-    # One entry per GPU arch; the entry name is the task_name and (by default)
-    # the arch. Add more entries (with weights) to mix archs.
+    # One entry per GPU SKU; the entry name is the task_name and (by default)
+    # the sku. Add more entries (with weights) to mix SKUs. Every entry must
+    # declare `hosting:` — where its eval servers live (submit_grpo.py
+    # validates it, preflights remote endpoints, and wires the URLs through;
+    # kinds: colocated | disjoint {num_nodes: N} | endpoint | slurm-service).
     b200:
-      arch: "B200"
+      sku: "B200"
       weight: 1.0
+      hosting:
+        kind: endpoint
+        # Registry ref (endpoints/<provider>.yaml); modal needs
+        # MODAL_PROXY_TOKEN_ID/SECRET in the submitting shell. In-cluster
+        # smoke alternative (on a B200-silicon cluster):
+        #   --extra-config-opts "++env.cudagym.b200.hosting.kind=colocated"
+        endpoint: modal/b200
       compilation_timeout: 300
       execution_timeout_per_trial: 120
       reward_weights:
@@ -104,7 +115,10 @@ env:
       # CudaGym EvalConfig overrides. lock_clocks=true so eval timing matches the
       # locked-clock anchors in latencies_b200.csv that the SOL-score reward uses.
       benchmark_config: {lock_clocks: true}
-      # null -> CudaGymClient.from_env() (reads CUDAGYM_UNIFIED_SERVER_URL / CUDAGYM_AUTH_TOKEN).
+      # Fail fast at env init if the endpoint's /health reports a different GPU
+      # than `sku` (otherwise silent for Triton kernels).
+      verify_endpoint_sku: true
+      # null -> resolved from CUDAGYM_UNIFIED_SERVER_URL / CUDAGYM_URL (+ CUDAGYM_AUTH_TOKEN).
       # Set explicitly for a fixed remote/colocated endpoint.
       server_url: null
 

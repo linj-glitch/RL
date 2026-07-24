@@ -1,0 +1,25 @@
+# Agentic CudaGym GRPO with the FULL SolSwarm sandbox surface: same training
+# stack as grpo_cuda_agentic_qwen3-8b.yaml, but the cuda_agent runs with
+# sandbox_profile=solswarm (rendered optimizer.md role prompt, skills library,
+# /context) and submission_mode=solswarm_submit (real /submit skill ->
+# rollout-scoped canonical evaluation; reward = best submission). See
+# resources_servers/cudagym/configs/cudagym_cuda_agent_solswarm.yaml for the
+# knobs; grpo.sh exports SOLSWARM_SURFACE_ROOT (3rdparty/solswarm).
+defaults: "grpo_cuda_agentic_qwen3-8b.yaml"
+
+checkpointing:
+  checkpoint_dir: "results/grpo-cuda-agentic-solswarm"
+
+env:
+  nemo_gym:
+    # Full replacement of the base list (OmegaConf merge replaces lists):
+    # base agent + training overlay + the solswarm-parity overlay LAST so its
+    # sandbox_profile/submission_mode/extra_args win.
+    config_paths:
+    - responses_api_models/vllm_model/configs/vllm_model_for_training.yaml
+    - resources_servers/cudagym/configs/cudagym_cuda_agent.yaml
+    - resources_servers/cudagym/configs/cudagym_cuda_agent_training.yaml
+    - resources_servers/cudagym/configs/cudagym_cuda_agent_solswarm.yaml
+
+logger:
+  log_dir: "logs/grpo-cuda-agentic-solswarm"

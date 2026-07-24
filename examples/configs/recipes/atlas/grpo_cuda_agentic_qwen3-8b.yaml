@@ -23,10 +23,11 @@
 #     request matches policy.generation — any other value 500s every model call.
 #   * async_engine + expose_http_server must stay true (Gym talks to the policy
 #     over HTTP).
-#   * max_total_sequence_length is the compaction mitigation: keep it >= the
-#     opencode limit.context in cudagym_cuda_agent.yaml (131072) so OpenCode
-#     never rewrites history mid-run (which would silently drop post-compaction
-#     turns from the training trajectory).
+#   * Compaction mitigation: opencode's limit.context in cudagym_cuda_agent.yaml
+#     (131072) must stay >= max_total_sequence_length so OpenCode never *thinks*
+#     it must rewrite history mid-run (which would silently drop post-compaction
+#     turns from the training trajectory). Oversized runs then terminate via the
+#     vLLM server's context-overflow error instead.
 defaults: "../../grpo_math_1B.yaml"
 
 grpo:
@@ -55,7 +56,11 @@ checkpointing:
 
 policy:
   model_name: "Qwen/Qwen3-8B"  # base model for now; swap in the SFT'd kernel checkpoint
-  max_total_sequence_length: 131072   # big-window compaction mitigation (see header)
+  # Base Qwen3-8B's native cap (max_position_embeddings=40960): vLLM refuses a
+  # larger max_model_len. Raise (e.g. 131072) only with a rope-scaled/YaRN
+  # checkpoint whose config.json actually supports it. See the header for how
+  # the compaction mitigation interacts with this value.
+  max_total_sequence_length: 40960
   tokenizer:
     name: ${policy.model_name}
     # "default" = the model's own template; an SFT checkpoint from
@@ -73,7 +78,7 @@ policy:
     tensor_parallel_size: 2
     activation_checkpointing: true
     sequence_parallel: true
-    context_parallel_size: 4        # 131k-token trajectories at train time
+    context_parallel_size: 4        # long agentic trajectories at train time
   generation:
     backend: "vllm"
     max_new_tokens: 16384           # per-call cap; matches opencode limit.output
@@ -100,6 +105,12 @@ data:
   shuffle: true
   num_workers: 0
   train:
+    # Explicit dataset_name: the math base's data.train (OpenMathInstruct-2 +
+    # split_validation_size 0.05) survives the defaults merge, and data.default
+    # only fills keys that are MISSING — without these two lines the job would
+    # silently train on math rows and carve a 50k validation split.
+    dataset_name: NemoGymDataset
+    split_validation_size: 0
     data_path: "/datasets/SET_ME_cuda_agentic_seeds/train.jsonl"
   validation:
     data_path: "/datasets/SET_ME_cuda_agentic_seeds/val.jsonl"
@@ -113,6 +124,18 @@ data:
 env:
   should_use_nemo_gym: true
   should_log_nemo_gym_responses: true
+  cudagym:
+    # Launcher-only hosting declaration (the NeMo-Gym runner never reads
+    # env.cudagym): submit_grpo.py resolves/validates it, preflights the
+    # endpoint, and exports CUDAGYM_UNIFIED_SERVER_URL for the Gym cudagym
+    # resources server. Agentic recipes must declare exactly ONE entry.
+    # In-allocation smoke alternative:
+    #   --extra-config-opts "++env.cudagym.b200.hosting.kind=colocated"
+    b200:
+      sku: "B200"
+      hosting:
+        kind: endpoint
+        endpoint: modal/b200   # endpoints/modal.yaml; needs MODAL_PROXY_TOKEN_ID/SECRET
   nemo_gym:   # passed into NeMo-Gym as the initial_global_config_dict
     port_range_low: 15001
     port_range_high: 20000
