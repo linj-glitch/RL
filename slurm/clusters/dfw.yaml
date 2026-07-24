@@ -1,6 +1,6 @@
 host: dfw
 hostname: cw-dfw-cs-001-login-01.cw-dfw-cs-001.hpc.nvidia.com
-arch: h100
+sku: h100
 gpus_per_node: 8
 
 paths:

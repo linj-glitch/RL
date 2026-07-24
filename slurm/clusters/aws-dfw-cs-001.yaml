@@ -1,6 +1,6 @@
 host: aws-dfw-cs-001
 hostname: aws-dfw-cs-001-login-02.nvidia.com  # -01 is oversubscribed
-arch: gb200
+sku: gb200
 gpus_per_node: 4
 
 paths:

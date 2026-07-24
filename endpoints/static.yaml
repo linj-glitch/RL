@@ -1,0 +1,14 @@
+# Hand-run / ad-hoc CudaGym eval endpoints (no provider-implied auth).
+#
+# Add entries for long-lived servers you start yourself, then reference them
+# as `hosting: {kind: endpoint, endpoint: static/<key>}`. Schema:
+#
+#   <key>:
+#     sku: B200                      # cudagym SupportedHardware value
+#     url: http://host:8000          # unified server or load-balancer URL
+#     auth_token_env: MY_TOKEN_VAR   # optional; Bearer read from this env var
+#     disabled_reason: why           # optional; submit errors on disabled entries
+#
+# (For one-off URLs, `hosting: {kind: endpoint, url: http://...}` inline in the
+# recipe works without a registry entry.)
+{}

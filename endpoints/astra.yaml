@@ -1,0 +1,22 @@
+# Managed CudaGym eval endpoints on Astra (titan-internal).
+#
+# Referenced from recipes as `hosting: {kind: endpoint, endpoint: astra/<key>}`.
+# Bearer auth only (CUDAGYM_AUTH_TOKEN, when the endpoint requires it).
+# URLs seeded from solswarm deployments/files/gpu-skus.toml; the upstream
+# registry currently marks all three disabled — remove `disabled_reason`
+# once connectivity is restored (submit errors on disabled entries).
+
+gb10:
+  sku: GB10
+  url: https://api.cudagym.titan.nvidia.com/dgx-spark
+  disabled_reason: pod18 network outage (upstream gpu-skus.toml, 2026-07)
+
+vr100:
+  sku: VR100
+  url: https://api.cudagym.titan.nvidia.com/vr100
+  disabled_reason: pod18 network outage (upstream gpu-skus.toml, 2026-07)
+
+gb300:
+  sku: GB300
+  url: https://api.cudagym.titan.nvidia.com/gb300
+  disabled_reason: pod18 network outage (upstream gpu-skus.toml, 2026-07)

@@ -1,6 +1,6 @@
 host: hsg
 hostname: oci-hsg-cs-001-login-01.nvidia.com
-arch: gb200
+sku: gb200
 gpus_per_node: 4
 
 paths:

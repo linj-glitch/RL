@@ -1,0 +1,19 @@
+# Managed CudaGym eval endpoints on Modal (NVIDIA workspace).
+#
+# Referenced from recipes as `hosting: {kind: endpoint, endpoint: modal/<key>}`.
+# Provider `modal` (this file's stem) requires MODAL_PROXY_TOKEN_ID /
+# MODAL_PROXY_TOKEN_SECRET in the submitting shell (the Modal edge rejects
+# unauthenticated requests); CUDAGYM_AUTH_TOKEN is sent as a Bearer when set.
+# URLs seeded from solswarm deployments/files/gpu-skus.toml (kf-v2-2-2 fleet).
+
+b200:
+  sku: B200
+  url: https://nvidia-b200--cudagym-b200-kf-v2-2-2-web.modal.run
+
+h100:
+  sku: H100
+  url: https://nvidia--cudagym-h100-kf-v2-2-2-web.modal.run
+
+h200:
+  sku: H200
+  url: https://nvidia--cudagym-h200-kf-v2-2-2-web.modal.run

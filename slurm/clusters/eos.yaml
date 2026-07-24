@@ -1,6 +1,6 @@
 host: eos
 hostname: login-eos.nvidia.com
-arch: h100
+sku: h100
 gpus_per_node: 8
 
 paths:
