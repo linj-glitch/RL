@@ -265,8 +265,6 @@ def setup_data(
         task_to_env_config=task_to_env_config,
         seed=grpo_config.get("seed", 42),
         test_size=data_config.get("test_size", 0.05),
-        duplicate_train_data=data_config.get("duplicate_train_data", True),
-        grpo_config=grpo_config,
     )
 
     default_task_spec = TaskDataSpec(

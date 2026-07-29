@@ -77,8 +77,10 @@ data:
   # Built from a KFB checkout with write_kfb_dataset (grpo_cuda_dataset.py; its
   # docstring has the sol_latency_ms caveat). Preferred set: data/sol_execbench_external
   # (real SOL anchors; eval server profile sol_execbench_external, language=triton, DPS=false).
+  # The JSONL must hold >= grpo.num_prompts_per_step train rows after the
+  # test_size split (the train dataloader drops the last partial batch); raise
+  # grpo.max_num_epochs to run more steps than one pass over the data provides.
   dataset_path: "/datasets/solbench_sol_execbench_b200.jsonl"
-  duplicate_train_data: true
   test_size: 0.1
   add_system_prompt: false
   shuffle: false
@@ -102,18 +104,30 @@ env:
         endpoint: modal/b200
       compilation_timeout: 300
       execution_timeout_per_trial: 120
+      # Correctness-gated: an incorrect kernel earns 0 (format/compile/execute
+      # progress is metrics-only — a bare stub "compiles" for JIT languages);
+      # a correct one earns correctness + performance * SOL-score (in [0,1],
+      # from the row's baked anchors). Range [0, 2].
       reward_weights:
-        format: 1
-        compiled: 2
-        executed: 2
-        correctness: 4
-        performance: 8
+        correctness: 1.0
+        performance: 1.0
       perf_reward_config:
         clip_max: 10.0
         clip_min: 0.1
         speedup_ratio: 0.75
+        # Anchor-less rows only: let a correct kernel earn the perf term from
+        # log-normalized speedup-over-reference (needs a timed reference);
+        # false -> correct-but-anchorless earns the correctness weight alone.
+        # NOTE: this fallback needs a TIMED reference, i.e. benchmark_config
+        # benchmark_reference: true. With the default (false) cudagym reports no
+        # speedup_factor, so an anchor-less row earns the correctness weight and
+        # NO performance gradient regardless of this setting.
+        allow_speedup_fallback: true
       # CudaGym EvalConfig overrides. lock_clocks=true so eval timing matches the
-      # locked-clock anchors in latencies_b200.csv that the SOL-score reward uses.
+      # locked-clock SOL/human-best anchors baked into each dataset row (the
+      # perf reward needs those anchors — rows without them report
+      # reference_latency_ms=0 and the perf term is unearnable unless you also
+      # set benchmark_reference: true here, at extra eval cost).
       benchmark_config: {lock_clocks: true}
       # Fail fast at env init if the endpoint's /health reports a different GPU
       # than `sku` (otherwise silent for Triton kernels).

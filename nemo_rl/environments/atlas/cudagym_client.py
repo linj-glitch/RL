@@ -127,6 +127,25 @@ def build_solution(
     )
 
 
+def validate_benchmark_config(benchmark_config: dict) -> None:
+    """Reject unknown ``EvalConfig`` keys instead of letting pydantic drop them.
+
+    ``EvalConfig`` does not set ``extra="forbid"``, so a typo (``lock_clock``
+    for ``lock_clocks``) is silently ignored: clocks stay unlocked while timings
+    are compared against locked-clock anchors, and nothing anywhere errors.
+    """
+    if not benchmark_config:
+        return
+    from cudagym.contracts.eval_config import EvalConfig
+
+    unknown = set(benchmark_config) - set(EvalConfig.model_fields)
+    if unknown:
+        raise ValueError(
+            f"unknown benchmark_config keys {sorted(unknown)}; "
+            f"valid keys are {sorted(EvalConfig.model_fields)}"
+        )
+
+
 async def evaluate_solution(
     client: Client,
     solution: Solution,

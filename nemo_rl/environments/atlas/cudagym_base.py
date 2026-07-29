@@ -90,12 +90,23 @@ class BaseCudaEvaluator(ABC):
             try:
                 code = get_code(completions[idx], fence_lang)
                 definition, workloads = cudagym_client.parse_problem(meta)
+                row_sku = meta.get("target_hardware")
+                if row_sku and self.eval_config.sku and row_sku.upper() != self.eval_config.sku.upper():
+                    # The endpoint handshake verifies eval_config.sku, but this
+                    # is the value that reaches Solution.spec.target_hardware --
+                    # so a row declaring B200 against an H100 endpoint compiled
+                    # for the wrong silicon and every sample scored 0, reading
+                    # as "the model cannot write kernels".
+                    result.metadata["config_error"] = (
+                        f"row target_hardware={row_sku!r} != env sku={self.eval_config.sku!r}; "
+                        "the endpoint is verified against the env sku, so this row would build for other silicon"
+                    )
+                    return
                 solution = cudagym_client.build_solution(
                     code=code,
                     language=language,
                     definition_name=definition.name,
-                    target_hardware=meta.get("target_hardware")
-                    or self.eval_config.sku,
+                    target_hardware=row_sku or self.eval_config.sku,
                     destination_passing_style=meta.get(
                         "destination_passing_style", True
                     ),

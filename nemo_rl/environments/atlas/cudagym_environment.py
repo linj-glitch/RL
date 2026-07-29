@@ -40,6 +40,7 @@ import torch
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 from nemo_rl.environments.interfaces import EnvironmentInterface, EnvironmentReturn
 
+from . import cudagym_client
 from .cuda_kernel_utils import (
     CudaGymEvalConfig,
     aggregate_kernel_metrics,
@@ -106,6 +107,10 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
             raise ValueError(
                 "CudaGymEnvironment requires 'sku' (the target GPU, e.g. B200)"
             )
+        # Fail on a typo'd benchmark_config key here rather than letting pydantic
+        # drop it: a silently ignored `lock_clocks` leaves clocks unlocked while
+        # timings are scored against locked-clock anchors.
+        cudagym_client.validate_benchmark_config(self.eval_config.benchmark_config)
 
         # One transport client + one event loop per actor. The client is
         # imported here (not at module top) so the data layer can import the

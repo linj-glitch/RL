@@ -471,3 +471,37 @@ def probe_endpoint(
         if attempt < retries:
             continue
     raise HostingError(f"endpoint {entry.name} unreachable at {url}: {last_error}")
+
+
+def check_registry_against_solswarm(endpoints: dict, solswarm_root) -> list[str]:
+    """Differences between our endpoint registry and SolSwarm's gpu-skus.toml.
+
+    Both describe the same Modal fleet. They were maintained separately, so the
+    next fleet bump would touch one and not the other with nothing to notice.
+    Returns human-readable difference lines (empty when they agree); callers
+    warn rather than fail, since we deliberately register a subset.
+    """
+    from pathlib import Path
+
+    toml_path = Path(solswarm_root) / "deployments" / "files" / "gpu-skus.toml"
+    if not toml_path.is_file():
+        return []
+    try:
+        import tomllib
+
+        upstream = tomllib.loads(toml_path.read_text())
+    except Exception:  # noqa: BLE001 - a drift check must never break a submit
+        return []
+
+    upstream_urls = {}
+    for name, entry in (upstream.get("skus") or upstream).items():
+        if isinstance(entry, dict) and entry.get("url"):
+            upstream_urls[name.lower()] = entry["url"].rstrip("/")
+
+    lines = []
+    for name, entry in (endpoints or {}).items():
+        url = (getattr(entry, "url", None) or "").rstrip("/")
+        key = str(getattr(entry, "sku", name)).lower()
+        if key in upstream_urls and url and not url.startswith(upstream_urls[key].rsplit("-web", 1)[0]):
+            lines.append(f"{name}: ours={url} solswarm={upstream_urls[key]}")
+    return lines
