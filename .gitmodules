@@ -11,7 +11,7 @@
 [submodule "3rdparty/Gym-workspace/Gym"]
 	path = 3rdparty/Gym-workspace/Gym
 	url = ssh://git@gitlab-master.nvidia.com:12051/atlas/nemogym.git
-	branch = main
+	branch = alexandery/cuda-agent-tokenid
 	shallow = true
 [submodule "3rdparty/cudagym"]
 	path = 3rdparty/cudagym

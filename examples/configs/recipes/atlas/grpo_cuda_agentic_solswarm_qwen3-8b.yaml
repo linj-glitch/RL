@@ -1,10 +1,12 @@
-# Agentic CudaGym GRPO with the FULL SolSwarm sandbox surface: same training
-# stack as grpo_cuda_agentic_qwen3-8b.yaml, but the cuda_agent runs with
-# sandbox_profile=solswarm (rendered optimizer.md role prompt, skills library,
-# /context) and submission_mode=solswarm_submit (real /submit skill ->
-# rollout-scoped canonical evaluation; reward = best submission). See
-# resources_servers/cudagym/configs/cudagym_cuda_agent_solswarm.yaml for the
-# knobs; grpo.sh exports SOLSWARM_SURFACE_ROOT (3rdparty/solswarm).
+# Agentic CudaGym GRPO in SolSwarm CONTAINER MODE: same training stack as
+# grpo_cuda_agentic_qwen3-8b.yaml, but each rollout runs SolSwarm's real
+# docker/agent/entrypoint.sh in a private mount namespace (sandbox_profile=
+# solswarm — the entrypoint renders the optimizer prompt, installs the skills,
+# writes the OpenCode config) and submits via the real /submit flow
+# (submission_mode=solswarm_submit -> rollout-scoped canonical evaluation;
+# reward = best submission). See resources_servers/cudagym/configs/
+# cudagym_cuda_agent_solswarm.yaml; grpo.sh exports SOLSWARM_SURFACE_ROOT
+# (3rdparty/solswarm).
 defaults: "grpo_cuda_agentic_qwen3-8b.yaml"
 
 checkpointing:

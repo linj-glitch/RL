@@ -15,15 +15,15 @@
 """Single-turn CudaGym GRPO environment.
 
 The policy emits ONE completion per prompt (``<think>...</think>`` + a fenced
-kernel); this env evaluates it on CudaGym and returns a staged reward, then
-terminates (``done = 1`` for every sample). It is the de-risking baseline for
-the agentic path and shares all evaluation + reward logic with it via
-``BaseCudaEvaluator`` (``cudagym_base``).
+kernel); this env evaluates it on CudaGym and returns the correctness-gated
+reward, then terminates (``done = 1`` for every sample). It is the de-risking
+baseline for the agentic path and shares all evaluation + reward logic with it
+via ``BaseCudaEvaluator`` (``cudagym_base``).
 
 Flow per ``step`` (everything is batched):
   message_log_batch -> (first user prompt, last assistant completion) per sample
     -> ``evaluate_batch`` (parse -> build Solution -> cudagym evaluate -> Trace -> KernelEvalResult)
-    -> ``get_reward`` (staged partial credit)
+    -> ``get_reward`` (correctness-gated)
     -> EnvironmentReturn(observations, metadata+{correctness,speedup,human_best_speedup,sol_score}, next_stop_strings=None,
                          rewards=Tensor[B], terminateds=ones, answers=None)
 GRPO then trains the assistant tokens (``<think>`` + code) against this reward;
@@ -66,6 +66,7 @@ class CudaGymEnvironmentMetadata(TypedDict, total=False):
         str  # cudagym SupportedHardware (e.g. "B200"); falls back to env sku
     )
     destination_passing_style: bool
+    sol_anchors: dict  # workload uuid -> {human_best_latency_ms, sol_latency_ms}
     correctness: bool
     speedup: float  # speedup over the eager PyTorch reference (cudagym speedup_factor)
     human_best_speedup: float  # speedup over the human-best / optimized-baseline anchor
@@ -79,29 +80,22 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
         if isinstance(config, CudaGymEvalConfig):
             self.eval_config = config
         else:
-            defaults = CudaGymEvalConfig()
-            self.eval_config = CudaGymEvalConfig(
-                sku=config.get("sku", defaults.sku),
-                weight=config.get("weight", defaults.weight),
-                compilation_timeout=config.get(
-                    "compilation_timeout", defaults.compilation_timeout
-                ),
-                execution_timeout_per_trial=config.get(
-                    "execution_timeout_per_trial", defaults.execution_timeout_per_trial
-                ),
-                reward_weights=config.get("reward_weights", defaults.reward_weights),
-                perf_reward_config=config.get(
-                    "perf_reward_config", defaults.perf_reward_config
-                ),
-                benchmark_config=config.get(
-                    "benchmark_config", defaults.benchmark_config
-                ),
-                server_url=config.get("server_url", defaults.server_url),
-                auth_token=config.get("auth_token", defaults.auth_token),
-                verify_endpoint_sku=config.get(
-                    "verify_endpoint_sku", defaults.verify_endpoint_sku
-                ),
-            )
+            from dataclasses import fields as dataclass_fields
+
+            # Kwargs come from the dataclass itself, and unknown keys are
+            # REJECTED (the same typo class validate_benchmark_config catches
+            # one level down): a misspelled `reward_weight:` would otherwise be
+            # silently dropped and the run would train on defaults. `hosting`
+            # is the one submit-time-only key (slurm/cudagym_hosting.py reads
+            # it; the actor never does).
+            known = {f.name for f in dataclass_fields(CudaGymEvalConfig)}
+            unknown = set(config) - known - {"hosting"}
+            if unknown:
+                raise ValueError(
+                    f"unknown env.cudagym keys {sorted(unknown)}; "
+                    f"valid keys: {sorted(known)} (+ submit-time-only 'hosting')"
+                )
+            self.eval_config = CudaGymEvalConfig(**{k: v for k, v in config.items() if k in known})
 
         if not self.eval_config.sku:
             raise ValueError(
@@ -111,6 +105,18 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
         # drop it: a silently ignored `lock_clocks` leaves clocks unlocked while
         # timings are scored against locked-clock anchors.
         cudagym_client.validate_benchmark_config(self.eval_config.benchmark_config)
+        # And on a sku the SDK's Solution schema would refuse: SupportedHardware
+        # is a case-sensitive enum, so "b200" passes every /health preflight and
+        # then fails per-sample inside build_solution as the MODEL's format error.
+        from cudagym.contracts.solution import SupportedHardware
+
+        try:
+            SupportedHardware(self.eval_config.sku)
+        except ValueError as e:
+            raise ValueError(
+                f"env sku {self.eval_config.sku!r} is not a cudagym SupportedHardware value "
+                f"(valid: {[h.value for h in SupportedHardware]})"
+            ) from e
 
         # One transport client + one event loop per actor. The client is
         # imported here (not at module top) so the data layer can import the

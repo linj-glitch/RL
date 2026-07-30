@@ -5,7 +5,7 @@ gpus_per_node: 4
 
 paths:
   # The following directories will be created inside the workspace path:
-  # - .cache: cache path for uv and huggingface
+  # - .cache: huggingface cache (the uv cache stays container-local; see grpo.sh)
   # - nemorl/exp_name: the root directory for the current experiment
   # - nemorl/exp_name/code: the code snapshot of the current experiment
   # - nemorl/exp_name/ckpts: the checkpoints of the current experiment

@@ -136,8 +136,6 @@ def validate_benchmark_config(benchmark_config: dict) -> None:
     """
     if not benchmark_config:
         return
-    from cudagym.contracts.eval_config import EvalConfig
-
     unknown = set(benchmark_config) - set(EvalConfig.model_fields)
     if unknown:
         raise ValueError(
@@ -236,9 +234,12 @@ def update_result_from_trace(
         return
 
     # Eager-reference speedup/latency (cudagym's own metric) — kept for logging
-    # and as the FALLBACK perf signal when SOL anchors are unavailable.
+    # and as the FALLBACK perf signal when SOL anchors are unavailable. The
+    # truthiness check also rejects the SDK's 0.0 default (an UNMEASURED
+    # reference, benchmark_reference: false) — a real measured speedup is never
+    # exactly 0, but 0.0 stored as "measured" drags the speedup metrics down.
     summary = trace.summary
-    if summary.speedup_factor is not None and summary.speedup_factor.mean is not None:
+    if summary.speedup_factor is not None and summary.speedup_factor.mean:
         result.speedup = summary.speedup_factor.mean
     if summary.latency_ms is not None and summary.latency_ms.mean is not None:
         result.runtime = summary.latency_ms.mean
@@ -256,11 +257,10 @@ def update_result_from_trace(
             evaluation = workload_trace.evaluation
             if evaluation is None or evaluation.performance is None:
                 continue
-            workload = getattr(workload_trace, "workload", None)
-            uuid = getattr(workload, "uuid", None)
-            if uuid is None and isinstance(workload, dict):
-                uuid = workload.get("uuid")
-            anchor = sol_anchors.get(uuid) if uuid else None
+            # WorkloadTrace.workload / Workload.uuid are required pydantic
+            # fields — index them directly so an upstream rename fails loudly
+            # instead of silently unmatching every anchor.
+            anchor = sol_anchors.get(workload_trace.workload.uuid)
             human_best = float((anchor or {}).get("human_best_latency_ms") or 0.0)
             if not anchor or human_best <= 0.0:
                 continue

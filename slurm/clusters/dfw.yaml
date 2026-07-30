@@ -19,4 +19,3 @@ account: coreai_nvfm_cupilot
 partition: batch
 
 extra_config_opts: ""
-requires_proxy_tunnel: true

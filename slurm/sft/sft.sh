@@ -37,7 +37,6 @@ export GPUS_PER_NODE=${GPUS_PER_NODE:-DEFAULT_GPUS_PER_NODE}
 # =======================================================================
 
 export HF_HOME=${CACHE_PATH}/huggingface
-export UV_CACHE_DIR=${CACHE_PATH}/uv
 export OUTPUT_DIR=${OUTPUT_ROOT}/${EXP_NAME}
 
 export SKIP_GRES_ARG=${SKIP_GRES_ARG:-DEFAULT_SKIP_GRES_ARG}
@@ -62,7 +61,7 @@ fi
 cwd=$(pwd -P)
 cwd_parent=$(dirname $cwd)
 
-export MOUNTS="$cwd_parent:$cwd_parent,$cwd:/opt/nemo-rl,$WORKSPACE_PATH:$WORKSPACE_PATH,$WORKSPACE_PATH:/cluster_workspace,$MODELS_PATH:/models,$DATASETS_PATH:/datasets"
+export MOUNTS="$cwd_parent:$cwd_parent,$cwd:/opt/nemo-rl,$WORKSPACE_PATH:$WORKSPACE_PATH,$MODELS_PATH:/models,$DATASETS_PATH:/datasets"
 
 # if -i flag is provided, run the command interactively
 if [ "$1" == "-i" ]; then

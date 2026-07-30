@@ -15,15 +15,15 @@
 """Datasets for the atlas CudaGym / SOLBench kernel-optimization tasks."""
 
 from .grpo_cuda_dataset import (
-    GRPODriverDataset,
     format_cuda_problem,
     kfb_problem_to_row,
+    prepare_cuda_dataset,
     write_kfb_dataset,
 )
 
 __all__ = [
-    "GRPODriverDataset",
     "format_cuda_problem",
     "kfb_problem_to_row",
+    "prepare_cuda_dataset",
     "write_kfb_dataset",
 ]

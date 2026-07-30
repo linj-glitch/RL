@@ -17,5 +17,7 @@ paths:
 
 account: coreai_nvfm_cupilot
 partition: batch
+# EOS rejects sbatch --gpus-per-node; grpo.sh drops the flag when this is set.
+skip_gres: true
 
 extra_config_opts: ""

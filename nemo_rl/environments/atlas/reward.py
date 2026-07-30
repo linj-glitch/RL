@@ -12,16 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Staged, partial-credit reward for one CudaGym kernel evaluation.
+"""Correctness-gated reward for one CudaGym kernel evaluation.
 
-Logic ported from the reference ``cudagym_base.py`` so reward magnitudes match
-the single-turn baseline and are shared verbatim by the agentic path. The
-reward is *staged*: a completion earns the ``format`` weight once it parses into
-a Solution, ``compiled`` once it builds, ``executed`` once it runs, ``correctness``
-once it matches the reference, and a log-scaled ``performance`` term for speedup
-over the reference. Each stage is gated on the previous one (a kernel that fails
-to compile earns only ``format``), which keeps the signal dense even though most
-early kernels never compile.
+Shared by the single-turn and agentic paths (the Gym cudagym resources server
+vendors the same logic — keep the two in step). A kernel that is not
+numerically correct on EVERY workload earns exactly 0; a correct one earns the
+correctness weight plus the performance weight scaled by the anchored SOL
+score (see ``get_reward``). Format/compile/execute progress is observable in
+the metrics but never rewarded.
 """
 
 import math
@@ -94,18 +92,20 @@ def get_reward(
 
 def normalize_performance_reward(
     speedup: float,
-    clip_max: float = 10.0,
-    clip_min: float = 0.1,
-    scale: float = 5.0,
-    speedup_ratio: float = 0.75,
+    clip_max: float,
+    clip_min: float,
+    scale: float,
+    speedup_ratio: float,
 ) -> float:
     """Map a speedup factor onto ``[0, scale]`` with an asymmetric log scale.
 
-    ``speedup_ratio`` is the fraction of the range given to speedups (>=1.0x);
-    the remainder covers slowdowns. 0.5 is symmetric, 0.75 gives 75% of the
-    range to speedups. With ``speedup_ratio=0.75, scale=5.0``:
-      - 0.1x -> 0.0 (minimum)      - 2.0x  -> 2.38
-      - 1.0x -> 1.25 (25% of range) - 10.0x -> 5.0 (maximum)
+    All parameters come from the recipe (``perf_reward_config`` + the
+    performance weight as ``scale``) — no defaults, so this cannot silently
+    disagree with the config. ``speedup_ratio`` is the fraction of the range
+    given to speedups (>=1.0x); the remainder covers slowdowns. With the
+    shipped ``speedup_ratio=0.75, scale=1.0``:
+      - 0.1x -> 0.0 (minimum)       - 2.0x  -> 0.48
+      - 1.0x -> 0.25 (25% of range) - 10.0x -> 1.0 (maximum)
     """
     s = max(clip_min, min(speedup, clip_max))
 

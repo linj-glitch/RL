@@ -21,9 +21,9 @@ Usage:
     python submit_grpo.py --exp-name cuda_qwen3_8b --config grpo_cuda_qwen3-8b.yaml --cluster aws-iad-cs-002 --num-nodes 1
 """
 
+import subprocess
 import argparse
 import os
-import time
 from pathlib import Path
 
 from omegaconf import OmegaConf
@@ -40,6 +40,8 @@ from remote_utils import (
 )
 from slurm.cudagym_hosting import (
     HostingError,
+    check_registry_against_solswarm,
+    load_endpoints,
     load_recipe_merged,
     probe_endpoint,
     resolve_hosting,
@@ -51,164 +53,29 @@ CLUSTER_CONFIG_PATH = Path(__file__).parent / "slurm" / "clusters"
 SBATCH_TEMPLATE_PATH = Path(__file__).parent / "slurm" / "grpo" / "grpo.sh"
 
 
-def generate_cudagym_script(
-    ssh_tunnel: SSHTunnel,
-    code_upload_path: Path,
-    service_cluster: str,
-    num_service_nodes: int,
-) -> str:
-    """Generate CudaGym cluster script using generate_slurm_scripts.py.
+def _vendored_cudagym_version() -> str:
+    """PEP 440 version for the vendored cudagym, from its own git metadata.
 
-    Returns:
-        Script filename that was generated.
+    setuptools-scm cannot derive a version from the uploaded tree (no .git), and
+    a hand-maintained literal drifts silently on every submodule bump.
     """
-    script_name = f"cudagym_cluster_{service_cluster}_nodes_{num_service_nodes}.sh"
-
-    # Run generate_slurm_scripts.py on the remote cluster
-    generate_cmd = (
-        f"cd {code_upload_path}/3rdparty/cudagym/deployments/multi_node/slurm && "
-        f"python generate_slurm_scripts.py --clusters {service_cluster} --nodes {num_service_nodes}"
-    )
-
-    print(f"🔧 Generating CudaGym service script: {script_name}")
-    rc, out, err = ssh_tunnel.run_command(generate_cmd)
-    if rc != 0:
-        raise RuntimeError(
-            f"Failed to generate CudaGym script for {service_cluster} with {num_service_nodes} nodes:\n"
-            f"stdout: {out}\nstderr: {err}"
+    root = Path(__file__).parent / "3rdparty" / "cudagym"
+    try:
+        described = subprocess.run(
+            ["git", "-C", str(root), "describe", "--tags", "--dirty"],
+            capture_output=True, text=True, timeout=30,
         )
-
-    print("✅ Generated script")
-    return script_name
-
-
-def run_proxy(
-    ssh_tunnel: SSHTunnel,
-    code_upload_path: Path,
-    mode: str,
-    service_url_or_script: str,
-    port: int,
-    timeout: int,
-) -> None:
-    """Run proxy.sh on a cluster."""
-    # If using a service script, check that it exists
-    if mode == "service":
-        script_remote_path = f"{code_upload_path}/3rdparty/cudagym/deployments/multi_node/slurm/scripts/{service_url_or_script}"
-        rc_chk, _, _ = ssh_tunnel.run_command(f"test -f {script_remote_path}")
-        if rc_chk != 0:
-            raise ValueError(
-                f"Service script not found on destination cluster: {service_url_or_script}. "
-                f"Generate it via generate_slurm_scripts.py or adjust num_service_nodes/service_cluster."
-            )
-
-    # proxy.sh start
-    print(
-        f"🌐 Starting proxy at http://{ssh_tunnel.host}:{port}, forwarding requests to {service_url_or_script} service"
-    )
-    base_cmd = f"cd {code_upload_path}/3rdparty/cudagym && ./deployments/multi_cluster/proxy.sh start"
-    if mode == "service-url":
-        cmd = f"{base_cmd} --service-url {service_url_or_script} --port {port} --force"
-    elif mode == "service":
-        cmd = f"{base_cmd} --service {service_url_or_script} --port {port} --force"
-    else:
-        raise ValueError(f"Unknown proxy mode: {mode}")
-    rc, out, err = ssh_tunnel.run_command(cmd)
-    if rc != 0:
-        raise RuntimeError(f"Failed to start proxy: {err or out}")
-
-    # Wait until proxy.sh discovers the service url and service is ready and returns /status 200
-    wait_proxy_ready(ssh_tunnel, port=port, timeout=timeout)
-    print("✅ Service proxy is ready")
-
-
-def wait_proxy_ready(ssh: SSHTunnel, port: int, timeout: float = 1800.0) -> None:
-    """Wait until the proxy's /status returns 200, implying the upstream service is ready."""
-    start = time.time()
-    while time.time() - start < timeout:
-        cmd = (
-            f'/bin/bash -lc "curl -sf --connect-timeout 1 --max-time 3 '
-            f'http://127.0.0.1:{port}/status >/dev/null 2>&1"'
-        )
-        rc, _, _ = ssh.run_command(cmd)
-        if rc == 0:
-            return
-        time.sleep(2)
-    raise TimeoutError(f"Proxy on {ssh.host}:{port} not ready within {int(timeout)}s")
-
-
-def _find_next_free_port(
-    ssh: SSHTunnel, start_port: int = 8999, max_steps: int = 100
-) -> int:
-    """Return first available TCP port >= start_port not currently listening on the login node."""
-    port = start_port
-    for _ in range(max_steps):
-        rc, _, _ = ssh.run_command(
-            f"/bin/bash -lc \"ss -tln 2>/dev/null | grep -q ':{port} ' \""
-        )
-        if rc != 0:
-            return port
-        port += 1
-    return port
-
-
-def start_ssh_tunnel(
-    ssh: SSHTunnel,
-    tunnel_port: int,
-    remote_host: str,
-    remote_port: int,
-    timeout: float = 30.0,
-) -> None:
-    """Ensure a persistent SSH -L tunnel is running on the cluster login node. Auto-reconnects if the SSH link drops."""
-    print(
-        f"🔗 Starting SSH tunnel on {ssh.host}:127.0.0.1:{tunnel_port} -> {remote_host}:{remote_port}"
-    )
-
-    # If already listening, nothing to do
-    rc_chk, _, _ = ssh.run_command(
-        f"/bin/bash -lc \"ss -tln 2>/dev/null | grep -q ':{tunnel_port} ' \""
-    )
-    if rc_chk == 0:
-        print(
-            f"✅ SSH tunnel already exists. Point the proxy at http://127.0.0.1:{tunnel_port}"
-        )
-        return
-
-    # Start a persistent loop with nohup
-    loop_cmd = (
-        "nohup bash -lc '"
-        "while true; do "
-        f"ssh -N -L 127.0.0.1:{tunnel_port}:localhost:{remote_port} "
-        "-o ExitOnForwardFailure=yes "
-        "-o ServerAliveInterval=30 "
-        "-o ServerAliveCountMax=3 "
-        "-o StrictHostKeyChecking=accept-new "
-        f'"$USER@{remote_host}" || true; '
-        "sleep 2; "
-        "done' >/dev/null 2>&1 &"
-    )
-    rc, out, err = ssh.run_command(f'/bin/bash -lc "{loop_cmd}"')
-    if rc != 0:
-        raise RuntimeError(f"Failed to start SSH tunnel: {err or out}")
-
-    # Wait for listener to appear
-    wait_tunnel_ready(ssh, tunnel_port, timeout)
-    print(f"✅ SSH tunnel is ready. Point the proxy at http://127.0.0.1:{tunnel_port}")
-    return
-
-
-def wait_tunnel_ready(ssh: SSHTunnel, port: int, timeout: float = 30.0) -> None:
-    """Wait for an SSH -L tunnel listener."""
-    start = time.time()
-    while time.time() - start < timeout:
-        rc2, _, _ = ssh.run_command(
-            f"/bin/bash -lc \"ss -tln 2>/dev/null | grep -q ':{port} ' \""
-        )
-        if rc2 == 0:
-            return
-        time.sleep(2)
-    raise TimeoutError(
-        f"SSH tunnel on {ssh.host}:127.0.0.1:{port} not up within {int(timeout)}s"
-    )
+        raw = described.stdout.strip().lstrip("v") if described.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        raw = ""
+    if not raw:
+        print("⚠️  could not derive the vendored cudagym version; falling back to 0.0.0")
+        return "0.0.0"
+    # v2.2.3-19-g87aa3f6[-dirty] -> 2.2.3.post19+g87aa3f6 (setuptools-scm shape)
+    parts = raw.split("-")
+    if len(parts) >= 3:
+        return f"{parts[0]}.post{parts[1]}+{parts[2]}"
+    return parts[0]
 
 
 def launch_jobs(
@@ -228,7 +95,9 @@ def launch_jobs(
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--exp-name", "-e", default="grpo_32b_sft_dfw", type=str)
+    # exp-name and cluster are required on purpose: the stale conveniences they
+    # replaced (a dfw default, a 16-node default) silently reshaped jobs.
+    parser.add_argument("--exp-name", "-e", required=True, type=str)
     parser.add_argument(
         "--config",
         type=str,
@@ -239,7 +108,7 @@ def main():
         "--cluster",
         "-c",
         type=str,
-        default="dfw",
+        required=True,
         choices=get_available_clusters(CLUSTER_CONFIG_PATH),
     )
     parser.add_argument(
@@ -255,7 +124,7 @@ def main():
         "--time", type=str, default="04:00:00", help="Time limit for the job"
     )
     parser.add_argument(
-        "--num-nodes", type=int, default=16, help="Number of nodes for the job"
+        "--num-nodes", type=int, default=1, help="Number of nodes for the job"
     )
     parser.add_argument(
         "--num-jobs",
@@ -272,12 +141,6 @@ def main():
         "--skip-commit-check",
         action="store_true",
         help="Skip the commit check",
-    )
-    parser.add_argument(
-        "--proxy-timeout",
-        type=int,
-        default=1800,
-        help="Timeout in seconds for the remote environment to be ready",
     )
     # CudaGym hosting is declared per SKU in the recipe (env.cudagym.<name>.hosting;
     # see slurm/cudagym_hosting.py). The old flags survive only as hidden stubs so
@@ -302,7 +165,7 @@ def main():
             "--cudagym-mode/--cudagym-url/--cudagym-num-nodes were removed: hosting is now "
             "declared per SKU in the recipe, e.g.\n"
             "  env.cudagym.b200.hosting: {kind: endpoint, endpoint: modal/b200}\n"
-            "kinds: colocated | disjoint (num_nodes: N) | endpoint | slurm-service; "
+            "kinds: colocated | disjoint (num_nodes: N) | endpoint; "
             "registry: endpoints/*.yaml; escape hatch: export CUDAGYM_UNIFIED_SERVER_URL "
             "and declare hosting: {kind: endpoint}."
         )
@@ -341,11 +204,17 @@ def main():
             detail += f" url={entry.url}"
         if entry.kind == "disjoint":
             detail += f" num_nodes={entry.num_nodes}"
-        if entry.kind == "slurm-service":
-            detail += f" service_cluster={entry.service['service_cluster']}"
         print(f"   - {entry.name}: sku={entry.sku} {detail}")
     for warning in hosting.warnings:
         print(f"⚠️  {warning}")
+
+    # The endpoints/ registry was seeded from solswarm's gpu-skus.toml; the two
+    # are maintained separately, so flag (never fail) when they disagree — the
+    # tell that upstream bumped the managed fleet and our URLs went stale.
+    for line in check_registry_against_solswarm(
+        load_endpoints(), Path(__file__).parent / "3rdparty" / "solswarm"
+    ):
+        print(f"⚠️  endpoints registry differs from solswarm gpu-skus.toml: {line}")
 
     # Preflight: ping every remote endpoint's /health and check the reported GPU
     # against the declared SKU. In-allocation servers don't exist yet — they get
@@ -361,12 +230,13 @@ def main():
                 f"❌ {e}\n   (pass --skip-endpoint-check to submit anyway)"
             ) from e
         ok, detail = verify_health_payload(payload, entry.sku)
-        if not ok:
+        if ok is False:
             # Never skippable: a reachable endpoint with the WRONG silicon would
             # silently mistime Triton kernels (JIT compiles on whatever GPU serves).
             raise SystemExit(f"❌ endpoint {entry.name}: {detail}")
-        icon = "⚠️ " if detail.startswith("unverifiable") else "✅"
-        print(f"{icon} endpoint {entry.name}: {detail}")
+        # ok is None means nothing was checked -- report that as its own state
+        # rather than a tick, which is how an unknown SKU used to pass.
+        print(f"{'⚠️  NOT VERIFIED' if ok is None else '✅'} endpoint {entry.name}: {detail}")
 
     # Upload the nemorl codebase to the cluster
     output_dir = Path(cluster_config["paths"]["output"]) / args.exp_name
@@ -377,85 +247,6 @@ def main():
     # Per-entry resolved endpoint URLs ride into the training config as ++overrides
     # (the env actor's pinned-server_url path takes precedence over ambient env).
     remote_env_extra_opts: list[str] = list(hosting.extra_config_opts)
-
-    # Experimental slurm-service hosting: stand up a CudaGym service job on another
-    # Slurm cluster and chain login-node proxies (+ an SSH tunnel when required).
-    for entry in hosting.slurm_services:
-        service = entry.service
-        service_cluster = service["service_cluster"]
-        if service_cluster == args.cluster:
-            raise SystemExit(
-                f"❌ env.cudagym.{entry.name}: slurm-service pointing at the submit "
-                f"cluster itself makes no sense — use hosting kind 'colocated' or "
-                f"'disjoint' instead."
-            )
-        endpoint_port = service["endpoint_port"]
-        service_login_port = service["service_login_port"]
-        print(f"🌐 Readying remote CudaGym environment on {service_cluster}")
-        service_cluster_config = load_cluster_config(
-            CLUSTER_CONFIG_PATH, service_cluster
-        )
-
-        # Upload the nemorl codebase to the remote cluster
-        service_output_dir = (
-            Path(service_cluster_config["paths"]["output"]) / args.exp_name
-        )
-        service_code_upload_path = service_output_dir / "code"
-        service_ssh = SSHTunnel(service_cluster_config["hostname"])
-        package_code(
-            service_ssh,
-            service_code_upload_path,
-            skip_commit_check=args.skip_commit_check,
-        )
-
-        # Start proxy+service on remote cluster
-        service_script = generate_cudagym_script(
-            ssh_tunnel=service_ssh,
-            code_upload_path=service_code_upload_path,
-            service_cluster=service_cluster,
-            num_service_nodes=service["num_service_nodes"],
-        )
-        run_proxy(
-            ssh_tunnel=service_ssh,
-            code_upload_path=service_code_upload_path,
-            mode="service",
-            service_url_or_script=service_script,
-            port=service_login_port,
-            timeout=args.proxy_timeout,
-        )
-
-        # Start proxy on current cluster
-        service_url = f"http://{service_ssh.host}:{service_login_port}"
-
-        # If the cluster requires a tunnel, start a persistent SSH tunnel to the
-        # remote cluster's login node and point the proxy at it
-        if cluster_config.get("requires_proxy_tunnel"):
-            tunnel_port = _find_next_free_port(
-                ssh_tunnel, start_port=endpoint_port + 1
-            )
-            start_ssh_tunnel(
-                ssh=ssh_tunnel,
-                tunnel_port=tunnel_port,
-                remote_host=service_ssh.host,
-                remote_port=service_login_port,
-            )
-            service_url = f"http://127.0.0.1:{tunnel_port}"
-
-        run_proxy(
-            ssh_tunnel=ssh_tunnel,
-            code_upload_path=code_upload_path,
-            mode="service-url",
-            service_url_or_script=service_url,
-            port=endpoint_port,
-            timeout=args.proxy_timeout,
-        )
-
-        # Compute nodes reach the service through the submit cluster's login-node
-        # proxy; pin this env entry's endpoint at it.
-        remote_env_extra_opts.append(
-            f"++env.cudagym.{entry.name}.server_url="
-            f"http://{cluster_config['hostname']}:{endpoint_port}"
-        )
 
     # Upload sbatch script with custom variables
     print(
@@ -505,6 +296,11 @@ def main():
             print(f"⚠️  {name} is not set locally — the job will run without it.")
         secrets[name] = val or ""
 
+    # Derived, not declared: the uploaded tree has no .git, so the venvs need a
+    # version handed to them -- but reading it from the submodule keeps it true
+    # across bumps instead of drifting from a literal in the template.
+    cudagym_version = _vendored_cudagym_version()
+
     sbatch_vars = {
         "EXP_NAME": args.exp_name,
         "CONFIG_NAME": args.config,
@@ -514,13 +310,12 @@ def main():
         "TIME": args.time,
         "NUM_NODES": args.num_nodes,
         **secrets,
-        "OUTPUT_DIR": output_dir,
         "GPUS_PER_NODE": cluster_config["gpus_per_node"],
-        "SKIP_GRES_ARG": "1" if args.cluster == "eos" else "",
-        # account/partition/qos come from the cluster yaml; qos empty = no --qos flag.
-        "SLURM_ACCOUNT": cluster_config.get("account", "coreai_nvfm_cupilot"),
-        "SLURM_PARTITION": cluster_config.get("partition", "batch"),
-        "SLURM_QOS": cluster_config.get("qos", ""),
+        # Cluster facts come from the cluster yaml, not from name-matching here.
+        "SKIP_GRES_ARG": "1" if cluster_config.get("skip_gres") else "",
+        "SLURM_ACCOUNT": cluster_config["account"],
+        "SLURM_PARTITION": cluster_config["partition"],
+        "SLURM_QOS": cluster_config.get("qos", ""),  # empty = no --qos flag
         # Always present so no DEFAULT_* token leaks into the job env when no
         # hosting kind sets them (ray.sub tests CUDAGYM_ENABLED == "1").
         "CUDAGYM_ENABLED": "0",
@@ -538,7 +333,11 @@ def main():
         # From the recipe's hosting declarations (ray.sub contract unchanged).
         "CUDAGYM_MODE": hosting.cudagym_mode,
         "CUDAGYM_NUM_NODES": hosting.cudagym_num_nodes,
-    } | {**cluster_config["paths"]}
+        "CUDAGYM_VERSION": cudagym_version,
+        # cudagym_container is excluded: CUDAGYM_CONTAINER is set explicitly
+        # (above/below), and both names fill the same DEFAULT_CUDAGYM_CONTAINER
+        # template token.
+    } | {k: v for k, v in cluster_config["paths"].items() if k != "cudagym_container"}
 
     # If an entry is hosted in-allocation (colocated or disjoint), pass the server
     # sbatch vars consumed by ray.sub. Endpoint kinds launch no servers in the
@@ -550,6 +349,16 @@ def main():
         if not cudagym_container:
             raise ValueError(
                 "Cluster config missing container path(s); need 'container' or 'cudagym_container'."
+            )
+        # The image must carry the server runtime deps MATCHING the vendored SDK
+        # (the checkout rides PYTHONPATH; deps come from the image) — warn when
+        # the sqsh tag doesn't carry the SDK's major.minor.
+        major_minor = ".".join(cudagym_version.split(".")[:2])
+        if major_minor != "0.0" and major_minor not in Path(cudagym_container).name:
+            print(
+                f"⚠️  cudagym container {Path(cudagym_container).name} does not carry the "
+                f"vendored SDK version {major_minor}.x — server runtime deps may not match "
+                f"(import a matching sqsh and update the cluster yaml)."
             )
         sbatch_vars |= {
             "CUDAGYM_ENABLED": "1",

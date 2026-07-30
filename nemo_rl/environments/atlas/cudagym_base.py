@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Shared CudaGym evaluation + staged reward for the atlas environments.
+"""Shared CudaGym evaluation + reward for the atlas environments.
 
 ``BaseCudaEvaluator`` is a mixin: it turns (prompt, completion, problem-metadata)
 triples into ``KernelEvalResult``s (parse -> build typed ``Solution`` -> run the
-CudaGym SDK -> map the ``Trace``) and scores them with the staged, partial-credit
+CudaGym SDK -> map the ``Trace``) and scores them with the correctness-gated
 reward (``reward.get_reward``). The single-turn env mixes this in; the
 agentic path reuses ``cudagym_client`` + ``reward`` directly.
 
@@ -142,7 +142,7 @@ class BaseCudaEvaluator(ABC):
         return results
 
     def get_reward(self, result: KernelEvalResult) -> float:
-        """Staged, partial-credit reward for one result (see ``reward.get_reward``)."""
+        """Correctness-gated reward for one result (see ``reward.get_reward``)."""
         return reward.get_reward(
             result,
             self.eval_config.reward_weights,

@@ -31,8 +31,8 @@ from typing import Any, Optional
 class CudaGymEvalConfig:
     """Per-environment evaluation settings. One instance per registered GPU SKU.
 
-    Reward weights / perf-normalization defaults match the reference so reward
-    magnitudes are comparable across the single-turn and agentic paths.
+    The defaults mirror the shipped recipes; the single-turn and agentic paths
+    consume the same fields so reward magnitudes stay comparable.
     """
 
     # GPU SKU the kernel is evaluated on. Must be a cudagym
@@ -44,23 +44,28 @@ class CudaGymEvalConfig:
     # cudagym compile/execute timeouts, in seconds.
     compilation_timeout: int = 120
     execution_timeout_per_trial: int = 60
-    # Staged reward weights, consumed by ``reward.get_reward`` (partial credit at
-    # each stage: format -> compiled -> executed -> correctness -> performance).
+    # Correctness-gated reward weights, consumed by ``reward.get_reward``:
+    # 0 until the kernel is numerically correct on every workload, then
+    # correctness + performance * perf_term (SOL score in [0,1] when the row
+    # carries anchors). Progress rungs (format/compiled/executed) are metrics
+    # only — never rewarded (JIT languages have no failable compile stage, so
+    # paying for "compiled" rewarded placeholder files).
     reward_weights: dict[str, float] = field(
         default_factory=lambda: {
-            "format": 1,
-            "compiled": 2,
-            "executed": 2,
-            "correctness": 4,
-            "performance": 8,
+            "correctness": 1.0,
+            "performance": 1.0,
         }
     )
-    # Performance-reward normalization (asymmetric log-scale of the speedup).
+    # Performance-term config. allow_speedup_fallback: for anchor-less rows,
+    # whether a correct kernel may earn the perf term from log-normalized
+    # speedup-over-reference (clip_*/speedup_ratio shape that mapping); false
+    # -> the perf term is 0 without anchors.
     perf_reward_config: dict[str, float] = field(
         default_factory=lambda: {
             "clip_max": 10.0,
             "clip_min": 0.1,
             "speedup_ratio": 0.75,
+            "allow_speedup_fallback": True,
         }
     )
     # Optional cudagym ``EvalConfig`` overrides (warmup, iterations, tolerances,
@@ -84,11 +89,12 @@ class CudaGymEvalConfig:
 class KernelEvalResult:
     """Outcome of evaluating one model completion against a Definition + Workloads.
 
-    Filled stagewise by the evaluator; ``reward.get_reward`` reads the boolean
-    flags to assign partial credit. A flag implies all earlier flags (a kernel
-    that is ``correctness`` necessarily ``compiled`` and ``executed``).
-    ``speedup`` is the mean ``speedup_factor`` over passed workloads, or -1.0 if
-    never measured (so ``get_reward`` can skip the performance term).
+    Filled stagewise by the evaluator. ``reward.get_reward`` reads
+    ``formatted``+``correctness`` (the gate) and the perf signals; the other
+    flags are metrics-only. A flag implies all earlier flags (a kernel that is
+    ``correctness`` necessarily ``compiled`` and ``executed``). ``speedup`` is
+    the mean ``speedup_factor`` over passed workloads, or -1.0 if never
+    measured (so ``get_reward`` can skip the fallback perf term).
     """
 
     original_prompt: str = ""
@@ -105,7 +111,6 @@ class KernelEvalResult:
     )  # mean SOL score in [0,1] (0.5=human-best, 1.0=speed-of-light); -1 = no anchors
     human_best_speedup: float = -1.0  # geomean speedup over human-best (logging)
     runtime: float = -1.0  # mean custom-kernel latency in ms
-    ref_exec_eager_time: float = -1.0  # mean reference latency in ms
     # Free-form diagnostics (compile/exec errors, per-workload statuses, ...);
     # surfaced into the env observation so the agent can react.
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -137,61 +142,160 @@ LANGUAGE_DEFAULTS: dict[str, tuple[str, str, str]] = {
 }
 
 
+def _assert_languages_track_the_sdk() -> None:
+    """Fail loudly if our per-language table drifts from SupportedLanguages.
+
+    The filenames and fence tags are genuinely ours (the SDK defines no such
+    convention), but the KEY SET is the SDK's. When they diverge, an unlisted
+    language reaches ``check_inline_format`` first and is reported as the
+    MODEL's format error rather than as our configuration gap.
+    """
+    try:
+        from cudagym.contracts.common.files import SupportedLanguages
+    except ImportError:  # pragma: no cover - SDK always present in the atlas extra
+        return
+    sdk = {lang.value for lang in SupportedLanguages}
+    ours = set(LANGUAGE_DEFAULTS)
+    if sdk - ours:
+        raise RuntimeError(
+            f"LANGUAGE_DEFAULTS is missing CudaGym languages {sorted(sdk - ours)}; "
+            "add them (filename, entry point, fence) instead of letting rows fail as format errors"
+        )
+    if ours - sdk:
+        raise RuntimeError(f"LANGUAGE_DEFAULTS has languages CudaGym does not support: {sorted(ours - sdk)}")
+
+
+def _assert_sku_hooks_track_the_sdk() -> None:
+    """Fail at import if the private SDK helpers the SKU check leans on are gone.
+
+    An upstream rename would otherwise silently degrade every endpoint check
+    to "unverifiable".
+    """
+    try:
+        import cudagym.config.device as device
+    except ImportError:  # pragma: no cover - the data layer runs cudagym-free
+        return
+    for name in ("GPU_SPECS", "_hardware_match_keys", "_normalize_gpu_name"):
+        if not hasattr(device, name):
+            raise RuntimeError(
+                f"cudagym.config.device.{name} is gone upstream; "
+                "update sku_expectations/verify_health_payload to the new API"
+            )
+
+
+_assert_languages_track_the_sdk()
+_assert_sku_hooks_track_the_sdk()
+
+
 def fence_lang_for(language: str) -> str:
-    """Markdown fence tag the model should write for a given cudagym language."""
-    return LANGUAGE_DEFAULTS.get(language, LANGUAGE_DEFAULTS["python"])[2]
+    """Markdown fence tag the model should write for a given cudagym language.
+
+    Hard-indexed: the import-time guard proves the table covers every SDK
+    language, so a miss can only be bad row data — fail it loudly at data time
+    instead of rendering a python prompt the eval will refuse.
+    """
+    return LANGUAGE_DEFAULTS[language][2]
 
 
 def entry_symbol_for(language: str) -> str:
     """Entry function name the kernel must define (the part after ``::``)."""
-    return LANGUAGE_DEFAULTS.get(language, LANGUAGE_DEFAULTS["python"])[1].split("::")[
-        -1
-    ]
+    return LANGUAGE_DEFAULTS[language][1].split("::")[-1]
 
 
 # ---------------------------------------------------------------------------
 # Endpoint-SKU verification (the runtime half of the launcher's preflight).
 # ---------------------------------------------------------------------------
-# SKU -> (accepted /health gpu_model substrings, expected sm_version prefix).
-# B200 accepts GB200: GB200 superchip nodes report "NVIDIA GB200" but run B200
-# silicon (sm_100). Kept in sync with slurm/cudagym_hosting.py and the Gym
-# cudagym resources server (intentional small duplication across packages).
-SKU_EXPECTATIONS: dict[str, tuple[tuple[str, ...], Optional[str]]] = {
-    "B200": (("B200", "GB200"), "sm_100"),
-    "H100": (("H100",), "sm_90"),
-    "H200": (("H200",), "sm_90"),
-    "GB10": (("GB10",), None),
-    "GB300": (("GB300",), "sm_103"),
-    "VR100": (("VR100",), None),
-}
+# Derived from the CudaGym SDK rather than restated here: GPU_SPECS carries the
+# sm version, the compile-target qualifier and the vendor name aliases for every
+# SupportedHardware value, so a hand-written table both duplicates it and goes
+# stale silently. Ours had already drifted (VR100/GB300 sm versions) and listed
+# "GB10", which is NOT a SupportedHardware member -- it is an alias of
+# DGX_SPARK -- so an endpoint declaring it raised inside build_solution and was
+# recorded as the MODEL's format error on every sample.
+def sku_expectations(sku: str) -> Optional[tuple[tuple[str, ...], str]]:
+    """``(accepted /health gpu_model substrings, expected sm prefix)`` for a SKU.
+
+    Returns None when the name is not a SupportedHardware value (or alias), so
+    callers can treat "we cannot check this" as its own outcome rather than a
+    pass.
+    """
+    try:
+        from cudagym.config.device import GPU_SPECS, _hardware_match_keys
+        from cudagym.contracts.solution import SupportedHardware
+    except ImportError:  # pragma: no cover - SDK always present in the atlas extra
+        return None
+
+    normalized = sku.strip().upper().replace("-", "_")
+    hardware = None
+    for candidate in SupportedHardware:
+        if candidate.value.upper().replace("-", "_") == normalized:
+            hardware = candidate
+            break
+        if any(k.upper().replace("-", "_").replace(" ", "_") == normalized for k in _hardware_match_keys(candidate)):
+            hardware = candidate
+            break
+    if hardware is None:
+        return None
+    spec = GPU_SPECS.get(hardware)
+    if spec is None:
+        return None
+    # Accept the enum value plus every vendor alias the SDK records; GB200
+    # superchip nodes report "NVIDIA GB200" while running B200 silicon, which
+    # the SDK already encodes.
+    # Already normalized by the SDK, which is what the comparison expects.
+    return tuple(_hardware_match_keys(hardware)), f"sm_{spec.sm_version}"
 
 
-def verify_health_payload(payload: dict[str, Any], sku: str) -> tuple[bool, str]:
+def verify_health_payload(payload: dict[str, Any], sku: str) -> tuple[Optional[bool], str]:
     """Compare a cudagym ``/health`` payload against a declared GPU SKU.
 
-    Returns ``(ok, detail)``. Unverifiable payloads (no gpu fields — e.g. a
-    compile-only responder) and SKUs without recorded expectations are ``ok``
-    with an explanatory detail so callers can warn instead of fail.
+    Returns ``(ok, detail)``. "Unverifiable" is NOT a pass: it comes back as
+    ``ok=None`` so a caller can tell "the endpoint matches" from "nothing was
+    actually checked". Reporting the latter as True is how a silicon mismatch
+    stays silent -- and it is silent for Triton, which JIT-compiles on whatever
+    GPU serves the request.
     """
     gpu_model = payload.get("gpu_model") or ""
     sm_version = payload.get("sm_version") or ""
     if not gpu_model and not sm_version:
-        return True, "unverifiable: /health reports no gpu_model/sm_version"
-    expected = SKU_EXPECTATIONS.get(sku.upper())
+        return None, "unverifiable: /health reports no gpu_model/sm_version"
+    expected = sku_expectations(sku)
     if expected is None:
-        return True, f"unverifiable: no expectations recorded for sku {sku}"
-    models, sm_prefix = expected
-    if gpu_model and not any(m in gpu_model for m in models):
-        return (
-            False,
-            f"endpoint reports gpu_model={gpu_model!r}, expected one of {models} for {sku}",
-        )
+        return None, f"unverifiable: {sku!r} is not a CudaGym SupportedHardware value"
+    match_keys, sm_prefix = expected
+    # Compare with the SDK's OWN name normalization rather than raw substrings:
+    # real /health names carry vendor prefixes and spacing ("NVIDIA GeForce RTX
+    # 5090") that a naive test rejects, and the normalization rules belong to
+    # the SDK. Substring-after-normalization also gets the GB200 case right for
+    # free -- "nvidiagb200" contains "b200", and GB200 superchip nodes do serve
+    # B200 kernels -- without us restating that as a special case.
+    if gpu_model:
+        reported = _normalize_gpu(gpu_model)
+        if reported is None:
+            return None, f"unverifiable: cannot normalize gpu_model={gpu_model!r}"
+        if not any(key and key in reported for key in match_keys):
+            return (
+                False,
+                f"endpoint reports gpu_model={gpu_model!r}, which is not {sku}",
+            )
     if sm_version and sm_prefix and not sm_version.startswith(sm_prefix):
         return (
             False,
             f"endpoint reports sm_version={sm_version!r}, expected {sm_prefix}* for {sku}",
         )
     return True, f"gpu_model={gpu_model or '?'} sm_version={sm_version or '?'}"
+
+
+def _normalize_gpu(name: str) -> Optional[str]:
+    """A ``/health`` gpu_model normalized the way the CudaGym SDK normalizes names."""
+    try:
+        from cudagym.config.device import _normalize_gpu_name
+    except ImportError:  # pragma: no cover - SDK always present in the atlas extra
+        return None
+    try:
+        return _normalize_gpu_name(name)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # ---------------------------------------------------------------------------

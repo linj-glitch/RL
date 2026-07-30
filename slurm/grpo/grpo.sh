@@ -25,15 +25,17 @@ export MODELS_PATH=${MODELS_PATH:-DEFAULT_MODELS}
 export OUTPUT_ROOT=${OUTPUT_ROOT:-DEFAULT_OUTPUT}
 export DATASETS_PATH=${DATASETS_PATH:-DEFAULT_DATASETS}
 
-# Optional settings for CudaGym (colocated / disjoint / remote hosting modes)
+# Optional settings for CudaGym (colocated/disjoint in-allocation hosting; the
+# `endpoint` kind launches no servers and only needs the URL below).
 export CUDAGYM_MODE=${CUDAGYM_MODE:-DEFAULT_CUDAGYM_MODE}
 export CUDAGYM_ENABLED=${CUDAGYM_ENABLED:-DEFAULT_CUDAGYM_ENABLED}
 export CUDAGYM_CONTAINER=${CUDAGYM_CONTAINER:-DEFAULT_CUDAGYM_CONTAINER}
 export ARTIFACTS_DIR=${ARTIFACTS_DIR:-DEFAULT_ARTIFACTS_DIR}
 export CCACHE_DIR=${CCACHE_DIR:-DEFAULT_CCACHE_DIR}
 export CUDAGYM_NUM_NODES=${CUDAGYM_NUM_NODES:-DEFAULT_CUDAGYM_NUM_NODES}
-# remote mode: the eval endpoint URL (Astra/Modal or a hand-started server). Colocated/
-# disjoint modes ignore this — ray.sub exports the in-allocation LB URL instead.
+# endpoint kind: the resolved eval endpoint URL (submit_grpo fills it from the
+# recipe's hosting block / registry). Colocated/disjoint runs ignore this —
+# ray.sub exports the in-allocation LB URL instead.
 export CUDAGYM_UNIFIED_SERVER_URL=${CUDAGYM_UNIFIED_SERVER_URL:-DEFAULT_CUDAGYM_UNIFIED_SERVER_URL}
 
 # API keys
@@ -51,8 +53,12 @@ export TIME=${TIME:-DEFAULT_TIME}
 export GPUS_PER_NODE=${GPUS_PER_NODE:-DEFAULT_GPUS_PER_NODE}
 # =======================================================================
 
+# CACHE_PATH holds the HF cache only. The uv cache deliberately stays at
+# ray.sub's default (container-local): pointing UV_CACHE_DIR_OVERRIDE at a
+# SHARED Lustre dir let concurrent jobs race each other's cold-cache package
+# extraction — observed as `ImportError: ... from 'transformers' (unknown
+# location)` in freshly built venvs (jobs 2806903/2806906).
 export HF_HOME=${CACHE_PATH}/huggingface
-export UV_CACHE_DIR=${CACHE_PATH}/uv
 export OUTPUT_DIR=${OUTPUT_ROOT}/${EXP_NAME}
 
 export SKIP_GRES_ARG=${SKIP_GRES_ARG:-DEFAULT_SKIP_GRES_ARG}
@@ -89,14 +95,22 @@ export COMMAND="uv run ${UV_EXTRAS} ${RUN_SCRIPT} \
 cwd=$(pwd -P)
 cwd_parent=$(dirname $cwd)
 
-export MOUNTS="$cwd_parent:$cwd_parent,$cwd:/opt/nemo-rl,$WORKSPACE_PATH:$WORKSPACE_PATH,$WORKSPACE_PATH:/cluster_workspace,$MODELS_PATH:/models,$DATASETS_PATH:/datasets"
+export MOUNTS="$cwd_parent:$cwd_parent,$cwd:/opt/nemo-rl,$WORKSPACE_PATH:$WORKSPACE_PATH,$MODELS_PATH:/models,$DATASETS_PATH:/datasets"
 export PYTHONPATH="$cwd/3rdparty/cudagym/src:${PYTHONPATH}"
 # The uploaded 3rdparty/cudagym tree has no .git, so setuptools-scm can't derive
 # its version when the venvs build it editable (uv atlas extra, Gym server
-# venvs) — pin it to the vendored tag (v2.2.3; keep in sync when bumping).
-export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CUDAGYM=2.2.3
-# SolSwarm surface assets (prompts/skills/context) for the cuda_agent sandbox_profile.
+# venvs). submit_grpo derives this from `git describe` on the submodule at
+# submit time — a hand-typed pin here silently went stale on every bump (it read
+# 2.2.3 while the submodule was already v2.2.3-19-g87aa3f6).
+export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CUDAGYM=DEFAULT_CUDAGYM_VERSION
+# The SolSwarm checkout: container mode (sandbox_profile: solswarm) runs its
+# docker/agent/entrypoint.sh per rollout; the minimal profile's /submit skill
+# is staged from it.
 export SOLSWARM_SURFACE_ROOT="$cwd/3rdparty/solswarm"
+# Where the agent writes the job's sandbox diagnostics (pre-flight manifest +
+# the once-per-job sandbox_tree.json probe/diff) — on shared storage, next to
+# the logs.
+export CUDA_AGENT_MANIFEST_DIR="${OUTPUT_DIR}/sandbox_manifests"
 
 # if -i flag is provided, run the command interactively
 if [ "$1" == "-i" ]; then

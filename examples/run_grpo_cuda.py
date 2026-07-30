@@ -18,15 +18,15 @@ End-to-end wiring (current NeMo-RL ``setup``/``grpo_train`` API):
 
   1. ``setup_environments`` builds one ``CudaGymEnvironment`` Ray actor per GPU
      SKU in ``env.cudagym`` (a thin CudaGym HTTP client, ``num_gpus=0``).
-  2. ``setup_data`` loads SOLBench problem rows (``GRPODriverDataset``), tags
+  2. ``setup_data`` loads SOLBench problem rows (``prepare_cuda_dataset``), tags
      each with a sampled task (SKU), and wraps them in ``AllTaskProcessedDataset``
      with ``cudagym_data_processor``.
   3. ``cudagym_data_processor`` renders the problem into a single ``user`` prompt
      (``<think>`` + fenced kernel requested), applies the chat template, stores
      ``token_ids`` + the SOLBench problem as ``extra_env_info``.
   4. GRPO generates one completion/prompt; ``CudaGymEnvironment.step`` evaluates
-     it and returns the staged reward (single-turn, ``done=1``); assistant tokens
-     (``<think>`` + code) train, prompt tokens are masked.
+     it and returns the correctness-gated reward (single-turn, ``done=1``);
+     assistant tokens (``<think>`` + code) train, prompt tokens are masked.
 
 The agentic path reuses the env's evaluation+reward via a NeMo-Gym
 ``cuda_agent``; this file is the single-turn baseline.
@@ -44,7 +44,7 @@ from transformers import PreTrainedTokenizerBase
 
 from nemo_rl.algorithms.grpo import MasterConfig, grpo_train, setup
 from nemo_rl.algorithms.utils import get_tokenizer, set_seed
-from nemo_rl.data.atlas_datasets import GRPODriverDataset
+from nemo_rl.data.atlas_datasets import prepare_cuda_dataset
 from nemo_rl.data.datasets.processed_dataset import AllTaskProcessedDataset
 from nemo_rl.data.interfaces import DatumSpec, LLMMessageLogType, TaskDataSpec
 from nemo_rl.distributed.ray_actor_environment_registry import get_actor_python_env
@@ -81,69 +81,72 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
 # ===============================================================================
 #                           Prompt construction
 # ===============================================================================
+# Problem-statement template: the words live HERE, once; code computes only the
+# values. (The surrounding instruction prose lives in the prompt_file template,
+# examples/prompts/cudagym.txt — this renders its {driver_code} slot.)
+_PROBLEM_TEMPLATE = """\
+{description}# Inputs:
+{input_lines}
+# Outputs:
+{output_lines}
+{axes_line}
+# Function signature: {entry_function}({args})
+# {output_convention}
+
+# Reference implementation:
+{reference}"""
+
+
+def _tensor_lines(specs: dict) -> str:
+    # Hard-indexed on purpose: a definition missing shape/dtype should fail the
+    # row loudly at data time, not render a '?' prompt the model can't solve.
+    return "\n".join(f"#   {name}: shape={spec['shape']}, dtype={spec['dtype']}" for name, spec in specs.items())
+
+
+def _axis_parts(axes: dict) -> list[str]:
+    """Which dims are fixed (const) vs vary per workload (expr/var)."""
+    parts = []
+    for axis_name, axis_spec in axes.items():
+        if axis_spec.get("type") == "const":
+            parts.append(f"{axis_name}={axis_spec.get('value')}")
+        elif axis_spec.get("type") == "expr":
+            parts.append(f"{axis_name}={axis_spec.get('expression')}")
+        else:
+            parts.append(f"{axis_name}=variable")
+    return parts
+
+
 def _annotate_solbench_problem(
-    definition: dict, destination_passing_style: bool
+    definition: dict, destination_passing_style: bool, entry_function: str
 ) -> str:
     """Render a SOLBench ``definition`` dict into a readable problem statement.
 
-    Includes the description, the input/output tensor specs (shape + dtype), the
-    axis semantics (which dims are constant vs vary per workload), the function
-    signature the kernel must implement, and the reference implementation — so
-    the policy knows exactly what to write and what inputs/outputs to expect.
+    ``entry_function`` comes from the same ``entry_symbol_for`` lookup the outer
+    prompt template uses, so the signature line can never contradict the header.
     Operates on the raw dict (no ``cudagym`` import) since it runs in DataLoader
     workers.
     """
-    lines: list[str] = []
-
-    if definition.get("description"):
-        lines.append(f"# {definition['description']}")
-        lines.append("")
-
     input_names = list(definition.get("inputs", {}).keys())
     output_names = list(definition.get("outputs", {}).keys())
-
-    lines.append("# Inputs:")
-    for name, spec in definition.get("inputs", {}).items():
-        lines.append(
-            f"#   {name}: shape={spec.get('shape', [])}, dtype={spec.get('dtype', '?')}"
-        )
-    lines.append("# Outputs:")
-    for name, spec in definition.get("outputs", {}).items():
-        lines.append(
-            f"#   {name}: shape={spec.get('shape', [])}, dtype={spec.get('dtype', '?')}"
-        )
-
-    # Axes: tell the model which dims are fixed (const) vs vary per workload (var/expr).
     axes = definition.get("axes", {})
-    if axes:
-        parts = []
-        for axis_name, axis_spec in axes.items():
-            if axis_spec.get("type") == "const":
-                parts.append(f"{axis_name}={axis_spec.get('value')}")
-            elif axis_spec.get("type") == "expr":
-                parts.append(f"{axis_name}={axis_spec.get('expression')}")
-            else:
-                parts.append(f"{axis_name}=variable")
-        lines.append(f"# Axes: {', '.join(parts)}")
-    lines.append("")
-
-    # Function signature hint: destination-passing-style passes outputs as the
-    # trailing args to be written in place; otherwise the function returns them.
+    # Destination-passing-style passes outputs as the trailing args to be
+    # written in place; otherwise the function returns them.
     if destination_passing_style:
-        all_args = ", ".join(input_names + output_names)
-        lines.append(f"# Function signature: run({all_args})")
-        lines.append(
-            f"# Outputs ({', '.join(output_names)}) are pre-allocated; write results in-place."
-        )
+        args = ", ".join(input_names + output_names)
+        output_convention = f"Outputs ({', '.join(output_names)}) are pre-allocated; write results in-place."
     else:
-        all_args = ", ".join(input_names)
-        lines.append(f"# Function signature: run({all_args})")
-        lines.append(f"# Return: {', '.join(output_names)}")
-    lines.append("")
-
-    lines.append("# Reference implementation:")
-    lines.append(definition.get("reference", ""))
-    return "\n".join(lines)
+        args = ", ".join(input_names)
+        output_convention = f"Return: {', '.join(output_names)}"
+    return _PROBLEM_TEMPLATE.format(
+        description=f"# {definition['description']}\n\n" if definition.get("description") else "",
+        input_lines=_tensor_lines(definition.get("inputs", {})),
+        output_lines=_tensor_lines(definition.get("outputs", {})),
+        axes_line=f"# Axes: {', '.join(_axis_parts(axes))}\n" if axes else "",
+        entry_function=entry_function,
+        args=args,
+        output_convention=output_convention,
+        reference=definition["reference"],
+    )
 
 
 def cudagym_data_processor(
@@ -176,7 +179,8 @@ def cudagym_data_processor(
     workloads = datum_dict["workloads"]
     if isinstance(workloads, str):
         workloads = json.loads(workloads)
-    problem_text = _annotate_solbench_problem(definition, destination_passing_style)
+    entry_function = entry_symbol_for(language)
+    problem_text = _annotate_solbench_problem(definition, destination_passing_style, entry_function)
 
     # Render the prompt template (driver_code = the problem statement; kernel_lang
     # = the fence tag the model writes; entry_function = the symbol it must define;
@@ -188,7 +192,7 @@ def cudagym_data_processor(
             driver_code=problem_text,
             driver_lang="python",  # the SOLBench reference is always Python
             kernel_lang=fence_lang_for(language),
-            entry_function=entry_symbol_for(language),
+            entry_function=entry_function,
             gpu_sku=datum_dict["target_hardware"],
             language=language,
         )
@@ -221,15 +225,19 @@ def cudagym_data_processor(
             ]
         loss_multiplier = 0.0
 
+    # Per-workload SOL/human-best anchors: baked as a JSON string by the data
+    # layer (same tolerance as definition/workloads above) — drives the
+    # SOL-score perf reward in the env's step().
+    sol_anchors = datum_dict.get("sol_anchors") or {}
+    if isinstance(sol_anchors, str):
+        sol_anchors = json.loads(sol_anchors)
     extra_env_info = {
         "language": language,
         "definition": definition,
         "workloads": workloads,
         "target_hardware": datum_dict.get("target_hardware"),
         "destination_passing_style": destination_passing_style,
-        # Per-workload SOL/human-best anchors (parsed from the JSON string the data
-        # layer baked in) — drives the SOL-score perf reward in the env's step().
-        "sol_anchors": json.loads(datum_dict.get("sol_anchors") or "{}"),
+        "sol_anchors": sol_anchors,
     }
     return {
         "message_log": message_log,
@@ -258,8 +266,9 @@ def setup_data(
     print(f"Train datasets: {data_paths}\nValidation datasets: {val_data_paths}")
 
     # task_to_env_config (env_name -> CudaGymEvalConfig) is passed so the dataset
-    # can sample which SKU/env evaluates each problem by its ``weight``.
-    data = GRPODriverDataset(
+    # can route each problem to an env: hardware-pinned rows go to a matching
+    # SKU, unpinned rows sample by env ``weight``.
+    formatted_ds = prepare_cuda_dataset(
         json_file_paths=data_paths,
         val_json_file_paths=val_data_paths,
         task_to_env_config=task_to_env_config,
@@ -278,14 +287,14 @@ def setup_data(
     }
 
     dataset = AllTaskProcessedDataset(
-        data.formatted_ds["train"],
+        formatted_ds["train"],
         tokenizer,
         default_task_spec,
         task_data_processors,
         max_seq_length=data_config["max_input_seq_length"],
     )
     val_dataset = AllTaskProcessedDataset(
-        data.formatted_ds["validation"],
+        formatted_ds["validation"],
         tokenizer,
         default_task_spec,
         task_data_processors,
@@ -301,8 +310,9 @@ def setup_environments(
 
     Each actor is a thin CudaGym HTTP client (``num_gpus=0``). The CudaGym server
     URL is resolved from ``CUDAGYM_UNIFIED_SERVER_URL`` unless the env block sets
-    ``server_url``; colocated mode injects ``CUDAGYM_UNIFIED_SERVER_URL`` into the
-    environment, which is forwarded to the actor via ``runtime_env.env_vars``.
+    ``server_url``; the driver's environment (URL, auth token, Modal proxy pair)
+    reaches the actor through the JOB-level runtime env ``init_ray`` sets — no
+    per-actor forwarding needed.
     """
     task_to_env: dict[str, EnvironmentInterface] = {}
     task_to_env_config: dict[str, Any] = {}
@@ -310,14 +320,13 @@ def setup_environments(
     if "cudagym" in env_configs:
         for env_name, cfg in env_configs["cudagym"].items():
             cfg = dict(cfg)
-            cfg.setdefault("sku", env_name)  # default sku = env name (e.g. "b200")
+            # Default sku = env name; upper-cased because SupportedHardware is a
+            # case-sensitive enum ("b200" would pass every preflight and then
+            # fail per-sample inside build_solution, blamed on the model).
+            cfg.setdefault("sku", env_name.upper())
             env = CudaGymEnvironment.options(  # type: ignore[attr-defined]
                 num_gpus=0,  # HTTP client only; GPU work runs on the CudaGym server
-                runtime_env={
-                    "py_executable": get_actor_python_env(_CUDAGYM_ENV_FQN),
-                    # Forward CUDAGYM_UNIFIED_SERVER_URL / CUDAGYM_AUTH_TOKEN etc.
-                    "env_vars": dict(os.environ),
-                },
+                runtime_env={"py_executable": get_actor_python_env(_CUDAGYM_ENV_FQN)},
             ).remote(cfg)
             task_to_env[env_name] = env
             task_to_env_config[env_name] = ray.get(env.get_eval_config.remote())

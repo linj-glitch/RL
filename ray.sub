@@ -483,18 +483,18 @@ head_node_ip=${ip_addresses_array[0]}
 ip_head=$head_node_ip:$PORT
 
 ########################################################
-# CudaGym service hosting mode (colocated | disjoint | remote)
+# In-allocation CudaGym service hosting (colocated | disjoint)
 ########################################################
-# CUDAGYM_MODE selects how the CudaGym compile/GPU servers are hosted for this run.
-# When unset (and CUDAGYM_ENABLED unset), none of the blocks below run and the Ray
-# bringup is byte-for-byte identical to a non-CudaGym job.
+# CUDAGYM_MODE selects how in-allocation CudaGym compile/GPU servers are hosted.
+# When unset (hosting kind `endpoint`, or no cudagym at all), none of the blocks
+# below run and the Ray bringup is byte-for-byte identical to a non-CudaGym job —
+# the driver reaches the endpoint carried by the recipe
+# (env.cudagym.<sku>.server_url) / CUDAGYM_UNIFIED_SERVER_URL instead.
 #   colocated: CompileServer+GPUServer on EVERY node, load balancer on the Ray head
 #              node. Eval time-shares the training GPUs (typical for single-turn).
 #   disjoint:  the trailing CUDAGYM_NUM_NODES nodes are carved out of the Ray cluster
 #              and dedicated to CudaGym; load balancer on the first CudaGym node
 #              (in-cluster eval, e.g. nodes 1-8 train, 9-10 cudagym).
-#   remote:    no in-allocation servers; the driver reaches a remote endpoint carried
-#              by the recipe (env.cudagym.<sku>.server_url); the agentic default.
 CUDAGYM_MODE=${CUDAGYM_MODE:-}
 
 # Number of nodes dedicated to Ray training. Defaults to the full allocation so the
@@ -511,9 +511,9 @@ else
   TRAIN_NUM_NODES=$SLURM_JOB_NUM_NODES
 fi
 
-# Only the TRAIN_NUM_NODES Ray nodes register worker_units with the head, so the
-# expected-actors bound must track TRAIN_NUM_NODES rather than the full allocation
-# (identical when not disjoint; overrides the default computed above).
+# Total Ray worker_units expected once every node has registered with the head.
+# Only the TRAIN_NUM_NODES Ray nodes register worker_units, so the bound tracks
+# TRAIN_NUM_NODES rather than the full allocation (identical when not disjoint).
 NUM_ACTORS=$((GPUS_PER_NODE * TRAIN_NUM_NODES))
 
 # Optionally launch in-allocation CudaGym services (colocated or disjoint).
@@ -694,11 +694,6 @@ if [[ "${CUDAGYM_ENABLED:-0}" == "1" ]]; then
   # the full environment by default; pyxis/enroot forwards it into the container).
   export CUDAGYM_UNIFIED_SERVER_URL="http://${CUDAGYM_LB_NODE_IP}:${LB_PORT}"
   echo "[INFO] CUDAGYM_UNIFIED_SERVER_URL=$CUDAGYM_UNIFIED_SERVER_URL"
-elif [[ "$CUDAGYM_MODE" == "remote" ]]; then
-  # Remote: no in-allocation servers; the recipe (env.cudagym.<sku>.server_url)
-  # or CUDAGYM_UNIFIED_SERVER_URL carries the endpoint. CUDAGYM_* env vars reach
-  # the containers the same way as HF_TOKEN (srun exports all + pyxis forwards).
-  echo "[INFO] CUDAGYM_MODE=remote: no in-allocation CudaGym; using remote endpoint (${CUDAGYM_UNIFIED_SERVER_URL:-from recipe})."
 fi
 
 # Write the topology probe script that runs inside each container.

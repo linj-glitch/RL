@@ -21,12 +21,10 @@ Every ``env.cudagym.<name>`` recipe entry declares where its eval servers live:
         b200:
           sku: "B200"
           hosting:
-            kind: endpoint          # colocated | disjoint | endpoint | slurm-service
+            kind: endpoint          # colocated | disjoint | endpoint
             endpoint: modal/b200    # kind=endpoint: registry ref "<provider>/<key>" ...
             # url: https://...      #   ... or an inline URL (mutually exclusive)
             # num_nodes: 1          # kind=disjoint only
-            # service_cluster: ...  # kind=slurm-service (experimental) + num_service_nodes,
-            #                       #   endpoint_port, [service_login_port]
 
 ``kind`` is topology; the provider (modal/astra/static) is a property of the
 registry entry (``endpoints/<provider>.yaml``). ``submit_grpo.py`` resolves and
@@ -41,22 +39,28 @@ Back-compat: a legacy ``server_url:`` with no ``hosting:`` block is treated as
 ``CUDAGYM_UNIFIED_SERVER_URL`` / ``CUDAGYM_URL`` (the formalized escape hatch).
 
 Kept dependency-light on purpose (omegaconf + stdlib; ``requests`` imported
-lazily in the probe): ``nemo_rl.utils.config`` would pull hydra into the submit
-path, so its small inheritance loader is lifted here verbatim.
+lazily in the probe): the recipe loader is the hydra-free
+``nemo_rl.utils.config_inheritance``, shared with the training-side loader.
 """
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional, Union, cast
+from typing import Any, Optional, Union
 
-from omegaconf import DictConfig, ListConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf
+
+from nemo_rl.environments.atlas.cuda_kernel_utils import (  # noqa: F401  (re-exported for submit-time callers)
+    sku_expectations,
+    verify_health_payload,
+)
+from nemo_rl.utils.config_inheritance import load_config_with_inheritance
 
 REPO_ROOT = Path(__file__).parent.parent
 ENDPOINTS_DIR = REPO_ROOT / "endpoints"
 
 IN_ALLOCATION_KINDS = ("colocated", "disjoint")
-KINDS = ("colocated", "disjoint", "endpoint", "slurm-service")
+KINDS = ("colocated", "disjoint", "endpoint")
 
 # provider (endpoints/<provider>.yaml stem) -> env vars that MUST be set at submit.
 # Modal's edge proxy rejects requests without the workspace proxy-token headers.
@@ -64,19 +68,12 @@ PROVIDER_REQUIRED_ENV: dict[str, tuple[str, ...]] = {
     "modal": ("MODAL_PROXY_TOKEN_ID", "MODAL_PROXY_TOKEN_SECRET"),
 }
 
-# SKU -> (accepted /health gpu_model substrings, expected sm_version prefix or None).
-# B200 accepts GB200: GB200 superchip nodes report "NVIDIA GB200" but run B200
-# silicon (sm_100) — the same mapping cluster yamls use (sku: gb200 serves B200).
-SKU_EXPECTATIONS: dict[str, tuple[tuple[str, ...], Optional[str]]] = {
-    "B200": (("B200", "GB200"), "sm_100"),
-    "H100": (("H100",), "sm_90"),
-    "H200": (("H200",), "sm_90"),
-    "GB10": (("GB10",), None),
-    "GB300": (("GB300",), "sm_103"),
-    "VR100": (("VR100",), None),
-}
 
 # cluster yaml `sku:` (lowercase) -> the kernel-target SKU that silicon serves.
+# A hand table because the submitting login node has no cudagym SDK (whose
+# _hardware_match_keys encodes the same aliasing) — the one fact worth
+# restating is GB200 superchips serving B200 kernels; add a row per new
+# cluster silicon.
 CLUSTER_SILICON: dict[str, str] = {
     "h100": "H100",
     "h200": "H200",
@@ -86,7 +83,7 @@ CLUSTER_SILICON: dict[str, str] = {
 
 EXAMPLE_HOSTING_BLOCK = (
     "      hosting:\n"
-    "        kind: endpoint            # colocated | disjoint | endpoint | slurm-service\n"
+    "        kind: endpoint            # colocated | disjoint | endpoint\n"
     "        endpoint: modal/b200      # or `url: https://...`; see endpoints/*.yaml"
 )
 
@@ -95,55 +92,11 @@ class HostingError(ValueError):
     """A hosting declaration failed validation (message is user-facing)."""
 
 
-# --------------------------------------------------------------------------
-# Recipe loading with `defaults:` inheritance.
-# Lifted verbatim from nemo_rl/utils/config.py:23-94 (which cannot be imported
-# here without dragging hydra into the submit path). Keep in sync.
-# --------------------------------------------------------------------------
-
-
-def _resolve_path(base_path: Path, path: str) -> Path:
-    if path.startswith("/"):
-        return Path(path)
-    return base_path / path
-
-
-def _merge_with_override(base_config: DictConfig, override_config: DictConfig) -> DictConfig:
-    for key in list(override_config.keys()):
-        if isinstance(override_config[key], DictConfig):
-            if override_config[key].get("_override_", False):
-                override_config[key].pop("_override_")
-                if key in base_config:
-                    base_config.pop(key)
-    return cast(DictConfig, OmegaConf.merge(base_config, override_config))
-
-
 def load_recipe_merged(
     config_path: Union[str, Path], base_dir: Optional[Union[str, Path]] = None
 ) -> DictConfig:
     """Load a recipe YAML, following its ``defaults:`` inheritance chain."""
-    config_path = Path(config_path)
-    if base_dir is None:
-        base_dir = config_path.parent
-    base_dir = Path(base_dir)
-
-    config = OmegaConf.load(config_path)
-    assert isinstance(config, DictConfig), "Config must be a Dictionary Config"
-
-    if "defaults" in config:
-        defaults = config.pop("defaults")
-        if isinstance(defaults, (str, Path)):
-            defaults = [defaults]
-        elif isinstance(defaults, ListConfig):
-            defaults = [str(d) for d in defaults]
-        base_config = OmegaConf.create({})
-        for default in defaults:
-            parent_path = _resolve_path(base_dir, str(default))
-            parent_config = load_recipe_merged(parent_path, parent_path.parent)
-            base_config = _merge_with_override(base_config, parent_config)
-        config = _merge_with_override(base_config, config)
-
-    return config
+    return load_config_with_inheritance(config_path, base_dir)
 
 
 # --------------------------------------------------------------------------
@@ -199,7 +152,6 @@ class ResolvedEntry:
     url: str = ""  # kind=endpoint: the resolved URL
     endpoint: Optional[EndpointEntry] = None  # kind=endpoint via registry
     num_nodes: int = 0  # kind=disjoint
-    service: dict[str, Any] = field(default_factory=dict)  # kind=slurm-service
 
 
 @dataclass
@@ -207,7 +159,6 @@ class HostingResolution:
     entries: list[ResolvedEntry]
     in_allocation: Optional[ResolvedEntry]
     endpoints: list[ResolvedEntry]
-    slurm_services: list[ResolvedEntry]
     extra_config_opts: list[str]
     unified_server_url: str  # single-endpoint jobs: the URL; else ""
     warnings: list[str]
@@ -332,25 +283,6 @@ def resolve_hosting(
                     f"(provider '{ep.provider if ep else '?'}')."
                 )
             resolved.append(entry_resolved)
-        else:  # slurm-service
-            required = ("service_cluster", "num_service_nodes", "endpoint_port")
-            missing_fields = [f for f in required if not hosting.get(f)]
-            if missing_fields:
-                raise HostingError(
-                    f"env.cudagym.{name}.hosting (slurm-service) missing fields: "
-                    f"{', '.join(missing_fields)}"
-                )
-            service = {
-                "service_cluster": hosting["service_cluster"],
-                "num_service_nodes": int(hosting["num_service_nodes"]),
-                "endpoint_port": int(hosting["endpoint_port"]),
-                "service_login_port": int(hosting.get("service_login_port") or 8998),
-            }
-            warnings.append(
-                f"env.cudagym.{name}: hosting kind 'slurm-service' is experimental "
-                f"(pending live validation of the refreshed cudagym slurm deployment)."
-            )
-            resolved.append(ResolvedEntry(name=name, sku=sku, kind=kind, service=service))
 
     in_alloc = [e for e in resolved if e.kind in IN_ALLOCATION_KINDS]
     if len(in_alloc) > 1:
@@ -369,7 +301,6 @@ def resolve_hosting(
             )
 
     endpoints = [e for e in resolved if e.kind == "endpoint"]
-    slurm_services = [e for e in resolved if e.kind == "slurm-service"]
 
     if uses_nemo_gym:
         if len(resolved) != 1:
@@ -391,7 +322,6 @@ def resolve_hosting(
         entries=resolved,
         in_allocation=in_alloc[0] if in_alloc else None,
         endpoints=endpoints,
-        slurm_services=slurm_services,
         extra_config_opts=extra_opts,
         unified_server_url=unified,
         warnings=warnings,
@@ -414,30 +344,6 @@ def _probe_headers(entry: ResolvedEntry) -> dict[str, str]:
         headers["Modal-Key"] = os.environ.get("MODAL_PROXY_TOKEN_ID", "")
         headers["Modal-Secret"] = os.environ.get("MODAL_PROXY_TOKEN_SECRET", "")
     return headers
-
-
-def verify_health_payload(payload: dict[str, Any], sku: str) -> tuple[bool, str]:
-    """Compare a cudagym /health payload against a declared SKU.
-
-    Returns ``(ok, detail)``. Unverifiable payloads (no gpu fields — e.g. a
-    compile-only responder) and unknown SKUs are ``ok`` with an explanatory
-    detail so callers can warn instead of fail.
-    Kept in sync with nemo_rl/environments/atlas/cuda_kernel_utils.py and the
-    Gym cudagym resources server (intentional small duplication).
-    """
-    gpu_model = payload.get("gpu_model") or ""
-    sm_version = payload.get("sm_version") or ""
-    if not gpu_model and not sm_version:
-        return True, "unverifiable: /health reports no gpu_model/sm_version"
-    expected = SKU_EXPECTATIONS.get(sku.upper())
-    if expected is None:
-        return True, f"unverifiable: no expectations recorded for sku {sku}"
-    models, sm_prefix = expected
-    if gpu_model and not any(m in gpu_model for m in models):
-        return False, f"endpoint reports gpu_model={gpu_model!r}, expected one of {models} for {sku}"
-    if sm_version and sm_prefix and not sm_version.startswith(sm_prefix):
-        return False, f"endpoint reports sm_version={sm_version!r}, expected {sm_prefix}* for {sku}"
-    return True, f"gpu_model={gpu_model or '?'} sm_version={sm_version or '?'}"
 
 
 def probe_endpoint(
@@ -473,16 +379,19 @@ def probe_endpoint(
     raise HostingError(f"endpoint {entry.name} unreachable at {url}: {last_error}")
 
 
-def check_registry_against_solswarm(endpoints: dict, solswarm_root) -> list[str]:
+def check_registry_against_solswarm(
+    endpoints: dict[str, EndpointEntry], solswarm_root: Union[str, Path]
+) -> list[str]:
     """Differences between our endpoint registry and SolSwarm's gpu-skus.toml.
 
-    Both describe the same Modal fleet. They were maintained separately, so the
-    next fleet bump would touch one and not the other with nothing to notice.
-    Returns human-readable difference lines (empty when they agree); callers
-    warn rather than fail, since we deliberately register a subset.
+    Both describe the same managed fleets, maintained separately — the next
+    fleet bump (kf-v2-2-2 -> ...) would touch one and not the other with
+    nothing to notice. The toml is an array of tables: ``[[gpu_skus]]`` with
+    ``id`` (the lowercase sku) and ``cudagym_url`` (the unified endpoint our
+    registry stores). Returns human-readable difference lines (empty when they
+    agree); callers warn rather than fail, since a locally-overridden URL is a
+    deliberate choice worth flagging, not blocking.
     """
-    from pathlib import Path
-
     toml_path = Path(solswarm_root) / "deployments" / "files" / "gpu-skus.toml"
     if not toml_path.is_file():
         return []
@@ -493,15 +402,15 @@ def check_registry_against_solswarm(endpoints: dict, solswarm_root) -> list[str]
     except Exception:  # noqa: BLE001 - a drift check must never break a submit
         return []
 
-    upstream_urls = {}
-    for name, entry in (upstream.get("skus") or upstream).items():
-        if isinstance(entry, dict) and entry.get("url"):
-            upstream_urls[name.lower()] = entry["url"].rstrip("/")
+    upstream_urls: dict[str, str] = {}
+    for sku_entry in upstream.get("gpu_skus") or []:
+        if isinstance(sku_entry, dict) and sku_entry.get("id") and sku_entry.get("cudagym_url"):
+            upstream_urls[str(sku_entry["id"]).lower()] = str(sku_entry["cudagym_url"]).rstrip("/")
 
     lines = []
     for name, entry in (endpoints or {}).items():
-        url = (getattr(entry, "url", None) or "").rstrip("/")
+        url = (getattr(entry, "url", "") or "").rstrip("/")
         key = str(getattr(entry, "sku", name)).lower()
-        if key in upstream_urls and url and not url.startswith(upstream_urls[key].rsplit("-web", 1)[0]):
+        if key in upstream_urls and url and url != upstream_urls[key]:
             lines.append(f"{name}: ours={url} solswarm={upstream_urls[key]}")
     return lines

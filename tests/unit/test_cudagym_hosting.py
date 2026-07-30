@@ -237,28 +237,37 @@ def test_disjoint_bounds_and_mode(tmp_path):
         )
 
 
-def test_slurm_service_fields_and_warning(tmp_path):
-    with pytest.raises(HostingError, match="missing fields"):
+def test_slurm_service_kind_was_removed(tmp_path):
+    """The experimental cross-cluster tunneling kind is gone; declaring it must
+    fail loudly with the valid-kinds list, not be silently ignored."""
+    with pytest.raises(HostingError, match="expected one of"):
         _resolve(
             {"svc": {"sku": "H100", "hosting": {"kind": "slurm-service", "service_cluster": "x"}}},
             ep_dir=_endpoints_dir(tmp_path),
         )
-    res = _resolve(
-        {
-            "svc": {
-                "sku": "H100",
-                "hosting": {
-                    "kind": "slurm-service",
-                    "service_cluster": "aws-iad-cs-002",
-                    "num_service_nodes": 2,
-                    "endpoint_port": 9100,
-                },
-            }
-        },
-        ep_dir=_endpoints_dir(tmp_path),
+
+
+def test_registry_drift_check_against_gpu_skus_toml(tmp_path):
+    """check_registry_against_solswarm parses the REAL toml shape:
+    [[gpu_skus]] tables with `id` + `cudagym_url`."""
+    from slurm.cudagym_hosting import check_registry_against_solswarm, load_endpoints
+
+    root = tmp_path / "solswarm"
+    (root / "deployments" / "files").mkdir(parents=True)
+    (root / "deployments" / "files" / "gpu-skus.toml").write_text(
+        '[[gpu_skus]]\nid = "b200"\ncudagym_url = "https://fleet-v9-b200-web.modal.run"\n'
+        '[[gpu_skus]]\nid = "h100"\ncudagym_url = "https://fleet-v9-h100-web.modal.run"\n'
     )
-    assert res.slurm_services[0].service["service_login_port"] == 8998
-    assert any("experimental" in w for w in res.warnings)
+    ep_dir = tmp_path / "endpoints"
+    ep_dir.mkdir()
+    (ep_dir / "modal.yaml").write_text(
+        "b200: {sku: B200, url: https://fleet-v9-b200-web.modal.run}\n"
+        "h100: {sku: H100, url: https://STALE-h100-web.modal.run}\n"
+    )
+    lines = check_registry_against_solswarm(load_endpoints(ep_dir), root)
+    assert len(lines) == 1 and "modal/h100" in lines[0] and "fleet-v9-h100" in lines[0]
+    # Absent toml (no solswarm checkout) is silent, never fatal.
+    assert check_registry_against_solswarm(load_endpoints(ep_dir), tmp_path / "nope") == []
 
 
 def test_agentic_requires_exactly_one_entry(tmp_path, modal_env):

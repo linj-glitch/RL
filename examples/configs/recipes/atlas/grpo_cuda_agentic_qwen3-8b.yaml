@@ -1,8 +1,9 @@
 # Agentic GRPO on CudaGym/SOLBench kernel problems: NeMo-Gym drives the
 # OpenCode-based `cuda_agent` (Gym branch: cuda_agent + cudagym resources server
 # on the tokenid-core base), which writes/iterates a kernel in a seeded sandbox;
-# the cudagym server scores the SUBMITTED kernel with the same staged reward as
-# the single-turn env. Token-ids ride the /runs/<token> buffering path (no OpenCode fork).
+# the cudagym server scores the SUBMITTED kernel with the same correctness-gated
+# reward as the single-turn env. Token-ids ride the /runs/<token> buffering path
+# (no OpenCode fork).
 #
 # Launch: `uv run --extra atlas --extra nemo_gym examples/nemo_gym/run_grpo_nemo_gym.py --config <this>`
 # (submit_grpo.py picks the runner automatically from env.should_use_nemo_gym).
@@ -14,8 +15,9 @@
 #   * data.*.data_path   -> Gym seed rows built by
 #                           nemo_rl.data.atlas_datasets.grpo_cuda_dataset.write_kfb_gym_seeds
 #                           (each row: responses_create_params + verifier_metadata + agent_ref).
-#   * CUDAGYM_UNIFIED_SERVER_URL / CUDAGYM_AUTH_TOKEN -> B200 eval endpoint
-#     (default hosting = remote/Modal; disjoint in-cluster also works — see ray.sub).
+#   * CudaGym eval endpoint: declared under env.cudagym.b200.hosting below
+#     (default kind = endpoint via endpoints/modal.yaml; colocated/disjoint
+#     in-allocation also work — submit_grpo resolves + preflights it).
 #
 # HARD CONSTRAINTS (verified against the tokenid-core + nemorl code):
 #   * generation temperature/top_p MUST be 1.0: Gym's vllm_model pins run-scoped
@@ -137,8 +139,9 @@ env:
         kind: endpoint
         endpoint: modal/b200   # endpoints/modal.yaml; needs MODAL_PROXY_TOKEN_ID/SECRET
   nemo_gym:   # passed into NeMo-Gym as the initial_global_config_dict
-    port_range_low: 15001
-    port_range_high: 20000
+    # Gym server ports inherit the default [5000, 5999) — the range ray.sub's
+    # port layout reserves for them (the GB200 ephemeral range starts at 9000,
+    # so an override up there risks intermittent binds).
     rollout_max_attempts_to_avoid_lp_nan: 1
     is_trajectory_collection: false
     config_paths:

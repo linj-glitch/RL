@@ -1,0 +1,20 @@
+# SolSwarm container-mode agentic GRPO at Qwen3-32B scale: the 32B training
+# stack (grpo_cuda_agentic_qwen3-32b.yaml — model + parallelism deltas over the
+# 8B base) plus the SolSwarm overlay. The config_paths list must be restated
+# here because OmegaConf list merges REPLACE, not append — keep it in step with
+# grpo_cuda_agentic_solswarm_qwen3-8b.yaml.
+defaults: "grpo_cuda_agentic_qwen3-32b.yaml"
+
+checkpointing:
+  checkpoint_dir: "results/grpo-cuda-agentic-solswarm-qwen3-32b"
+
+env:
+  nemo_gym:
+    config_paths:
+    - responses_api_models/vllm_model/configs/vllm_model_for_training.yaml
+    - resources_servers/cudagym/configs/cudagym_cuda_agent.yaml
+    - resources_servers/cudagym/configs/cudagym_cuda_agent_training.yaml
+    - resources_servers/cudagym/configs/cudagym_cuda_agent_solswarm.yaml
+
+logger:
+  log_dir: "logs/grpo-cuda-agentic-solswarm-qwen3-32b"
