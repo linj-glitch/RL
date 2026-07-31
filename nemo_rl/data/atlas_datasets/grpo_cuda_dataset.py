@@ -190,8 +190,8 @@ def load_sol_anchors(
     score cannot be anchored without one; ``sol_latency_ms`` may be 0, in which
     case the SOL score computed from it degrades to a bounded
     speedup-over-human-best (see ``sol_score`` in
-    ``nemo_rl/environments/atlas/cuda_kernel_utils.py``). Returns ``{}`` when
-    the CSV does not exist.
+    ``nemo_rl/environments/atlas/cuda_kernel_utils.py``). A nonexistent CSV
+    path raises ``FileNotFoundError`` — it is always caller-provided.
 
     Anchors are loaded once at dataset-build time and stored on the row, so
     evaluation needs no access to the CSV. They are consumed by the reward code
