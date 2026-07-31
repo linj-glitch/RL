@@ -80,6 +80,13 @@ fi
 export RUN_SCRIPT=${RUN_SCRIPT:-DEFAULT_RUN_SCRIPT}
 export UV_EXTRAS=${UV_EXTRAS:-DEFAULT_UV_EXTRAS}
 
+# Sync the venv BEFORE ray.sub starts Ray (it runs SETUP_COMMAND on every node
+# first). `ray start` otherwise runs from the container's baked venv while the
+# driver's `uv run` upgrades that same venv underneath it, and ray.init() then
+# refuses the version skew ("Version mismatch: The cluster was started with Ray
+# X ... this process ... Ray Y") whenever the image predates a dependency bump.
+export SETUP_COMMAND=${SETUP_COMMAND:-"uv sync ${UV_EXTRAS}"}
+
 export COMMAND="uv run ${UV_EXTRAS} ${RUN_SCRIPT} \
     --config examples/configs/recipes/atlas/${CONFIG_NAME} \
     checkpointing.checkpoint_dir=${OUTPUT_DIR}/ckpts \
