@@ -90,7 +90,11 @@ env:
     # the sku. Add more entries (with weights) to mix SKUs. Every entry must
     # declare `hosting:` — where its eval servers live (submit_grpo.py
     # validates it, preflights remote endpoints, and wires the URLs through;
-    # kinds: colocated | disjoint {num_nodes: N} | endpoint).
+    # kinds: colocated | disjoint {num_nodes: N} | endpoint |
+    # slurm-service {service_cluster, num_service_nodes, endpoint_port,
+    # [service_login_port: 8998]} — experimental: submit stands the service up
+    # on that OTHER cluster and chains login-node proxies, see
+    # slurm/deploy_remote_cudagym.py).
     b200:
       sku: "B200"
       weight: 1.0

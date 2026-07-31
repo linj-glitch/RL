@@ -18,4 +18,9 @@ paths:
 account: coreai_nvfm_cupilot
 partition: batch
 
+# dfw's login node cannot reach other clusters' login nodes directly, so a
+# slurm-service CudaGym deployment bridges them with an SSH tunnel first
+# (slurm/deploy_remote_cudagym.py).
+requires_proxy_tunnel: true
+
 extra_config_opts: ""

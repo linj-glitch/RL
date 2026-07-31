@@ -47,6 +47,7 @@ from slurm.cudagym_hosting import (
     resolve_hosting,
     verify_health_payload,
 )
+from slurm.deploy_remote_cudagym import deploy_remote_cudagym
 
 CONFIG_PATH = Path(__file__).parent / "examples" / "configs" / "recipes" / "atlas"
 CLUSTER_CONFIG_PATH = Path(__file__).parent / "slurm" / "clusters"
@@ -141,6 +142,12 @@ def main():
         "--skip-commit-check",
         action="store_true",
         help="Skip the commit check",
+    )
+    parser.add_argument(
+        "--proxy-timeout",
+        type=int,
+        default=1800,
+        help="Seconds to wait for a slurm-service CudaGym deployment's proxies to report ready",
     )
     # CudaGym hosting is declared per SKU in the recipe (env.cudagym.<name>.hosting;
     # see slurm/cudagym_hosting.py). The old flags survive only as hidden stubs so
@@ -247,6 +254,24 @@ def main():
     # Per-entry resolved endpoint URLs ride into the training config as ++overrides
     # (the env actor's pinned-server_url path takes precedence over ambient env).
     remote_env_extra_opts: list[str] = list(hosting.extra_config_opts)
+
+    # Experimental slurm-service hosting: stand up a CudaGym service job on another
+    # Slurm cluster and chain login-node proxies (+ an SSH tunnel when required).
+    for entry in hosting.slurm_services:
+        service_url = deploy_remote_cudagym(
+            entry,
+            submit_cluster=args.cluster,
+            submit_cluster_config=cluster_config,
+            submit_ssh=ssh_tunnel,
+            submit_code_upload_path=code_upload_path,
+            cluster_config_path=CLUSTER_CONFIG_PATH,
+            exp_name=args.exp_name,
+            skip_commit_check=args.skip_commit_check,
+            proxy_timeout=args.proxy_timeout,
+        )
+        remote_env_extra_opts.append(
+            f"++env.cudagym.{entry.name}.server_url={service_url}"
+        )
 
     # Upload sbatch script with custom variables
     print(

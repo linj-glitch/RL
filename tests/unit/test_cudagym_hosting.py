@@ -52,7 +52,9 @@ def _recipe(entries: dict):
 
 
 def _resolve(entries, cluster=CLUSTER_H100, num_nodes=4, agentic=False, ep_dir=None):
-    return resolve_hosting(_recipe(entries), cluster, num_nodes, agentic, endpoints_dir=ep_dir)
+    return resolve_hosting(
+        _recipe(entries), cluster, num_nodes, agentic, endpoints_dir=ep_dir
+    )
 
 
 @pytest.fixture()
@@ -106,17 +108,29 @@ def test_load_endpoints_rejects_incomplete_entry(tmp_path):
 
 def test_endpoint_via_registry_resolves_url_and_opts(tmp_path, modal_env):
     res = _resolve(
-        {"b200": {"sku": "B200", "hosting": {"kind": "endpoint", "endpoint": "modal/b200"}}},
+        {
+            "b200": {
+                "sku": "B200",
+                "hosting": {"kind": "endpoint", "endpoint": "modal/b200"},
+            }
+        },
         ep_dir=_endpoints_dir(tmp_path),
     )
     assert res.cudagym_mode == ""
-    assert res.extra_config_opts == ["++env.cudagym.b200.server_url=https://b200.modal.run"]
+    assert res.extra_config_opts == [
+        "++env.cudagym.b200.server_url=https://b200.modal.run"
+    ]
     assert res.unified_server_url == "https://b200.modal.run"
 
 
 def test_endpoint_inline_url_no_auth_requirement(tmp_path):
     res = _resolve(
-        {"b200": {"sku": "B200", "hosting": {"kind": "endpoint", "url": "http://my-server:8000/"}}},
+        {
+            "b200": {
+                "sku": "B200",
+                "hosting": {"kind": "endpoint", "url": "http://my-server:8000/"},
+            }
+        },
         ep_dir=_endpoints_dir(tmp_path),
     )
     assert res.endpoints[0].url == "http://my-server:8000"
@@ -125,7 +139,16 @@ def test_endpoint_inline_url_no_auth_requirement(tmp_path):
 def test_endpoint_and_url_mutually_exclusive(tmp_path, modal_env):
     with pytest.raises(HostingError, match="mutually exclusive"):
         _resolve(
-            {"b200": {"sku": "B200", "hosting": {"kind": "endpoint", "endpoint": "modal/b200", "url": "http://x"}}},
+            {
+                "b200": {
+                    "sku": "B200",
+                    "hosting": {
+                        "kind": "endpoint",
+                        "endpoint": "modal/b200",
+                        "url": "http://x",
+                    },
+                }
+            },
             ep_dir=_endpoints_dir(tmp_path),
         )
 
@@ -133,12 +156,22 @@ def test_endpoint_and_url_mutually_exclusive(tmp_path, modal_env):
 def test_unknown_and_disabled_registry_refs(tmp_path, modal_env):
     with pytest.raises(HostingError, match="not found"):
         _resolve(
-            {"x": {"sku": "B200", "hosting": {"kind": "endpoint", "endpoint": "modal/nope"}}},
+            {
+                "x": {
+                    "sku": "B200",
+                    "hosting": {"kind": "endpoint", "endpoint": "modal/nope"},
+                }
+            },
             ep_dir=_endpoints_dir(tmp_path),
         )
     with pytest.raises(HostingError, match="disabled: pod outage"):
         _resolve(
-            {"gb10": {"sku": "GB10", "hosting": {"kind": "endpoint", "endpoint": "astra/gb10"}}},
+            {
+                "gb10": {
+                    "sku": "GB10",
+                    "hosting": {"kind": "endpoint", "endpoint": "astra/gb10"},
+                }
+            },
             ep_dir=_endpoints_dir(tmp_path),
         )
 
@@ -146,7 +179,12 @@ def test_unknown_and_disabled_registry_refs(tmp_path, modal_env):
 def test_registry_sku_must_match_entry_sku(tmp_path, modal_env):
     with pytest.raises(HostingError, match="serves H100"):
         _resolve(
-            {"b200": {"sku": "B200", "hosting": {"kind": "endpoint", "endpoint": "modal/h100"}}},
+            {
+                "b200": {
+                    "sku": "B200",
+                    "hosting": {"kind": "endpoint", "endpoint": "modal/h100"},
+                }
+            },
             ep_dir=_endpoints_dir(tmp_path),
         )
 
@@ -156,7 +194,12 @@ def test_missing_modal_auth_env_fails(tmp_path, monkeypatch):
     monkeypatch.setenv("MODAL_PROXY_TOKEN_SECRET", "s")
     with pytest.raises(HostingError, match="MODAL_PROXY_TOKEN_ID"):
         _resolve(
-            {"b200": {"sku": "B200", "hosting": {"kind": "endpoint", "endpoint": "modal/b200"}}},
+            {
+                "b200": {
+                    "sku": "B200",
+                    "hosting": {"kind": "endpoint", "endpoint": "modal/b200"},
+                }
+            },
             ep_dir=_endpoints_dir(tmp_path),
         )
 
@@ -237,16 +280,6 @@ def test_disjoint_bounds_and_mode(tmp_path):
         )
 
 
-def test_slurm_service_kind_was_removed(tmp_path):
-    """The experimental cross-cluster tunneling kind is gone; declaring it must
-    fail loudly with the valid-kinds list, not be silently ignored."""
-    with pytest.raises(HostingError, match="expected one of"):
-        _resolve(
-            {"svc": {"sku": "H100", "hosting": {"kind": "slurm-service", "service_cluster": "x"}}},
-            ep_dir=_endpoints_dir(tmp_path),
-        )
-
-
 def test_registry_drift_check_against_gpu_skus_toml(tmp_path):
     """check_registry_against_solswarm parses the REAL toml shape:
     [[gpu_skus]] tables with `id` + `cudagym_url`."""
@@ -267,15 +300,52 @@ def test_registry_drift_check_against_gpu_skus_toml(tmp_path):
     lines = check_registry_against_solswarm(load_endpoints(ep_dir), root)
     assert len(lines) == 1 and "modal/h100" in lines[0] and "fleet-v9-h100" in lines[0]
     # Absent toml (no solswarm checkout) is silent, never fatal.
-    assert check_registry_against_solswarm(load_endpoints(ep_dir), tmp_path / "nope") == []
+    assert (
+        check_registry_against_solswarm(load_endpoints(ep_dir), tmp_path / "nope") == []
+    )
+
+
+def test_slurm_service_fields_and_warning(tmp_path):
+    with pytest.raises(HostingError, match="missing fields"):
+        _resolve(
+            {
+                "svc": {
+                    "sku": "H100",
+                    "hosting": {"kind": "slurm-service", "service_cluster": "x"},
+                }
+            },
+            ep_dir=_endpoints_dir(tmp_path),
+        )
+    res = _resolve(
+        {
+            "svc": {
+                "sku": "H100",
+                "hosting": {
+                    "kind": "slurm-service",
+                    "service_cluster": "aws-iad-cs-002",
+                    "num_service_nodes": 2,
+                    "endpoint_port": 9100,
+                },
+            }
+        },
+        ep_dir=_endpoints_dir(tmp_path),
+    )
+    assert res.slurm_services[0].service["service_login_port"] == 8998
+    assert any("experimental" in w for w in res.warnings)
 
 
 def test_agentic_requires_exactly_one_entry(tmp_path, modal_env):
     with pytest.raises(HostingError, match="exactly one"):
         _resolve(
             {
-                "a": {"sku": "B200", "hosting": {"kind": "endpoint", "endpoint": "modal/b200"}},
-                "b": {"sku": "H100", "hosting": {"kind": "endpoint", "endpoint": "modal/h100"}},
+                "a": {
+                    "sku": "B200",
+                    "hosting": {"kind": "endpoint", "endpoint": "modal/b200"},
+                },
+                "b": {
+                    "sku": "H100",
+                    "hosting": {"kind": "endpoint", "endpoint": "modal/h100"},
+                },
             },
             agentic=True,
             ep_dir=_endpoints_dir(tmp_path),
@@ -292,8 +362,14 @@ def test_agentic_requires_exactly_one_entry(tmp_path, modal_env):
 def test_multiple_endpoints_no_unified_url(tmp_path, modal_env):
     res = _resolve(
         {
-            "b200": {"sku": "B200", "hosting": {"kind": "endpoint", "endpoint": "modal/b200"}},
-            "h100": {"sku": "H100", "hosting": {"kind": "endpoint", "endpoint": "modal/h100"}},
+            "b200": {
+                "sku": "B200",
+                "hosting": {"kind": "endpoint", "endpoint": "modal/b200"},
+            },
+            "h100": {
+                "sku": "H100",
+                "hosting": {"kind": "endpoint", "endpoint": "modal/h100"},
+            },
         },
         ep_dir=_endpoints_dir(tmp_path),
     )
@@ -307,18 +383,41 @@ def test_multiple_endpoints_no_unified_url(tmp_path, modal_env):
 
 
 def test_verify_health_payload_table():
-    ok, _ = verify_health_payload({"gpu_model": "NVIDIA B200", "sm_version": "sm_100"}, "B200")
+    ok, _ = verify_health_payload(
+        {"gpu_model": "NVIDIA B200", "sm_version": "sm_100"}, "B200"
+    )
     assert ok
-    ok, _ = verify_health_payload({"gpu_model": "NVIDIA GB200", "sm_version": "sm_100a"}, "B200")
+    ok, _ = verify_health_payload(
+        {"gpu_model": "NVIDIA GB200", "sm_version": "sm_100a"}, "B200"
+    )
     assert ok  # GB200 silicon serves B200 kernels
     ok, detail = verify_health_payload({"gpu_model": "NVIDIA H100 80GB HBM3"}, "B200")
     assert not ok and "gpu_model" in detail
-    ok, detail = verify_health_payload({"gpu_model": "NVIDIA B200", "sm_version": "sm_90"}, "B200")
+    ok, detail = verify_health_payload(
+        {"gpu_model": "NVIDIA B200", "sm_version": "sm_90"}, "B200"
+    )
     assert not ok and "sm_version" in detail
+    # "Unverifiable" must NOT read as a pass: nothing was measured, and a
+    # silicon mismatch is silent for Triton (it JITs on whatever GPU answers).
     ok, detail = verify_health_payload({}, "B200")
-    assert ok and detail.startswith("unverifiable")
-    ok, detail = verify_health_payload({"gpu_model": "Whatever"}, "RTX_5090")
-    assert ok and "no expectations" in detail
+    assert ok is None and detail.startswith("unverifiable")
+    # A real SupportedHardware value IS checkable, even a rarely used one --
+    # expectations are derived from the SDK, not from a table we maintain.
+    ok, _ = verify_health_payload(
+        {"gpu_model": "NVIDIA GeForce RTX 5090", "sm_version": "sm_120"}, "RTX_5090"
+    )
+    assert ok is True
+    # A name that is not SupportedHardware at all is unverifiable, not a pass.
+    ok, detail = verify_health_payload({"gpu_model": "Whatever"}, "not-a-gpu")
+    assert ok is None and "SupportedHardware" in detail
+    # GB10 is an ALIAS of DGX_SPARK; the old hand-written table treated it as a
+    # SKU of its own, which made build_solution raise and blamed the model.
+    assert (
+        verify_health_payload(
+            {"gpu_model": "NVIDIA GB10", "sm_version": "sm_121"}, "GB10"
+        )[0]
+        is True
+    )
 
 
 class _FakeResponse:
@@ -343,11 +442,15 @@ def test_probe_endpoint_success_and_headers(monkeypatch):
     def get(url, headers=None, timeout=None):
         seen["url"] = url
         seen["headers"] = headers
-        return _FakeResponse(payload={"gpu_model": "NVIDIA B200", "sm_version": "sm_100"})
+        return _FakeResponse(
+            payload={"gpu_model": "NVIDIA B200", "sm_version": "sm_100"}
+        )
 
     _install_fake_requests(monkeypatch, get)
     monkeypatch.setenv("CUDAGYM_AUTH_TOKEN", "tok")
-    entry = ResolvedEntry(name="b200", sku="B200", kind="endpoint", url="http://srv:8000")
+    entry = ResolvedEntry(
+        name="b200", sku="B200", kind="endpoint", url="http://srv:8000"
+    )
     payload = probe_endpoint(entry)
     assert seen["url"] == "http://srv:8000/health"
     assert seen["headers"]["Authorization"] == "Bearer tok"
@@ -362,7 +465,9 @@ def test_probe_endpoint_unreachable_raises_after_retries(monkeypatch):
         raise OSError("connection refused")
 
     _install_fake_requests(monkeypatch, get)
-    entry = ResolvedEntry(name="b200", sku="B200", kind="endpoint", url="http://down:8000")
+    entry = ResolvedEntry(
+        name="b200", sku="B200", kind="endpoint", url="http://down:8000"
+    )
     with pytest.raises(HostingError, match="unreachable"):
         probe_endpoint(entry, retries=2)
     assert calls["n"] == 3
@@ -370,8 +475,11 @@ def test_probe_endpoint_unreachable_raises_after_retries(monkeypatch):
 
 def test_probe_endpoint_http_error_raises(monkeypatch):
     _install_fake_requests(
-        monkeypatch, lambda url, headers=None, timeout=None: _FakeResponse(401, text="denied")
+        monkeypatch,
+        lambda url, headers=None, timeout=None: _FakeResponse(401, text="denied"),
     )
-    entry = ResolvedEntry(name="b200", sku="B200", kind="endpoint", url="http://srv:8000")
+    entry = ResolvedEntry(
+        name="b200", sku="B200", kind="endpoint", url="http://srv:8000"
+    )
     with pytest.raises(HostingError, match="HTTP 401"):
         probe_endpoint(entry, retries=0)

@@ -21,17 +21,21 @@ Every ``env.cudagym.<name>`` recipe entry declares where its eval servers live:
         b200:
           sku: "B200"
           hosting:
-            kind: endpoint          # colocated | disjoint | endpoint
+            kind: endpoint          # colocated | disjoint | endpoint | slurm-service
             endpoint: modal/b200    # kind=endpoint: registry ref "<provider>/<key>" ...
             # url: https://...      #   ... or an inline URL (mutually exclusive)
             # num_nodes: 1          # kind=disjoint only
+            # service_cluster: ...  # kind=slurm-service (experimental) + num_service_nodes,
+            #                       #   endpoint_port, [service_login_port]
 
 ``kind`` is topology; the provider (modal/astra/static) is a property of the
 registry entry (``endpoints/<provider>.yaml``). ``submit_grpo.py`` resolves and
 validates every entry — there is no ``--cudagym-mode`` flag. Remote endpoints
 are pinged at submit time and their reported GPU is checked against the declared
 SKU; in-allocation servers (which don't exist yet at submit) get the same check
-at runtime init (``verify_endpoint_sku``).
+at runtime init (``verify_endpoint_sku``). ``slurm-service`` entries stand up a
+CudaGym service job on ANOTHER Slurm cluster at submit time and chain login-node
+proxies back to this one (``slurm.deploy_remote_cudagym``).
 
 Back-compat: a legacy ``server_url:`` with no ``hosting:`` block is treated as
 ``hosting: {kind: endpoint, url: <server_url>}`` with a deprecation warning, and
@@ -44,7 +48,7 @@ lazily in the probe): the recipe loader is the hydra-free
 """
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Union
 
@@ -60,7 +64,7 @@ REPO_ROOT = Path(__file__).parent.parent
 ENDPOINTS_DIR = REPO_ROOT / "endpoints"
 
 IN_ALLOCATION_KINDS = ("colocated", "disjoint")
-KINDS = ("colocated", "disjoint", "endpoint")
+KINDS = ("colocated", "disjoint", "endpoint", "slurm-service")
 
 # provider (endpoints/<provider>.yaml stem) -> env vars that MUST be set at submit.
 # Modal's edge proxy rejects requests without the workspace proxy-token headers.
@@ -83,7 +87,7 @@ CLUSTER_SILICON: dict[str, str] = {
 
 EXAMPLE_HOSTING_BLOCK = (
     "      hosting:\n"
-    "        kind: endpoint            # colocated | disjoint | endpoint\n"
+    "        kind: endpoint            # colocated | disjoint | endpoint | slurm-service\n"
     "        endpoint: modal/b200      # or `url: https://...`; see endpoints/*.yaml"
 )
 
@@ -152,6 +156,7 @@ class ResolvedEntry:
     url: str = ""  # kind=endpoint: the resolved URL
     endpoint: Optional[EndpointEntry] = None  # kind=endpoint via registry
     num_nodes: int = 0  # kind=disjoint
+    service: dict[str, Any] = field(default_factory=dict)  # kind=slurm-service
 
 
 @dataclass
@@ -159,6 +164,7 @@ class HostingResolution:
     entries: list[ResolvedEntry]
     in_allocation: Optional[ResolvedEntry]
     endpoints: list[ResolvedEntry]
+    slurm_services: list[ResolvedEntry]
     extra_config_opts: list[str]
     unified_server_url: str  # single-endpoint jobs: the URL; else ""
     warnings: list[str]
@@ -263,7 +269,9 @@ def resolve_hosting(
                     )
                 url = ep.url
             if not url:
-                url = os.environ.get("CUDAGYM_UNIFIED_SERVER_URL") or os.environ.get("CUDAGYM_URL")
+                url = os.environ.get("CUDAGYM_UNIFIED_SERVER_URL") or os.environ.get(
+                    "CUDAGYM_URL"
+                )
                 if not url:
                     raise HostingError(
                         f"env.cudagym.{name}.hosting has neither `endpoint` nor `url`, and "
@@ -275,7 +283,9 @@ def resolve_hosting(
             entry_resolved = ResolvedEntry(
                 name=name, sku=sku, kind=kind, url=str(url).rstrip("/"), endpoint=ep
             )
-            missing = [v for v in _auth_env_names(entry_resolved) if not os.environ.get(v)]
+            missing = [
+                v for v in _auth_env_names(entry_resolved) if not os.environ.get(v)
+            ]
             if missing:
                 raise HostingError(
                     f"endpoint {ep.name if ep else url} requires env var(s) "
@@ -283,6 +293,27 @@ def resolve_hosting(
                     f"(provider '{ep.provider if ep else '?'}')."
                 )
             resolved.append(entry_resolved)
+        else:  # slurm-service
+            required = ("service_cluster", "num_service_nodes", "endpoint_port")
+            missing_fields = [f for f in required if not hosting.get(f)]
+            if missing_fields:
+                raise HostingError(
+                    f"env.cudagym.{name}.hosting (slurm-service) missing fields: "
+                    f"{', '.join(missing_fields)}"
+                )
+            service = {
+                "service_cluster": hosting["service_cluster"],
+                "num_service_nodes": int(hosting["num_service_nodes"]),
+                "endpoint_port": int(hosting["endpoint_port"]),
+                "service_login_port": int(hosting.get("service_login_port") or 8998),
+            }
+            warnings.append(
+                f"env.cudagym.{name}: hosting kind 'slurm-service' is experimental "
+                f"(pending live validation of the refreshed cudagym slurm deployment)."
+            )
+            resolved.append(
+                ResolvedEntry(name=name, sku=sku, kind=kind, service=service)
+            )
 
     in_alloc = [e for e in resolved if e.kind in IN_ALLOCATION_KINDS]
     if len(in_alloc) > 1:
@@ -301,6 +332,7 @@ def resolve_hosting(
             )
 
     endpoints = [e for e in resolved if e.kind == "endpoint"]
+    slurm_services = [e for e in resolved if e.kind == "slurm-service"]
 
     if uses_nemo_gym:
         if len(resolved) != 1:
@@ -322,6 +354,7 @@ def resolve_hosting(
         entries=resolved,
         in_allocation=in_alloc[0] if in_alloc else None,
         endpoints=endpoints,
+        slurm_services=slurm_services,
         extra_config_opts=extra_opts,
         unified_server_url=unified,
         warnings=warnings,
@@ -336,7 +369,9 @@ def resolve_hosting(
 def _probe_headers(entry: ResolvedEntry) -> dict[str, str]:
     """Auth headers for a /health probe, mirroring the cudagym SDK's behavior."""
     headers: dict[str, str] = {}
-    token_env = (entry.endpoint.auth_token_env if entry.endpoint else None) or "CUDAGYM_AUTH_TOKEN"
+    token_env = (
+        entry.endpoint.auth_token_env if entry.endpoint else None
+    ) or "CUDAGYM_AUTH_TOKEN"
     token = os.environ.get(token_env)
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -367,7 +402,9 @@ def probe_endpoint(
             if resp.status_code == 200:
                 payload = resp.json()
                 if not isinstance(payload, dict):
-                    raise HostingError(f"{url} returned non-object JSON: {str(payload)[:120]}")
+                    raise HostingError(
+                        f"{url} returned non-object JSON: {str(payload)[:120]}"
+                    )
                 return payload
             last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
         except HostingError:
@@ -404,8 +441,14 @@ def check_registry_against_solswarm(
 
     upstream_urls: dict[str, str] = {}
     for sku_entry in upstream.get("gpu_skus") or []:
-        if isinstance(sku_entry, dict) and sku_entry.get("id") and sku_entry.get("cudagym_url"):
-            upstream_urls[str(sku_entry["id"]).lower()] = str(sku_entry["cudagym_url"]).rstrip("/")
+        if (
+            isinstance(sku_entry, dict)
+            and sku_entry.get("id")
+            and sku_entry.get("cudagym_url")
+        ):
+            upstream_urls[str(sku_entry["id"]).lower()] = str(
+                sku_entry["cudagym_url"]
+            ).rstrip("/")
 
     lines = []
     for name, entry in (endpoints or {}).items():
