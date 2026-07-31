@@ -475,7 +475,6 @@ logger:
   mlflow_enabled: false  # Disable MLflow logging
   swanlab_enabled: false # Disable SwanLab logging
   monitor_gpus: true  # If true, will monitor GPU usage and log to wandb and/or tensorboard
-  log_conversations: false  # If true, log a per-step table of rollout prompts/completions to wandb
   wandb:
     project: "grpo-dev"
     name: "grpo-dev-logger"

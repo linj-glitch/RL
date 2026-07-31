@@ -2936,7 +2936,6 @@ def grpo_train(
                             ],
                             max_rollout_turns=master_config.grpo.max_rollout_turns,
                             greedy=False,
-                            timer=timer,
                         )
                     policy_generation.finish_generation()
                     # Collect generation logger metrics for performance reporting after each generation step

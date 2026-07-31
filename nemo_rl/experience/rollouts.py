@@ -22,7 +22,6 @@ import statistics
 import warnings
 from collections import defaultdict
 from collections.abc import AsyncGenerator, Sequence
-from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -723,7 +722,6 @@ def run_multi_turn_rollout(
     max_seq_len: int,
     max_rollout_turns: int = 999999,
     greedy: bool = False,
-    timer: Optional[Timer] = None,
 ) -> tuple[BatchedDataDict[DatumSpec], dict[str, Any]]:
     """Runs a multi-turn rollout loop, interacting with the environment.
 
@@ -735,8 +733,6 @@ def run_multi_turn_rollout(
         max_rollout_turns: Maximum number of agent-environment interaction turns.
         max_seq_len: Maximum sequence length allowed.
         greedy: Whether to use greedy decoding.
-        timer: Optional Timer; when provided, per-phase generation/reward timings
-            are recorded under ``rollouts/*`` labels.
 
     Returns:
         Tuple containing:
@@ -814,15 +810,14 @@ def run_multi_turn_rollout(
             generation_input_data["vllm_audios"] = active_batch["vllm_audios"]
 
         # generate_responses updates active_batch["message_log"] in-place
-        with timer.time("rollouts/generate_responses") if timer else nullcontext():
-            active_batch, generated_ids, gen_metrics = generate_responses(
-                policy_generation,
-                generation_input_data,
-                active_batch,
-                tokenizer,
-                input_lengths=active_input_lengths,
-                greedy=greedy,
-            )
+        active_batch, generated_ids, gen_metrics = generate_responses(
+            policy_generation,
+            generation_input_data,
+            active_batch,
+            tokenizer,
+            input_lengths=active_input_lengths,
+            greedy=greedy,
+        )
 
         # Record response truncation (response hit max_tokens without stop token)
         response_truncated = gen_metrics.pop("_response_truncated", None)
@@ -840,8 +835,7 @@ def run_multi_turn_rollout(
         total_gen_tokens_per_turn.append(sum(len(ids) for ids in generated_ids))
 
         # Calculate rewards and get environment feedback
-        with timer.time("rollouts/calculate_rewards") if timer else nullcontext():
-            env_output: EnvironmentReturn = calculate_rewards(active_batch, task_to_env)
+        env_output: EnvironmentReturn = calculate_rewards(active_batch, task_to_env)
 
         # Accumulate rewards: env returns dict[str, Tensor] for multi-reward, Tensor for single-reward.
         if isinstance(env_output.rewards, dict):

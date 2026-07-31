@@ -22,11 +22,12 @@ file last, so on any key conflict a later parent overrides an earlier one and
 the child overrides all parents. A mapping section marked ``_override_: true``
 replaces the inherited section wholesale instead of being deep-merged.
 
-This module depends only on ``omegaconf`` and the standard library.
-``nemo_rl.utils.config`` re-exports these helpers but imports hydra at module
-scope; keeping the loader hydra-free lets tooling that runs outside the
-training virtualenv (e.g. ``slurm/cudagym_hosting.py`` on cluster login nodes)
-import it directly.
+This module depends only on ``omegaconf`` and the standard library. It is a
+standalone mirror of the loader in ``nemo_rl.utils.config`` (which imports
+hydra at module scope) so tooling that runs outside the training virtualenv
+(``slurm/cudagym_hosting.py`` on cluster login nodes) can import it without
+touching that upstream file. If the upstream loader's semantics change, update
+this copy to match.
 """
 
 from pathlib import Path
