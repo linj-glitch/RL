@@ -1,4 +1,4 @@
-# Agentic GRPO on CudaGym/SOLBench kernel problems: NeMo-Gym drives the
+# Agentic GRPO on CudaGym / KernelFactory problems: NeMo-Gym drives the
 # OpenCode-based `cuda_agent` (Gym branch: cuda_agent + cudagym resources server
 # on the tokenid-core base), which writes/iterates a kernel in a seeded sandbox;
 # the cudagym server scores the SUBMITTED kernel with the same correctness-gated

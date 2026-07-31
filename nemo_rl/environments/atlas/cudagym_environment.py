@@ -54,7 +54,7 @@ LOG = logging.getLogger(__name__)
 class CudaGymEnvironmentMetadata(TypedDict, total=False):
     """Per-sample state passed to ``step`` (the datum's ``extra_env_info``).
 
-    Carries the SOLBench/KFB problem so the evaluator can build the typed
+    Carries the KernelFactory problem so the evaluator can build the typed
     ``Solution``/``Definition``/``Workload`` objects. ``correctness``/``speedup``
     are written back on the way out for ``global_post_process_and_metrics``.
     """

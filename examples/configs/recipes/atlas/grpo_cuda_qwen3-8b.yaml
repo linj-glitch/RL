@@ -1,11 +1,11 @@
-# Single-turn GRPO on CudaGym / SOLBench (Kernel-Factory-Bench) kernel
-# problems, evaluated on B200. Launch: `uv run examples/run_grpo_cuda.py --config <this>`.
+# Single-turn GRPO on CudaGym / KernelFactory problems (Kernel-Factory-Bench
+# set), evaluated on B200. Launch: `uv run examples/run_grpo_cuda.py --config <this>`.
 #
 # Inherits all unspecified fields (loss_fn, full policy/data defaults, ...) from
 # grpo_math_1B.yaml and overrides only the CudaGym-specific bits. Before running:
 #   * policy.model_name      -> base Qwen3-8B by default; swap in the SFT'd
 #                               kernel checkpoint once one exists
-#   * data.dataset_path      -> a SOLBench problem JSONL (build from a KFB checkout
+#   * data.dataset_path      -> a KernelFactory problem JSONL (build from a KFB checkout
 #                               with nemo_rl.data.atlas_datasets.write_kfb_dataset)
 #   * env.cudagym.b200.hosting -> where the B200 CudaGym eval servers live
 #     (submit_grpo.py validates + preflights it; see slurm/cudagym_hosting.py

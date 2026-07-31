@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Atlas: GRPO on CudaGym / SOLBench kernel-optimization problems.
+"""Atlas: GRPO on CudaGym / KernelFactory kernel-optimization problems.
 
 Two rollout shapes share one core:
   * **single-turn** — a native ``EnvironmentInterface``

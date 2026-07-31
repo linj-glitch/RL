@@ -12,18 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Single-turn GRPO on CudaGym / SOLBench kernel problems.
+"""Single-turn GRPO on CudaGym / KernelFactory problems.
 
 End-to-end wiring (current NeMo-RL ``setup``/``grpo_train`` API):
 
   1. ``setup_environments`` builds one ``CudaGymEnvironment`` Ray actor per GPU
      SKU in ``env.cudagym`` (a thin CudaGym HTTP client, ``num_gpus=0``).
-  2. ``setup_data`` loads SOLBench problem rows (``prepare_cuda_dataset``), tags
+  2. ``setup_data`` loads KernelFactory problem rows (``prepare_cuda_dataset``), tags
      each with a sampled task (SKU), and wraps them in ``AllTaskProcessedDataset``
      with ``cudagym_data_processor``.
   3. ``cudagym_data_processor`` renders the problem into a single ``user`` prompt
      (``<think>`` + fenced kernel requested), applies the chat template, stores
-     ``token_ids`` + the SOLBench problem as ``extra_env_info``.
+     ``token_ids`` + the KernelFactory problem as ``extra_env_info``.
   4. GRPO generates one completion/prompt; ``CudaGymEnvironment.step`` evaluates
      it and returns the correctness-gated reward (single-turn, ``done=1``);
      assistant tokens (``<think>`` + code) train, prompt tokens are masked.
@@ -116,10 +116,10 @@ def _axis_parts(axes: dict) -> list[str]:
     return parts
 
 
-def _annotate_solbench_problem(
+def _annotate_kernelfactory_problem(
     definition: dict, destination_passing_style: bool, entry_function: str
 ) -> str:
-    """Render a SOLBench ``definition`` dict into a readable problem statement.
+    """Render a KernelFactory-schema ``definition`` dict into a readable problem statement.
 
     ``entry_function`` comes from the same ``entry_symbol_for`` lookup the outer
     prompt template uses, so the signature line can never contradict the header.
@@ -156,7 +156,7 @@ def cudagym_data_processor(
     max_seq_length: Optional[int],
     idx: int,
 ) -> DatumSpec:
-    """Process one SOLBench problem row into a ``DatumSpec`` (the turn-0 prompt).
+    """Process one KernelFactory problem row into a ``DatumSpec`` (the turn-0 prompt).
 
     Expects (from ``format_cuda_problem``): ``task_name``, ``definition`` (dict),
     ``workloads`` (list), ``language``, ``target_hardware``,
@@ -164,7 +164,7 @@ def cudagym_data_processor(
 
     Output ``message_log`` is a single ``user`` turn holding the fully templated
     prompt + its ``token_ids`` (system prompt, if any, folded in by the chat
-    template); the SOLBench problem rides in ``extra_env_info`` for the env's
+    template); the KernelFactory problem rides in ``extra_env_info`` for the env's
     ``step``. Over-length prompts are stubbed + masked (``loss_multiplier=0``),
     matching the SFT/reference behavior.
     """
@@ -180,7 +180,7 @@ def cudagym_data_processor(
     if isinstance(workloads, str):
         workloads = json.loads(workloads)
     entry_function = entry_symbol_for(language)
-    problem_text = _annotate_solbench_problem(definition, destination_passing_style, entry_function)
+    problem_text = _annotate_kernelfactory_problem(definition, destination_passing_style, entry_function)
 
     # Render the prompt template (driver_code = the problem statement; kernel_lang
     # = the fence tag the model writes; entry_function = the symbol it must define;
@@ -190,7 +190,7 @@ def cudagym_data_processor(
     if task_data_spec.prompt:
         user_content = task_data_spec.prompt.format(
             driver_code=problem_text,
-            driver_lang="python",  # the SOLBench reference is always Python
+            driver_lang="python",  # the KernelFactory-schema reference is always Python
             kernel_lang=fence_lang_for(language),
             entry_function=entry_function,
             gpu_sku=datum_dict["target_hardware"],

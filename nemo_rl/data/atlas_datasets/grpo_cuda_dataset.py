@@ -12,14 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""GRPO dataset of SOLBench / Kernel-Factory-Bench (KFB) kernel problems.
+"""GRPO dataset of KernelFactory problems (from the KernelFactory-Bench / SOL-ExecBench sets).
 
-Each *raw row* describes one problem in the SOLBench schema:
+Each *raw row* describes one problem in the KernelFactory schema:
     {"definition": <JSON string of a Definition dict>,
      "workloads": <JSON string of [Workload dict, ...]>,
      "language": "triton" | "cuda_cpp" | ..., "target_hardware": "B200",
      "destination_passing_style": bool, "sol_anchors": <JSON string>}
-``definition``/``workloads`` are exactly a KFB ``definition.json`` and the lines
+``definition``/``workloads`` are exactly a KernelFactory ``definition.json`` and the lines
 of its ``workload.jsonl``, stored as JSON strings so the HuggingFace dataset
 schema stays uniform across structurally-different problems (the data processor
 parses them back). Use ``kfb_problem_to_row`` / ``write_kfb_dataset`` to build a
@@ -76,7 +76,7 @@ def format_cuda_problem(
     """Normalize one raw problem row and tag it with a sampled ``task_name``.
 
     Args:
-        data: a raw SOLBench problem row (see module docstring).
+        data: a raw KernelFactory problem row (see module docstring).
         task_to_env_config: env-name -> ``CudaGymEvalConfig`` (carries ``weight``
             and ``sku``); the chosen task selects which env evaluates this row.
     """
@@ -102,7 +102,7 @@ def prepare_cuda_dataset(
     seed: int,
     test_size: float,
 ) -> DatasetDict:
-    """Load SOLBench problem JSONL(s) and split into train/validation.
+    """Load KernelFactory problem JSONL(s) and split into train/validation.
 
     The problem set must hold at least ``grpo.num_prompts_per_step`` train rows
     so a step's sampler gets a full batch (the train dataloader drops the last
@@ -236,7 +236,7 @@ def kfb_problem_to_row(
     destination_passing_style: bool = True,
     sol_latencies_csv: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Read one KFB problem directory into a SOLBench dataset row.
+    """Read one KernelFactory-Bench problem directory into a KernelFactory-schema row.
 
     Args:
         problem_dir: a dir containing ``definition.json`` + ``workload.jsonl``.
@@ -265,8 +265,8 @@ def kfb_problem_to_row(
     )
     return {
         # definition/workloads are stored as JSON strings (like sol_anchors) so the
-        # HuggingFace dataset schema stays uniform across structurally-different KFB
-        # problems -- disjoint nested axes/inputs keys would otherwise make
+        # HuggingFace dataset schema stays uniform across structurally-different
+        # KernelFactory problems -- disjoint nested axes/inputs keys would otherwise make
         # Dataset.from_json raise or silently null-fill the inferred struct. They are
         # parsed back in run_grpo_cuda's data processor.
         "definition": json.dumps(definition),
@@ -286,7 +286,7 @@ def write_kfb_dataset(
     destination_passing_style: bool = True,
     sol_latencies_csv: Optional[str] = None,
 ) -> int:
-    """Write a SOLBench dataset JSONL (one problem per line) from KFB dirs.
+    """Write a KernelFactory problem JSONL (one per line) from KernelFactory-Bench dirs.
 
     Returns the number of rows written. Point ``data.dataset_path`` at ``out_path``.
     Pass ``sol_latencies_csv`` (e.g. ``data/benchmark/latencies_b200.csv``) to bake
@@ -375,7 +375,7 @@ def write_kfb_gym_seeds(
     sol_latencies_csv: Optional[str] = None,
     agent_name: str = "cudagym_cuda_agent",
 ) -> int:
-    """Write NeMo-Gym task-seed JSONL (agentic RL) from KFB problem dirs.
+    """Write NeMo-Gym task-seed JSONL (agentic RL) from KernelFactory-Bench problem dirs.
 
     Returns the number of rows written. Point the agentic recipe's
     ``data.train.data_path`` / ``data.validation.data_path`` at the outputs
@@ -399,7 +399,7 @@ def write_kfb_gym_seeds(
 
 
 def main() -> None:
-    r"""Build an RL dataset from any set of KFB problem dirs, unmodified.
+    r"""Build an RL dataset from any set of KernelFactory-Bench problem dirs, unmodified.
 
     A problem dir is any directory holding ``definition.json`` +
     ``workload.jsonl`` (KFB's native layout); the row copies both verbatim and
@@ -421,7 +421,7 @@ def main() -> None:
     parser.add_argument(
         "problems",
         nargs="+",
-        help="KFB problem dirs (shell globs welcome); dirs missing "
+        help="KernelFactory-Bench problem dirs (shell globs welcome); dirs missing "
         "definition.json/workload.jsonl are skipped with a note",
     )
     parser.add_argument("--out", required=True, help="output JSONL path")
@@ -429,7 +429,7 @@ def main() -> None:
         "--format",
         choices=("rows", "gym-seeds"),
         default="rows",
-        help="rows = single-turn SOLBench dataset; gym-seeds = agentic NeMo-Gym seeds",
+        help="rows = single-turn KernelFactory problem rows; gym-seeds = agentic NeMo-Gym seeds",
     )
     parser.add_argument("--language", default="triton", help="cudagym SupportedLanguages value")
     parser.add_argument("--target-hardware", default="B200")

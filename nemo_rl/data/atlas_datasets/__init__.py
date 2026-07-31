@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Datasets for the atlas CudaGym / SOLBench kernel-optimization tasks."""
+"""Datasets for the atlas CudaGym / KernelFactory kernel-optimization tasks."""
 
 from .grpo_cuda_dataset import (
     format_cuda_problem,

@@ -17,7 +17,7 @@
 Replaces the reference's per-modality ``adapters/`` + ``ExampleClient`` HTTP
 code (``cudagym.envs.*`` was removed upstream). Responsibilities:
 
-  * ``parse_problem``   — SOLBench/KFB metadata dict -> typed ``Definition`` + ``Workload``s.
+  * ``parse_problem``   — KernelFactory-schema metadata dict -> typed ``Definition`` + ``Workload``s.
   * ``build_solution``  — one extracted code block -> typed single-file ``Solution``.
   * ``evaluate_solution`` — run the two-phase eval via ``cudagym.sdk.workflows.evaluate``
                             (compile solution & reference -> execute -> parse) -> ``Trace``.
@@ -65,7 +65,7 @@ _CORRECT_OK = {EvaluationStatus.PASSED, EvaluationStatus.CORRECTNESS_PASSED}
 
 
 def parse_problem(metadata: dict[str, Any]) -> tuple[Definition, list[Workload]]:
-    """Validate the SOLBench/KFB problem carried in env metadata into typed models.
+    """Validate the KernelFactory problem carried in env metadata into typed models.
 
     Expects ``metadata["definition"]`` (a Definition dict, e.g. a KFB
     ``definition.json``) and ``metadata["workloads"]`` (a list of Workload dicts,

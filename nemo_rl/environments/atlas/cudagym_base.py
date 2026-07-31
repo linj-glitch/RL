@@ -59,7 +59,7 @@ class BaseCudaEvaluator(ABC):
     ) -> list[KernelEvalResult]:
         """Evaluate (prompt, completion, metadata) triples concurrently.
 
-        Each ``metadata`` dict carries one SOLBench/KFB problem: ``definition``
+        Each ``metadata`` dict carries one KernelFactory problem: ``definition``
         (dict), ``workloads`` (list[dict]), ``language``, ``target_hardware``,
         ``destination_passing_style``.
 
