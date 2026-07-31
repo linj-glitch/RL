@@ -12,23 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Glue between the atlas env and the *current* CudaGym SDK.
+"""Glue between the atlas env and the CudaGym SDK.
 
-Replaces the reference's per-modality ``adapters/`` + ``ExampleClient`` HTTP
-code (``cudagym.envs.*`` was removed upstream). Responsibilities:
+Responsibilities:
 
   * ``parse_problem``   — KernelFactory-schema metadata dict -> typed ``Definition`` + ``Workload``s.
   * ``build_solution``  — one extracted code block -> typed single-file ``Solution``.
-  * ``evaluate_solution`` — run the two-phase eval via ``cudagym.sdk.workflows.evaluate``
+  * ``evaluate_solution`` — run the two-phase evaluation via ``cudagym.sdk.workflows.evaluate``
                             (compile solution & reference -> execute -> parse) -> ``Trace``.
   * ``update_result_from_trace`` — ``Trace`` -> ``KernelEvalResult`` (the reward inputs).
 
-The language -> (filename, entry, fence) map lives in ``cuda_kernel_utils``
-(cudagym-free) so the data layer can read it; this module owns all the actual
-``cudagym`` imports. The owning Ray actor passes in a live ``Client``;
-compile/exec *hard* failures surface as ``CudaGym{Compilation,Execution}Error``
-(caught by ``cudagym_base``), while per-workload correctness/runtime outcomes
-ride inside the returned ``Trace``.
+The language -> (filename, entry point, fence tag) table lives in
+``cuda_kernel_utils`` (cudagym-free) so the data layer can read it; this module
+owns all the actual ``cudagym`` imports. The owning Ray actor passes in a live
+``Client``. Hard compile/execution failures are raised as
+``CudaGym{Compilation,Execution}Error`` (caught by ``cudagym_base``), while
+per-workload correctness/runtime outcomes are returned inside the ``Trace``.
 """
 
 from __future__ import annotations
@@ -53,8 +52,9 @@ from .cuda_kernel_utils import (
     sol_score,
 )
 
-# Per-workload statuses that deny a stage. ``compiled``/``executed`` credit is
-# kept up to the first failed stage so the staged reward stays dense (see reward).
+# Per-workload statuses that deny a stage. ``compiled``/``executed`` flags are
+# granted up to the first failed stage; they feed the metrics and the env
+# observation only — the reward pays for correctness alone (see ``reward``).
 _COMPILE_FAIL = {EvaluationStatus.COMPILE_ERROR}
 _EXEC_FAIL = {
     EvaluationStatus.RUNTIME_ERROR,
@@ -258,7 +258,7 @@ def update_result_from_trace(
             if evaluation is None or evaluation.performance is None:
                 continue
             # WorkloadTrace.workload / Workload.uuid are required pydantic
-            # fields — index them directly so an upstream rename fails loudly
+            # fields — access them directly so an upstream rename fails loudly
             # instead of silently unmatching every anchor.
             anchor = sol_anchors.get(workload_trace.workload.uuid)
             human_best = float((anchor or {}).get("human_best_latency_ms") or 0.0)

@@ -16,7 +16,7 @@
 
 The single-turn prompt asks the policy for ``<think>...</think>`` reasoning followed by a
 single fenced code block holding the kernel (one file). ``check_inline_format``
-validates that shape and ``get_code`` extracts the block. ``fence_lang`` is the
+validates that structure and ``get_code`` extracts the block. ``fence_lang`` is the
 markdown fence tag the model writes (e.g. ``python``, ``cpp``), which is *not*
 the cudagym ``SupportedLanguages`` value (e.g. ``triton``, ``cuda_cpp``) — the
 mapping from a cudagym language to its fence tag lives in ``cuda_kernel_utils``.
@@ -37,17 +37,18 @@ def check_inline_format(completion: str, fence_lang: str = "python") -> bool:
     Expects: a ``<think>\\n ... \\n</think>`` block, then anything, then a
     ```` ```<fence_lang>\\n ... \\n``` ```` code fence.
 
-    The fence sub-pattern is kept identical to ``get_code`` (newline right after the
-    fence tag and before the closing fence) so that a completion which passes this
-    check is guaranteed to be extractable by ``get_code`` -- otherwise a well-formed
-    -looking kernel could earn the format reward yet fail extraction and score 0.
+    The fence sub-pattern is kept identical to ``get_code`` (a newline right after
+    the fence tag and before the closing fence) so that any completion which
+    passes this check is guaranteed to be extractable by ``get_code``. If the two
+    diverged, a completion could pass the format check and still fail extraction,
+    and the sample would be recorded as a format error the check just accepted.
 
     Args:
         completion: the model's raw completion text.
         fence_lang: the markdown fence tag expected after the think block.
 
     Returns:
-        True iff the completion matches the expected think-then-fence shape.
+        True iff the completion matches the expected think-then-fence structure.
     """
     pattern = rf"^<think>\n.*?\n</think>\n.*?```{fence_lang}\n.*?\n```.*?$"
     return bool(re.search(pattern, completion, re.DOTALL | re.MULTILINE))

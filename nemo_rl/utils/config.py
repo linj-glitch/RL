@@ -19,9 +19,9 @@ from hydra._internal.config_loader_impl import ConfigLoaderImpl
 from hydra.core.override_parser.overrides_parser import OverridesParser
 from omegaconf import DictConfig, OmegaConf
 
-# The inheritance loader lives in a hydra-free module so submit-time tooling
-# (slurm/cudagym_hosting.py, run on login nodes) can share it; re-exported here
-# for the existing importers.
+# The inheritance loader lives in a hydra-free module so job-submission
+# tooling (slurm/cudagym_hosting.py, which runs on login nodes without the
+# training venv) can import it; re-exported here for existing importers.
 from nemo_rl.utils.config_inheritance import (  # noqa: F401
     load_config_with_inheritance,
     merge_with_override,

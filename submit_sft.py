@@ -44,10 +44,15 @@ SBATCH_TEMPLATE_PATH = Path(__file__).parent / "slurm" / "sft" / "sft.sh"
 def launch_jobs(
     ssh_tunnel,
     code_upload_path,
-    convert: int = None,
+    convert: int | None = None,
     interactive: bool = False,
     num_jobs: int = 1,
 ):
+    """Run the uploaded ``run.sh`` sbatch wrapper on the cluster, once per job.
+
+    When ``convert`` is set, the wrapper is invoked with ``CONVERT_STEP`` so it
+    submits a checkpoint-conversion job instead of a training job.
+    """
     for i in range(num_jobs):
         launch_cmd = f"cd {code_upload_path} && "
         if convert is not None:
@@ -64,6 +69,7 @@ def launch_jobs(
 
 
 def main():
+    """Upload the code and sbatch script, then submit the SFT (or conversion) job."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--exp-name", "-e", default="debug", type=str)
     parser.add_argument(
@@ -161,9 +167,8 @@ def main():
 
     sbatch_vars = {
         "EXP_NAME": args.exp_name,
-        # sft.sh prefixes examples/configs/recipes/atlas/ itself — pass the bare
-        # filename (a resolve().relative_to() here was cwd-dependent and crashed
-        # when submitting from outside the repo root).
+        # sft.sh prefixes examples/configs/recipes/atlas/ itself, so pass the
+        # bare filename regardless of how the config was spelled on the CLI.
         "CONFIG_NAME": Path(args.config).name,
         "EXTRA_CONFIG_OPTS": extra_config_opts,
         "TIME": args.time,
@@ -171,9 +176,9 @@ def main():
         **secrets,
         "OUTPUT_DIR": output_dir,
         "GPUS_PER_NODE": cluster_config["gpus_per_node"],
-        "SKIP_GRES_ARG": "1" if args.cluster == "eos" else "",
-        "SLURM_ACCOUNT": cluster_config.get("account", "coreai_nvfm_cupilot"),
-        "SLURM_PARTITION": cluster_config.get("partition", "batch"),
+        "SKIP_GRES_ARG": "1" if cluster_config.get("skip_gres") else "",
+        "SLURM_ACCOUNT": cluster_config["account"],
+        "SLURM_PARTITION": cluster_config["partition"],
         "SLURM_QOS": cluster_config.get("qos", ""),
     } | {**cluster_config["paths"]}
 

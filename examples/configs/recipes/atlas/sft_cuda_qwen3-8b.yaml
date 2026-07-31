@@ -1,5 +1,6 @@
 # Atlas SFT on Qwen3-8B: Solswarm CUDA-kernel traces in NeMo-RL `openai_format`
-# ({messages, tools} from scripts/traces_to_sft.py; single-turn rows load the same way).
+# ({messages, tools} rows from the sft-solswarm-traces repo's scripts/traces_to_sft.py;
+# single-turn rows load the same way).
 #
 # Load-bearing constraints:
 #   * policy.tokenizer.chat_template pins the atlas preserving template (see the
@@ -9,14 +10,16 @@
 #     consecutive tool/user messages, gen-prompt renders are not prefix-stable
 #     and get_formatted_message_log silently corrupts token spans. With false,
 #     each assistant chunk carries its own header into the loss — intended.
-#   * max_total_sequence_length 131072 covers ~88% of the current extraction
-#     (median ~86k tok, p90 ~142k, max ~204k); overflow rows get
-#     loss_multiplier=0. Gate any new data/model pairing with scripts/verify_sft.py.
+#   * max_total_sequence_length 131072: agentic traces are long, and rows over
+#     the limit are masked out (loss_multiplier=0) rather than truncated —
+#     check the token-length distribution of any new data drop, and gate any
+#     new data/model pairing, with scripts/verify_sft.py (sft-solswarm-traces
+#     repo).
 #
 # Launch: uv run ./examples/run_sft.py --config examples/configs/recipes/atlas/sft_cuda_qwen3-8b.yaml
 
 sft:
-  max_num_epochs: 4          # small curated set today; re-tune as extraction grows
+  max_num_epochs: 4          # multiple epochs suit a small dataset; re-tune as it grows
   max_num_steps: 1000000
 
   val_period: 10
@@ -42,8 +45,9 @@ checkpointing:
 
 policy:
   model_name: "Qwen/Qwen3-8B"   # or a local path; DeepSeek-R1-0528-Qwen3-8B also works
-                                # (same Qwen3 tokenizer family) — re-run the template
-                                # gate (scripts/verify_sft.py) whenever this changes.
+                                # (same Qwen3 tokenizer family) — re-run scripts/
+                                # verify_sft.py (sft-solswarm-traces repo) whenever
+                                # this changes.
   tokenizer:
     name: ${policy.model_name}
     # THE pinned template — shared with the GRPO CUDA recipe and carried into the
@@ -87,7 +91,7 @@ policy:
     sequence_length_round: 64
 
   sequence_packing:
-    enabled: False              # enable for throughput once the run is validated;
+    enabled: False              # enable for throughput once the run is validated
     train_mb_tokens: ${mul:${policy.max_total_sequence_length}, ${policy.train_micro_batch_size}}
     algorithm: "modified_first_fit_decreasing"
     sequence_length_round: 64
@@ -98,14 +102,14 @@ policy:
   optimizer:
     name: "torch.optim.AdamW"
     kwargs:
-      lr: 5.0e-5                # from the prior atlas SFT recipes (a6cdd0804)
+      lr: 5.0e-5
       weight_decay: 0.1
       betas: [0.9, 0.98]
       eps: 1e-8
       foreach: False
       fused: False
 
-  ## ignored since enabled=false; present so the config schema stays complete.
+  # Ignored (enabled: false below); present so the config schema stays complete.
   megatron_cfg:
     enabled: false
     use_linear_ce_fusion_loss: false
@@ -207,7 +211,8 @@ data:
   #   uv run scripts/traces_to_sft.py --in out/traces/<campaign> --out train.jsonl \
   #       --format openai --tool-arg-format object
   # then hold out a validation split (OpenAIFormatDataset has no split option).
-  # ALWAYS gate a new data drop + template/model pairing with scripts/verify_sft.py.
+  # ALWAYS gate a new data drop + template/model pairing with the same repo's
+  # scripts/verify_sft.py.
   train:
     - dataset_name: "openai_format"
       data_path: "/datasets/SET_ME_atlas_sft/train.jsonl"
@@ -235,9 +240,9 @@ logger:
   monitor_gpus: true
   wandb:
     project: "atlas-cuda-sft"
-    name: "sft-cuda-agentic-qwen3-8b"   # literal: data.train is a list, so the
-                                        # upstream ${data.train.dataset_name} interp
-                                        # would fail here.
+    name: "sft-cuda-agentic-qwen3-8b"   # literal name: data.train here is a list,
+                                        # so the ${data.train.dataset_name} interpolation
+                                        # from examples/configs/sft.yaml would not resolve.
   swanlab:
     project: "atlas-cuda-sft"
     name: "sft-cuda-agentic-qwen3-8b"

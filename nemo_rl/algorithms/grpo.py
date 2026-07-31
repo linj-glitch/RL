@@ -2856,6 +2856,11 @@ def grpo_train(
                     # Clear logger metrics for each generation step
                     if policy_generation is not None:
                         policy_generation.clear_logger_metrics()
+                    # Per-row labels for the conversations table (see the
+                    # log_conversations block below); the NeMo-Gym branch fills
+                    # this with the target GPU SKU before the rollout replaces
+                    # the batch (its final_batch drops the dataset fields).
+                    conv_task_names = None
                     # Use NeMo-Gym rollouts if enabled. We cascade NeMo-Gym first since NeMo-Gym requires async rollouts.
                     if _should_use_nemo_gym(master_config):
                         # configure_generation_config auto-fills stop_token_ids from the EOS
@@ -2867,6 +2872,16 @@ def grpo_train(
                             "stop_token_ids": None,
                             "stop_strings": None,
                         }
+                        if master_config.logger.get("log_conversations"):
+                            conv_task_names = [
+                                str(
+                                    ((row or {}).get("verifier_metadata") or {}).get(
+                                        "target_hardware"
+                                    )
+                                    or "unknown"
+                                )
+                                for row in repeated_batch.get("extra_env_info") or []
+                            ] or None
                         nemo_gym_rollout_result = run_nemo_gym_rollout_sync(
                             policy_generation=policy_generation,
                             input_batch=repeated_batch,
@@ -2948,14 +2963,29 @@ def grpo_train(
                 # Optionally log rollout conversations (+ rewards / task names) to
                 # table backends (W&B). Off by default: serializing full
                 # trajectories every step is expensive. Best-effort.
-                if master_config.logger.get("log_conversations", False):
+                if master_config.logger.get("log_conversations"):
                     try:
+                        # Labels: the NeMo-Gym branch pre-captured the target GPU
+                        # SKU per row; the single-turn batch carries task_name
+                        # (the env/SKU name); the Gym agent name is the last
+                        # resort so the column is never empty.
+                        if conv_task_names is None:
+                            conv_task_names = repeated_batch.get("task_name")
+                        if conv_task_names is None and "agent_ref" in repeated_batch:
+                            conv_task_names = [
+                                (ar or {}).get("name")
+                                for ar in repeated_batch["agent_ref"]
+                            ]
                         logger.log_conversations_from_message_logs(
                             message_logs=repeated_batch["message_log"],
                             rewards=repeated_batch.get("total_reward"),
                             task_names=repeated_batch.get("task_name"),
                             step=total_steps + 1,
                             name="train/conversations",
+                            # Decodes the agentic path's empty-content turns and
+                            # folds <think> blocks for readability.
+                            tokenizer=tokenizer,
+                            thinking_tags=get_nemo_gym_thinking_tags(master_config.env),
                         )
                     except Exception as e:
                         print(f"\n  ⚠️ Error logging conversations table: {str(e)}")

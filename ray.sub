@@ -596,7 +596,7 @@ if [[ "${CUDAGYM_ENABLED:-0}" == "1" ]]; then
                    --num-cpu-workers ${CPUS_PER_WORKER}" &
     SRUN_PIDS["cudagym-compile-$i"]=$!
 
-    # Let SLURM recover
+    # Stagger step launches to avoid bursting slurmctld
     sleep 2
 
     # Launch the GPU-only server
@@ -609,7 +609,7 @@ if [[ "${CUDAGYM_ENABLED:-0}" == "1" ]]; then
                    --artifacts-dir ${ARTIFACTS_DIR}" &
     SRUN_PIDS["cudagym-gpu-$i"]=$!
 
-    # Let SLURM recover
+    # Stagger step launches to avoid bursting slurmctld
     sleep 2
   done
 
@@ -683,7 +683,7 @@ if [[ "${CUDAGYM_ENABLED:-0}" == "1" ]]; then
   if [ "$LB_READY" = false ]; then
     echo "[ERROR] Load balancer is not responding after multiple attempts"
     echo "[DEBUG] Checking if load balancer process is running..."
-    srun --nodes=1 --ntasks=1 -w "$CUDAGYM_LB_NODE" ps aux | grep -E "(cudagym_load_balancer|python.*${LB_PORT})" || echo "No load balancer process found"
+    srun --overlap --nodes=1 --ntasks=1 -w "$CUDAGYM_LB_NODE" ps aux | grep -E "(cudagym_load_balancer|python.*${LB_PORT})" || echo "No load balancer process found"
     echo "[ERROR] Cancelling job ${SLURM_JOB_ID} due to load balancer failure."
     scancel "$SLURM_JOB_ID" 2>/dev/null || true
     exit 1

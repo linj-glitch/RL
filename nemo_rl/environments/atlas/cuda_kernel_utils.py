@@ -14,13 +14,11 @@
 
 """Config + result containers for CudaGym kernel evaluation.
 
-These mirror the single-turn reference (``alexandery/solbench``) but target the
-*current* CudaGym SDK: the evaluator no longer talks to per-modality
-``cudagym.envs.*`` modules (removed upstream). It builds typed
-``Solution``/``Definition``/``Workload`` objects and calls
-``cudagym.sdk.workflows.evaluate`` — see ``cudagym_client.py``. These dataclasses
-deliberately import nothing from ``cudagym`` so the data layer can reference the
-config type without the heavy dependency.
+The evaluator builds typed ``Solution``/``Definition``/``Workload`` objects and
+calls ``cudagym.sdk.workflows.evaluate`` — see ``cudagym_client.py``. The
+dataclasses in this module deliberately import nothing from ``cudagym`` so the
+data layer (DataLoader worker subprocesses, see ``examples/run_grpo_cuda.py``)
+can use the config type and the language table without the heavy dependency.
 """
 
 from dataclasses import dataclass, field
@@ -47,9 +45,9 @@ class CudaGymEvalConfig:
     # Correctness-gated reward weights, consumed by ``reward.get_reward``:
     # 0 until the kernel is numerically correct on every workload, then
     # correctness + performance * perf_term (SOL score in [0,1] when the row
-    # carries anchors). Progress rungs (format/compiled/executed) are metrics
-    # only — never rewarded (JIT languages have no failable compile stage, so
-    # paying for "compiled" rewarded placeholder files).
+    # carries anchors). Progress stages (format/compiled/executed) are metrics
+    # only and never rewarded: JIT-compiled languages have no compile stage
+    # that can fail, so paying for "compiled" would reward placeholder files.
     reward_weights: dict[str, float] = field(
         default_factory=lambda: {
             "correctness": 1.0,
@@ -58,8 +56,9 @@ class CudaGymEvalConfig:
     )
     # Performance-term config. allow_speedup_fallback: for anchor-less rows,
     # whether a correct kernel may earn the perf term from log-normalized
-    # speedup-over-reference (clip_*/speedup_ratio shape that mapping); false
-    # -> the perf term is 0 without anchors.
+    # speedup-over-reference (clip_* and speedup_ratio parameterize that
+    # mapping, see ``reward.normalize_performance_reward``); false -> the perf
+    # term is 0 without anchors.
     perf_reward_config: dict[str, float] = field(
         default_factory=lambda: {
             "clip_max": 10.0,
@@ -105,27 +104,28 @@ class KernelEvalResult:
     correctness: bool = False  # all workloads numerically matched the reference
     speedup: float = (
         -1.0
-    )  # mean speedup over the EAGER reference (cudagym; logging + fallback)
+    )  # mean speedup over the eager reference (speedup_factor); logging + fallback
     sol_score: float = (
         -1.0
     )  # mean SOL score in [0,1] (0.5=human-best, 1.0=speed-of-light); -1 = no anchors
     human_best_speedup: float = -1.0  # geomean speedup over human-best (logging)
     runtime: float = -1.0  # mean custom-kernel latency in ms
     # Free-form diagnostics (compile/exec errors, per-workload statuses, ...);
-    # surfaced into the env observation so the agent can react.
+    # included in the env observation so the agent can react to them.
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
 # Language -> (source filename, entry "<file>::run", markdown fence tag).
 # ---------------------------------------------------------------------------
-# Single-turn solutions are ONE file exposing a ``run`` entry. This map is
-# defined here -- which imports nothing from ``cudagym`` -- so the data processor
-# can read the fence tag / entry symbol inside DataLoader worker subprocesses
-# without the heavy dependency. ``cudagym_client`` reuses it (filename + entry)
-# when building the typed ``Solution``. Multi-file C++/CUDA solutions
-# (kernel.cu + main.cpp pybind) are produced agent-side in the agentic path; for single-turn prefer a
-# Python/Triton target (no separate compile phase, single-file ``run``).
+# Single-turn solutions are ONE file exposing a ``run`` entry. The map lives in
+# this cudagym-free module so the data processor can read the fence tag and
+# entry symbol inside DataLoader worker subprocesses; ``cudagym_client`` reuses
+# the filename + entry point when building the typed ``Solution``. Multi-file
+# C++/CUDA solutions (kernel.cu + a main.cpp pybind wrapper) do not fit in one
+# fenced block and are only produced in the agentic path, where the policy
+# writes files directly; for single-turn prefer a Python/Triton target (single
+# file, no separate compile phase).
 LANGUAGE_DEFAULTS: dict[str, tuple[str, str, str]] = {
     "python": ("kernel.py", "kernel.py::run", "python"),
     "pytorch": ("kernel.py", "kernel.py::run", "python"),
@@ -143,16 +143,19 @@ LANGUAGE_DEFAULTS: dict[str, tuple[str, str, str]] = {
 
 
 def _assert_languages_track_the_sdk() -> None:
-    """Fail loudly if our per-language table drifts from SupportedLanguages.
+    """Fail at import time if this table's key set drifts from ``SupportedLanguages``.
 
-    The filenames and fence tags are genuinely ours (the SDK defines no such
-    convention), but the KEY SET is the SDK's. When they diverge, an unlisted
-    language reaches ``check_inline_format`` first and is reported as the
-    MODEL's format error rather than as our configuration gap.
+    The filenames and fence tags are this repo's convention (the SDK defines
+    none), but the key set must match the SDK's language enum. Without this
+    check, a language the SDK supports but the table lacks would fail one row
+    at a time — as a ``KeyError`` from ``fence_lang_for`` at data time, or as
+    an "unsupported language" error from ``cudagym_client.build_solution``
+    recorded as the model's format error — instead of failing once at import
+    with the missing names spelled out.
     """
     try:
         from cudagym.contracts.common.files import SupportedLanguages
-    except ImportError:  # pragma: no cover - SDK always present in the atlas extra
+    except ImportError:  # pragma: no cover - no-op without cudagym (data layer)
         return
     sdk = {lang.value for lang in SupportedLanguages}
     ours = set(LANGUAGE_DEFAULTS)
@@ -166,14 +169,14 @@ def _assert_languages_track_the_sdk() -> None:
 
 
 def _assert_sku_hooks_track_the_sdk() -> None:
-    """Fail at import if the private SDK helpers the SKU check leans on are gone.
+    """Fail at import if the private SDK helpers the SKU check depends on are gone.
 
     An upstream rename would otherwise silently degrade every endpoint check
     to "unverifiable".
     """
     try:
         import cudagym.config.device as device
-    except ImportError:  # pragma: no cover - the data layer runs cudagym-free
+    except ImportError:  # pragma: no cover - no-op without cudagym (data layer)
         return
     for name in ("GPU_SPECS", "_hardware_match_keys", "_normalize_gpu_name"):
         if not hasattr(device, name):
@@ -190,9 +193,10 @@ _assert_sku_hooks_track_the_sdk()
 def fence_lang_for(language: str) -> str:
     """Markdown fence tag the model should write for a given cudagym language.
 
-    Hard-indexed: the import-time guard proves the table covers every SDK
-    language, so a miss can only be bad row data — fail it loudly at data time
-    instead of rendering a python prompt the eval will refuse.
+    Looks the language up directly, with no fallback. The import-time check
+    guarantees the table covers every SDK language, so a missing key can only
+    mean bad row data; raising ``KeyError`` at data time is preferable to
+    rendering a prompt for a language the evaluation would then refuse.
     """
     return LANGUAGE_DEFAULTS[language][2]
 
@@ -205,13 +209,12 @@ def entry_symbol_for(language: str) -> str:
 # ---------------------------------------------------------------------------
 # Endpoint-SKU verification (the runtime half of the launcher's preflight).
 # ---------------------------------------------------------------------------
-# Derived from the CudaGym SDK rather than restated here: GPU_SPECS carries the
-# sm version, the compile-target qualifier and the vendor name aliases for every
-# SupportedHardware value, so a hand-written table both duplicates it and goes
-# stale silently. Ours had already drifted (VR100/GB300 sm versions) and listed
-# "GB10", which is NOT a SupportedHardware member -- it is an alias of
-# DGX_SPARK -- so an endpoint declaring it raised inside build_solution and was
-# recorded as the MODEL's format error on every sample.
+# Derived from the CudaGym SDK rather than restated here: ``GPU_SPECS``
+# (cudagym.config.device) carries the SM version, the compile-target qualifier,
+# and the vendor name aliases for every SupportedHardware value, so a
+# hand-written copy would duplicate it and drift silently. The aliases matter:
+# "GB10", for example, is an alias of DGX_SPARK, not a SupportedHardware
+# member of its own.
 def sku_expectations(sku: str) -> Optional[tuple[tuple[str, ...], str]]:
     """``(accepted /health gpu_model substrings, expected sm prefix)`` for a SKU.
 
@@ -222,7 +225,7 @@ def sku_expectations(sku: str) -> Optional[tuple[tuple[str, ...], str]]:
     try:
         from cudagym.config.device import GPU_SPECS, _hardware_match_keys
         from cudagym.contracts.solution import SupportedHardware
-    except ImportError:  # pragma: no cover - SDK always present in the atlas extra
+    except ImportError:  # pragma: no cover - no-op without cudagym (data layer)
         return None
 
     normalized = sku.strip().upper().replace("-", "_")
@@ -239,21 +242,21 @@ def sku_expectations(sku: str) -> Optional[tuple[tuple[str, ...], str]]:
     spec = GPU_SPECS.get(hardware)
     if spec is None:
         return None
-    # Accept the enum value plus every vendor alias the SDK records; GB200
-    # superchip nodes report "NVIDIA GB200" while running B200 silicon, which
-    # the SDK already encodes.
-    # Already normalized by the SDK, which is what the comparison expects.
+    # Accept the enum value plus every vendor alias the SDK records (GB200
+    # superchip nodes report "NVIDIA GB200" while running B200 silicon). The
+    # keys come back already normalized by the SDK, which is the form
+    # ``verify_health_payload`` compares against.
     return tuple(_hardware_match_keys(hardware)), f"sm_{spec.sm_version}"
 
 
 def verify_health_payload(payload: dict[str, Any], sku: str) -> tuple[Optional[bool], str]:
     """Compare a cudagym ``/health`` payload against a declared GPU SKU.
 
-    Returns ``(ok, detail)``. "Unverifiable" is NOT a pass: it comes back as
-    ``ok=None`` so a caller can tell "the endpoint matches" from "nothing was
-    actually checked". Reporting the latter as True is how a silicon mismatch
-    stays silent -- and it is silent for Triton, which JIT-compiles on whatever
-    GPU serves the request.
+    Returns ``(ok, detail)``. "Unverifiable" is not a pass: it is returned as
+    ``ok=None`` so a caller can distinguish "the endpoint matches" from
+    "nothing was actually checked". The distinction matters because a silicon
+    mismatch produces no error for Triton kernels: they JIT-compile on
+    whatever GPU serves the request and report that GPU's timings.
     """
     gpu_model = payload.get("gpu_model") or ""
     sm_version = payload.get("sm_version") or ""
@@ -263,12 +266,12 @@ def verify_health_payload(payload: dict[str, Any], sku: str) -> tuple[Optional[b
     if expected is None:
         return None, f"unverifiable: {sku!r} is not a CudaGym SupportedHardware value"
     match_keys, sm_prefix = expected
-    # Compare with the SDK's OWN name normalization rather than raw substrings:
-    # real /health names carry vendor prefixes and spacing ("NVIDIA GeForce RTX
-    # 5090") that a naive test rejects, and the normalization rules belong to
-    # the SDK. Substring-after-normalization also gets the GB200 case right for
-    # free -- "nvidiagb200" contains "b200", and GB200 superchip nodes do serve
-    # B200 kernels -- without us restating that as a special case.
+    # Compare using the SDK's own name normalization rather than raw
+    # substrings: real /health names carry vendor prefixes and spacing
+    # ("NVIDIA GeForce RTX 5090"), and the normalization rules belong to the
+    # SDK. Substring matching after normalization also handles the GB200 case
+    # ("nvidiagb200" contains "b200", and GB200 superchip nodes do serve B200
+    # kernels) without a special case here.
     if gpu_model:
         reported = _normalize_gpu(gpu_model)
         if reported is None:
@@ -290,7 +293,7 @@ def _normalize_gpu(name: str) -> Optional[str]:
     """A ``/health`` gpu_model normalized the way the CudaGym SDK normalizes names."""
     try:
         from cudagym.config.device import _normalize_gpu_name
-    except ImportError:  # pragma: no cover - SDK always present in the atlas extra
+    except ImportError:  # pragma: no cover - no-op without cudagym (data layer)
         return None
     try:
         return _normalize_gpu_name(name)
@@ -299,13 +302,14 @@ def _normalize_gpu(name: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# SOL score — the solswarm / Kernel-Factory-Bench performance metric.
+# SOL score — the solswarm / Kernel-Factory-Bench (KFB) performance metric.
 # ---------------------------------------------------------------------------
 # Unlike cudagym's ``speedup_factor`` (speedup over the *eager* reference), the
 # SOL score is anchored at the per-workload **human-best** latency (T_b) and the
 # **speed-of-light** roofline (T_SOL) — both precomputed offline in KFB's
-# latencies_b200.csv. We compute it at reward time from cudagym's measured
-# latency (T_k) + those anchors. This is the signal solswarm rewards on.
+# per-suite ``latencies_b200.csv``. It is computed at reward time from
+# cudagym's measured latency (T_k) plus those anchors, and it is the signal
+# solswarm rewards on.
 def sol_score(latency_ms: float, human_best_ms: float, sol_ms: float) -> float:
     """Anchored Speed-Of-Light score in [0, 1] for one workload.
 
@@ -335,7 +339,7 @@ def geomean(values: list[float]) -> float:
 
 
 def aggregate_kernel_metrics(records: list[dict[str, Any]]) -> dict[str, float]:
-    """Aggregate per-kernel eval records into observability metrics (shared by the single-turn and agentic paths).
+    """Aggregate per-kernel evaluation records into logging metrics.
 
     Each record carries ``correctness`` (bool) and the perf signals ``speedup`` (over
     the eager PyTorch reference), ``human_best_speedup`` (over the human-best baseline),
@@ -349,9 +353,11 @@ def aggregate_kernel_metrics(records: list[dict[str, Any]]) -> dict[str, float]:
       * ``perf_ref_fallback_rate`` — fraction of correct records whose performance reward
         fell back to speedup-over-ref for lack of a SOL/human-best anchor (``sol_score < 0``).
 
-    This is the single source of truth for the reward-observability metrics so the
-    single-turn (native ``run_multi_turn_rollout``) and agentic (NeMo-Gym) paths log
-    identical names/semantics.
+    This is the single source of truth for these metrics: the single-turn env
+    (``cudagym_environment.CudaGymEnvironment.global_post_process_and_metrics``)
+    and the agentic NeMo-Gym path (``run_async_nemo_gym_rollout`` in
+    ``nemo_rl/experience/rollouts.py``) both call it, so the two paths log
+    identical metric names and semantics.
     """
     if not records:
         return {}

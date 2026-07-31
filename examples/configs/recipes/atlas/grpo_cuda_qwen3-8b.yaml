@@ -1,5 +1,7 @@
-# Single-turn GRPO on CudaGym / KernelFactory problems (Kernel-Factory-Bench
-# set), evaluated on B200. Launch: `uv run examples/run_grpo_cuda.py --config <this>`.
+# Single-turn GRPO on CudaGym / KernelFactory problems from a
+# KernelFactory-Bench (KFB) problem set, evaluated on B200.
+# Launch: `uv run --extra atlas examples/run_grpo_cuda.py --config <this>`
+# (--extra atlas pulls the cudagym SDK the env client imports).
 #
 # Inherits all unspecified fields (loss_fn, full policy/data defaults, ...) from
 # grpo_math_1B.yaml and overrides only the CudaGym-specific bits. Before running:
@@ -39,15 +41,15 @@ checkpointing:
   save_period: 20
 
 policy:
-  model_name: "Qwen/Qwen3-8B"  # base model for now; swap in the SFT'd kernel checkpoint
+  model_name: "Qwen/Qwen3-8B"  # base-model placeholder; swap in the SFT'd kernel checkpoint
   max_total_sequence_length: 16384  # generous for <think> + a kernel; raise for big problems
   tokenizer:
     name: ${policy.model_name}
-    # THE shared atlas template (think+tools-preserving, prefix-stable) — the SAME
-    # file the SFT recipe (sft_cuda_qwen3-8b.yaml) pins, so the RL rollout
-    # surface renders byte-identically to the SFT training surface. The SFT
-    # checkpoint's tokenizer also embeds it, which is what the agentic path's NeMo-Gym vLLM
-    # server picks up. The single-turn recipe exercises the no-tools path of the template.
+    # The shared atlas chat template (think+tools-preserving, prefix-stable) —
+    # the SAME file the SFT recipe (sft_cuda_qwen3-8b.yaml) pins, so RL rollouts
+    # render prompts byte-identically to SFT training. The SFT checkpoint's
+    # tokenizer also embeds it, which is what the agentic path's NeMo-Gym vLLM
+    # server picks up. This single-turn recipe uses the template's no-tools path.
     chat_template: "examples/prompts/atlas_preserving_chat_template.jinja"
   train_global_batch_size: 32
   train_micro_batch_size: 1
@@ -76,7 +78,9 @@ data:
   system_prompt_file: null
   # Built from a KFB checkout with write_kfb_dataset (grpo_cuda_dataset.py; its
   # docstring has the sol_latency_ms caveat). Preferred set: data/sol_execbench_external
-  # (real SOL anchors; eval server profile sol_execbench_external, language=triton, DPS=false).
+  # (real SOL anchors; language=triton, destination_passing_style=false; the eval
+  # server must be deployed with the matching problem set — for Modal that is
+  # CUDAGYM_MODAL_PROFILE=sol_execbench_external).
   # The JSONL must hold >= grpo.num_prompts_per_step train rows after the
   # test_size split (the train dataloader drops the last partial batch); raise
   # grpo.max_num_epochs to run more steps than one pass over the data provides.
@@ -119,18 +123,17 @@ env:
         clip_min: 0.1
         speedup_ratio: 0.75
         # Anchor-less rows only: let a correct kernel earn the perf term from
-        # log-normalized speedup-over-reference (needs a timed reference);
-        # false -> correct-but-anchorless earns the correctness weight alone.
-        # NOTE: this fallback needs a TIMED reference, i.e. benchmark_config
-        # benchmark_reference: true. With the default (false) cudagym reports no
-        # speedup_factor, so an anchor-less row earns the correctness weight and
-        # NO performance gradient regardless of this setting.
+        # log-normalized speedup-over-reference; false -> a correct-but-anchorless
+        # kernel earns the correctness weight alone. The fallback needs a TIMED
+        # reference (benchmark_config: {benchmark_reference: true} below): with
+        # the default (false) cudagym reports no speedup_factor, so an anchor-less
+        # row earns no performance term regardless of this setting.
         allow_speedup_fallback: true
       # CudaGym EvalConfig overrides. lock_clocks=true so eval timing matches the
       # locked-clock SOL/human-best anchors baked into each dataset row (the
       # perf reward needs those anchors — rows without them report
-      # reference_latency_ms=0 and the perf term is unearnable unless you also
-      # set benchmark_reference: true here, at extra eval cost).
+      # reference_latency_ms=0). Add benchmark_reference: true here (extra eval
+      # cost) to time the reference and enable the speedup fallback above.
       benchmark_config: {lock_clocks: true}
       # Fail fast at env init if the endpoint's /health reports a different GPU
       # than `sku` (otherwise silent for Triton kernels).

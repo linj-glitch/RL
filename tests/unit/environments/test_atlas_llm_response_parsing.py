@@ -13,9 +13,9 @@
 # limitations under the License.
 """Tests for the single-turn completion parser.
 
-Key invariant: ``check_inline_format`` must agree with ``get_code`` -- a
-completion that passes the format gate must be extractable, otherwise a
-well-formed-looking kernel earns the format reward yet scores 0 on extraction.
+Key invariant: ``check_inline_format`` must agree with ``get_code``. A
+completion that passes the format check must be extractable; otherwise a
+sample would be recorded as a format error that the check just accepted.
 """
 
 import pytest
@@ -37,8 +37,9 @@ def test_well_formed_passes_and_extracts():
 
 
 def test_no_newline_fence_fails_both():
-    # A fence without the surrounding newlines used to pass check_inline_format
-    # (lenient) while get_code (strict) raised -- the format/extract mismatch.
+    # A fence without the surrounding newlines must fail BOTH functions; if the
+    # format check were more lenient than get_code, a completion could pass the
+    # check yet fail extraction.
     completion = "<think>\nr\n</think>\nintro ```python code```"
     assert check_inline_format(completion) is False
     with pytest.raises(ValueError):

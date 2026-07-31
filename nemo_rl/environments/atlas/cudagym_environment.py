@@ -16,9 +16,10 @@
 
 The policy emits ONE completion per prompt (``<think>...</think>`` + a fenced
 kernel); this env evaluates it on CudaGym and returns the correctness-gated
-reward, then terminates (``done = 1`` for every sample). It is the de-risking
-baseline for the agentic path and shares all evaluation + reward logic with it
-via ``BaseCudaEvaluator`` (``cudagym_base``).
+reward, then terminates (``done = 1`` for every sample). It is the simpler
+counterpart of the agentic path (see the package docstring in ``__init__.py``)
+and shares the evaluation + reward logic with it via ``BaseCudaEvaluator``
+(``cudagym_base``).
 
 Flow per ``step`` (everything is batched):
   message_log_batch -> (first user prompt, last assistant completion) per sample
@@ -27,7 +28,7 @@ Flow per ``step`` (everything is batched):
     -> EnvironmentReturn(observations, metadata+{correctness,speedup,human_best_speedup,sol_score}, next_stop_strings=None,
                          rewards=Tensor[B], terminateds=ones, answers=None)
 GRPO then trains the assistant tokens (``<think>`` + code) against this reward;
-prompt/observation tokens are masked by provenance.
+prompt and environment-observation tokens are excluded from the loss.
 """
 
 import logging
@@ -55,8 +56,10 @@ class CudaGymEnvironmentMetadata(TypedDict, total=False):
     """Per-sample state passed to ``step`` (the datum's ``extra_env_info``).
 
     Carries the KernelFactory problem so the evaluator can build the typed
-    ``Solution``/``Definition``/``Workload`` objects. ``correctness``/``speedup``
-    are written back on the way out for ``global_post_process_and_metrics``.
+    ``Solution``/``Definition``/``Workload`` objects. ``correctness`` and the
+    three performance signals (``speedup``, ``human_best_speedup``,
+    ``sol_score``) are written back on the way out for
+    ``global_post_process_and_metrics``.
     """
 
     language: str  # cudagym SupportedLanguages value (e.g. "triton", "cuda_cpp")
@@ -83,11 +86,11 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
             from dataclasses import fields as dataclass_fields
 
             # Kwargs come from the dataclass itself, and unknown keys are
-            # REJECTED (the same typo class validate_benchmark_config catches
-            # one level down): a misspelled `reward_weight:` would otherwise be
-            # silently dropped and the run would train on defaults. `hosting`
-            # is the one submit-time-only key (slurm/cudagym_hosting.py reads
-            # it; the actor never does).
+            # REJECTED (the same class of typo that validate_benchmark_config
+            # catches one level down): a misspelled `reward_weight:` would
+            # otherwise be silently dropped and the run would train on
+            # defaults. `hosting` is the one submit-time-only key
+            # (slurm/cudagym_hosting.py reads it; the actor never does).
             known = {f.name for f in dataclass_fields(CudaGymEvalConfig)}
             unknown = set(config) - known - {"hosting"}
             if unknown:
@@ -106,8 +109,9 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
         # timings are scored against locked-clock anchors.
         cudagym_client.validate_benchmark_config(self.eval_config.benchmark_config)
         # And on a sku the SDK's Solution schema would refuse: SupportedHardware
-        # is a case-sensitive enum, so "b200" passes every /health preflight and
-        # then fails per-sample inside build_solution as the MODEL's format error.
+        # is a case-sensitive enum, so "b200" would pass every /health preflight
+        # and then fail per-sample inside build_solution, recorded as the
+        # model's format error.
         from cudagym.contracts.solution import SupportedHardware
 
         try:
@@ -156,10 +160,10 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
         """Fail fast when the eval endpoint's silicon doesn't match ``sku``.
 
         A mismatch is otherwise SILENT for Triton kernels (they JIT-compile on
-        whatever GPU serves the request and return that GPU's timings). Called
-        by the driver right after actor creation (run_grpo_cuda) — after
-        ray.sub's server/LB health gates, so the endpoint is already up.
-        No-op when the config disables it.
+        whatever GPU serves the request and return that GPU's timings). The
+        driver (``examples/run_grpo_cuda.py``) calls this right after actor
+        creation — after ``ray.sub``'s server health checks, so the endpoint is
+        already up. No-op when ``verify_endpoint_sku`` is disabled in the config.
         """
         if not self.eval_config.verify_endpoint_sku:
             return
@@ -187,7 +191,7 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
             LOG.info("cudagym endpoint SKU check (%s): %s", self.eval_config.sku, detail)
 
     def get_eval_config(self) -> CudaGymEvalConfig:
-        """Return this env's evaluation config (read by run_grpo_cuda's data setup)."""
+        """Return this env's evaluation config (read by ``examples/run_grpo_cuda.py`` during data setup)."""
         return self.eval_config
 
     async def step(
@@ -295,7 +299,7 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
             records = [m for m in batch_metadata if isinstance(m, dict)]
             metrics = aggregate_kernel_metrics(records)
         except Exception as e:  # never let metric aggregation crash a rollout
-            print(f"⚠️ Error aggregating cudagym metrics: {e}")
+            LOG.warning("Error aggregating cudagym metrics: %s", e)
         return batch, metrics
 
     async def shutdown(self) -> None:

@@ -12,7 +12,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# this script is responsible for uploading the code to the cluster and submitting jobs from a remote machine
+"""Helpers for submitting jobs to Slurm clusters from a local machine.
+
+Used by ``submit_grpo.py`` and ``submit_sft.py``: run commands and copy files
+over SSH, rsync the git-tracked tree to the cluster, load
+``slurm/clusters/<name>.yaml``, and fill the ``DEFAULT_<VAR>`` tokens in the
+sbatch template before uploading it.
+"""
 
 import os
 import re
@@ -27,6 +33,7 @@ from omegaconf import OmegaConf
 
 
 def _which_or_raise(binary: str) -> str:
+    """Return the path to a required binary, raising if it is not on PATH."""
     path = shutil.which(binary)
     if path is None:
         raise RuntimeError(f"Required binary '{binary}' not found in PATH")
@@ -34,6 +41,7 @@ def _which_or_raise(binary: str) -> str:
 
 
 def _run(cmd: Sequence[str], cwd: Optional[str] = None) -> subprocess.CompletedProcess:
+    """Run a local command with captured text output, raising on a non-zero exit."""
     return subprocess.run(cmd, cwd=cwd, check=True, text=True, capture_output=True)
 
 
@@ -57,6 +65,12 @@ def _list_submodule_paths(repo_root: str) -> list:
 
 
 class SSHTunnel:
+    """Access to one remote host through the ``ssh`` and ``scp`` command-line tools.
+
+    Holds the connection options (port, identity file, host-key policy,
+    compression) and applies them to every remote command and file copy.
+    """
+
     def __init__(
         self,
         host: str,
@@ -78,9 +92,11 @@ class SSHTunnel:
         _which_or_raise("scp")
 
     def _dest(self) -> str:
+        """Return the ``user@host`` destination string (or bare host)."""
         return f"{self.user}@{self.host}" if self.user else self.host
 
     def _ssh_base(self) -> list:
+        """Return the ``ssh`` argv prefix with the shared connection options."""
         cmd = ["ssh", "-p", str(self.port)]
         if self.compress:
             cmd.append("-C")
@@ -91,10 +107,11 @@ class SSHTunnel:
         else:
             cmd.extend(
                 ["-o", "StrictHostKeyChecking=accept-new"]
-            )  # supported on modern macOS
+            )  # accept-new needs OpenSSH >= 7.6
         return cmd
 
     def _scp_base(self) -> list:
+        """Return the ``scp`` argv prefix with the shared connection options."""
         cmd = ["scp", "-P", str(self.port)]
         if self.compress:
             cmd.append("-C")
@@ -107,19 +124,23 @@ class SSHTunnel:
         return cmd
 
     def run_command(self, command: str):
+        """Run a shell command on the remote host; return ``(rc, stdout, stderr)``."""
         proc = subprocess.run(
             self._ssh_base() + [self._dest(), command], text=True, capture_output=True
         )
         return proc.returncode, proc.stdout, proc.stderr
 
     def put_file(self, local_path: str, remote_path: str) -> None:
+        """Copy a local file to the remote host with ``scp``."""
         _run(self._scp_base() + [local_path, f"{self._dest()}:{remote_path}"])
 
     def get_file(self, remote_path: str, local_path: str) -> None:
+        """Copy a remote file to the local machine with ``scp``."""
         _run(self._scp_base() + [f"{self._dest()}:{remote_path}", local_path])
 
 
 def check_for_uncommitted_changes():
+    """Raise if the repository or any submodule has uncommitted changes."""
     # Ensure we're inside a git repo
     try:
         repo_root = _run(["git", "rev-parse", "--show-toplevel"]).stdout.strip()
@@ -153,10 +174,11 @@ def package_code(
     delete: bool = True,
     skip_commit_check: bool = False,
 ) -> str:
-    """Rsync project to remote host using SSH, syncing only git-tracked files.
+    """Rsync the project to the remote host, syncing only git-tracked files.
 
-    Strategy: Use git ls-files to get all tracked files (including submodules)
-    and rsync only those files. This respects git's view of what should be synced.
+    ``git ls-files --recurse-submodules`` supplies the file list, so submodule
+    files are included while untracked build artifacts are not. rsync then
+    copies exactly those paths over SSH.
     """
     print(f"⬆️  Uploading code to {ssh_tunnel.host} at {upload_path}...")
 
@@ -181,7 +203,9 @@ def package_code(
     if ssh_tunnel.strict_host_key_checking:
         ssh_cmd.extend(["-o", "StrictHostKeyChecking=yes"])
     else:
-        ssh_cmd.extend(["-o", "StrictHostKeyChecking=accept-new"])  # modern macOS
+        ssh_cmd.extend(
+            ["-o", "StrictHostKeyChecking=accept-new"]
+        )  # accept-new needs OpenSSH >= 7.6
     rsync_rsh = " ".join(shlex.quote(x) for x in ssh_cmd)
 
     # Get all git-tracked files including submodules
@@ -278,12 +302,13 @@ def validate_cluster_paths(paths: dict) -> None:
 
 
 def fill_template(sbatch_script: str, var_name: str, value) -> str:
-    """Replace the DEFAULT_<VAR> token with a value in the sbatch script text.
+    """Replace every ``DEFAULT_<VAR>`` token in the sbatch script text with a value.
 
-    Token-EXACT: a negative lookahead stops ``DEFAULT_ARTIFACTS`` from eating the
-    prefix of ``DEFAULT_ARTIFACTS_DIR`` (a plain str.replace mangled such pairs
-    into ``"<value>"_DIR``). None renders as an empty quoted string rather than
-    the literal ``None``; Path and other non-numeric values are quoted like str.
+    Matching is token-exact: a trailing negative lookahead keeps
+    ``DEFAULT_ARTIFACTS`` from also matching the prefix of
+    ``DEFAULT_ARTIFACTS_DIR``. ``None`` renders as an empty quoted string
+    rather than the literal ``None``; ints and floats are inserted bare; every
+    other value (str, Path, ...) is double-quoted.
     """
     var = var_name.upper()
     if value is None:

@@ -12,18 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Datasets for the atlas CudaGym / KernelFactory kernel-optimization tasks."""
+"""Datasets for the CUDA kernel-optimization tasks (the ``atlas`` recipe family).
+
+``grpo_cuda_dataset`` builds training rows from KernelFactory-Bench problem
+directories and loads them for the single-turn GRPO recipe
+(``examples/run_grpo_cuda.py``). It also builds NeMo-Gym task-seed rows for the
+agentic recipes (``kfb_problem_to_gym_seed`` / ``write_kfb_gym_seeds``).
+"""
 
 from .grpo_cuda_dataset import (
     format_cuda_problem,
+    kfb_problem_to_gym_seed,
     kfb_problem_to_row,
     prepare_cuda_dataset,
     write_kfb_dataset,
+    write_kfb_gym_seeds,
 )
 
 __all__ = [
     "format_cuda_problem",
+    "kfb_problem_to_gym_seed",
     "kfb_problem_to_row",
     "prepare_cuda_dataset",
     "write_kfb_dataset",
+    "write_kfb_gym_seeds",
 ]

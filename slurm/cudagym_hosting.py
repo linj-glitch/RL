@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Recipe-declared CudaGym hosting: schema, endpoint registry, validation, preflight.
+"""Resolve and validate recipe-declared CudaGym hosting.
 
 Every ``env.cudagym.<name>`` recipe entry declares where its eval servers live:
 
@@ -30,20 +30,22 @@ Every ``env.cudagym.<name>`` recipe entry declares where its eval servers live:
 
 ``kind`` is topology; the provider (modal/astra/static) is a property of the
 registry entry (``endpoints/<provider>.yaml``). ``submit_grpo.py`` resolves and
-validates every entry — there is no ``--cudagym-mode`` flag. Remote endpoints
-are pinged at submit time and their reported GPU is checked against the declared
-SKU; in-allocation servers (which don't exist yet at submit) get the same check
-at runtime init (``verify_endpoint_sku``). ``slurm-service`` entries stand up a
-CudaGym service job on ANOTHER Slurm cluster at submit time and chain login-node
-proxies back to this one (``slurm.deploy_remote_cudagym``).
+validates every entry at submit time — hosting is declared in the recipe, not
+on the command line. Remote endpoints are pinged at submit time and their
+reported GPU is checked against the declared SKU; in-allocation servers (which
+don't exist yet at submit) get the same check at runtime init
+(``verify_endpoint_sku``). ``slurm-service`` entries stand up a CudaGym service
+job on ANOTHER Slurm cluster at submit time and chain login-node proxies back
+to this one (``slurm.deploy_remote_cudagym``).
 
 Back-compat: a legacy ``server_url:`` with no ``hosting:`` block is treated as
 ``hosting: {kind: endpoint, url: <server_url>}`` with a deprecation warning, and
 ``hosting: {kind: endpoint}`` with neither ``endpoint`` nor ``url`` resolves from
-``CUDAGYM_UNIFIED_SERVER_URL`` / ``CUDAGYM_URL`` (the formalized escape hatch).
+``CUDAGYM_UNIFIED_SERVER_URL`` / ``CUDAGYM_URL`` (the environment-variable
+escape hatch).
 
 Kept dependency-light on purpose (omegaconf + stdlib; ``requests`` imported
-lazily in the probe): the recipe loader is the hydra-free
+lazily in ``probe_endpoint``): the recipe loader is the hydra-free
 ``nemo_rl.utils.config_inheritance``, shared with the training-side loader.
 """
 
@@ -55,7 +57,6 @@ from typing import Any, Optional, Union
 from omegaconf import DictConfig, OmegaConf
 
 from nemo_rl.environments.atlas.cuda_kernel_utils import (  # noqa: F401  (re-exported for submit-time callers)
-    sku_expectations,
     verify_health_payload,
 )
 from nemo_rl.utils.config_inheritance import load_config_with_inheritance
@@ -74,10 +75,10 @@ PROVIDER_REQUIRED_ENV: dict[str, tuple[str, ...]] = {
 
 
 # cluster yaml `sku:` (lowercase) -> the kernel-target SKU that silicon serves.
-# A hand table because the submitting login node has no cudagym SDK (whose
-# _hardware_match_keys encodes the same aliasing) — the one fact worth
-# restating is GB200 superchips serving B200 kernels; add a row per new
-# cluster silicon.
+# A small hand-maintained table so this check works on machines without the
+# cudagym SDK installed (the SDK's _hardware_match_keys encodes the same
+# aliasing). The one fact worth restating is that GB200 superchips serve B200
+# kernels; add a row per new cluster silicon.
 CLUSTER_SILICON: dict[str, str] = {
     "h100": "H100",
     "h200": "H200",
@@ -110,6 +111,8 @@ def load_recipe_merged(
 
 @dataclass
 class EndpointEntry:
+    """One eval endpoint from the ``endpoints/<provider>.yaml`` registry."""
+
     name: str  # "<provider>/<key>", e.g. "modal/b200"
     provider: str
     sku: str
@@ -150,6 +153,8 @@ def load_endpoints(endpoints_dir: Path = ENDPOINTS_DIR) -> dict[str, EndpointEnt
 
 @dataclass
 class ResolvedEntry:
+    """One validated ``env.cudagym.<name>`` entry with its hosting resolved."""
+
     name: str  # the env.cudagym key
     sku: str  # normalized upper-case
     kind: str
@@ -161,6 +166,8 @@ class ResolvedEntry:
 
 @dataclass
 class HostingResolution:
+    """All validated ``env.cudagym`` entries of a recipe, grouped by hosting kind."""
+
     entries: list[ResolvedEntry]
     in_allocation: Optional[ResolvedEntry]
     endpoints: list[ResolvedEntry]
@@ -171,14 +178,17 @@ class HostingResolution:
 
     @property
     def cudagym_mode(self) -> str:
+        """The in-allocation hosting kind, filled into ray.sub's CUDAGYM_MODE ('' when none)."""
         return self.in_allocation.kind if self.in_allocation else ""
 
     @property
     def cudagym_num_nodes(self) -> int:
+        """Node count for ray.sub's CUDAGYM_NUM_NODES (0 unless kind is disjoint)."""
         return self.in_allocation.num_nodes if self.in_allocation else 0
 
 
 def _auth_env_names(entry: ResolvedEntry) -> tuple[str, ...]:
+    """Return the env vars the entry's provider requires in the submitting shell."""
     if entry.endpoint is None:
         return ()
     return PROVIDER_REQUIRED_ENV.get(entry.endpoint.provider, ())
@@ -307,6 +317,11 @@ def resolve_hosting(
                 "endpoint_port": int(hosting["endpoint_port"]),
                 "service_login_port": int(hosting.get("service_login_port") or 8998),
             }
+            if str(service["service_cluster"]) == str(cluster_cfg.get("host") or ""):
+                raise HostingError(
+                    f"env.cudagym.{name}.hosting (slurm-service) points at the submit "
+                    f"cluster itself — use hosting kind 'colocated' or 'disjoint' instead."
+                )
             warnings.append(
                 f"env.cudagym.{name}: hosting kind 'slurm-service' is experimental "
                 f"(pending live validation of the refreshed cudagym slurm deployment)."
@@ -367,7 +382,7 @@ def resolve_hosting(
 
 
 def _probe_headers(entry: ResolvedEntry) -> dict[str, str]:
-    """Auth headers for a /health probe, mirroring the cudagym SDK's behavior."""
+    """Return auth headers for a /health request, mirroring what the cudagym SDK sends."""
     headers: dict[str, str] = {}
     token_env = (
         entry.endpoint.auth_token_env if entry.endpoint else None
@@ -384,7 +399,11 @@ def _probe_headers(entry: ResolvedEntry) -> dict[str, str]:
 def probe_endpoint(
     entry: ResolvedEntry, timeout: float = 10.0, retries: int = 2
 ) -> dict[str, Any]:
-    """GET <url>/health with provider auth; returns the payload or raises HostingError."""
+    """GET ``<url>/health`` with provider auth headers.
+
+    Returns the decoded JSON payload. Raises ``HostingError`` when the endpoint
+    stays unreachable across retries or answers with an HTTP error.
+    """
     try:
         import requests
     except ImportError as e:  # pragma: no cover - environment guard
@@ -411,23 +430,21 @@ def probe_endpoint(
             raise
         except Exception as e:  # noqa: BLE001 - report the transport failure verbatim
             last_error = str(e)
-        if attempt < retries:
-            continue
     raise HostingError(f"endpoint {entry.name} unreachable at {url}: {last_error}")
 
 
 def check_registry_against_solswarm(
     endpoints: dict[str, EndpointEntry], solswarm_root: Union[str, Path]
 ) -> list[str]:
-    """Differences between our endpoint registry and SolSwarm's gpu-skus.toml.
+    """Compare the endpoint registry against SolSwarm's ``gpu-skus.toml``.
 
-    Both describe the same managed fleets, maintained separately — the next
-    fleet bump (kf-v2-2-2 -> ...) would touch one and not the other with
-    nothing to notice. The toml is an array of tables: ``[[gpu_skus]]`` with
-    ``id`` (the lowercase sku) and ``cudagym_url`` (the unified endpoint our
-    registry stores). Returns human-readable difference lines (empty when they
-    agree); callers warn rather than fail, since a locally-overridden URL is a
-    deliberate choice worth flagging, not blocking.
+    Both files describe the same managed eval fleets but are maintained
+    separately, so a fleet redeploy can update one without the other. The toml
+    is an array of tables: ``[[gpu_skus]]`` with ``id`` (the lowercase SKU) and
+    ``cudagym_url`` (the unified endpoint our registry stores). Returns
+    human-readable difference lines, empty when the two agree. Callers warn
+    rather than fail, since a locally-overridden URL can be a deliberate choice
+    worth flagging, not blocking.
     """
     toml_path = Path(solswarm_root) / "deployments" / "files" / "gpu-skus.toml"
     if not toml_path.is_file():

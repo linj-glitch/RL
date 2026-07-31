@@ -1,29 +1,36 @@
 {#-
-  Atlas think+tools-PRESERVING chat template (Qwen/<|im_start|> conventions).
+  Reasoning- and tool-call-preserving chat template (Qwen/ChatML <|im_start|>
+  conventions) for the atlas recipes — the CUDA-kernel training pipeline under
+  examples/configs/recipes/atlas/.
 
-  This is the ONE template pinned across the whole atlas pipeline:
-    * SFT   — recipes set `policy.tokenizer.chat_template` to this file; the
-              checkpoint's tokenizer then carries it (tokenizer.save_pretrained),
-    * single-turn RL — grpo_cuda recipe points at the same file,
-    * agentic RL — Gym's vllm_model serves the SFT checkpoint, whose tokenizer
-              config already embeds this template.
+  The same template file is pinned at every stage so tokenization is identical
+  end to end:
+    * SFT — recipes set `policy.tokenizer.chat_template` to this file
+      (nemo_rl/algorithms/utils.py get_tokenizer loads .jinja paths), and the
+      saved checkpoint's tokenizer carries it from then on;
+    * single-turn RL — the grpo_cuda recipe points at the same file;
+    * agentic RL — NeMo-Gym's vllm_model serves the SFT checkpoint, whose
+      tokenizer config already embeds this template.
 
-  Why not the stock Qwen3 template:
-    1. It STRIPS <think> from non-final assistant turns → breaks the
-       prefix-stability assumption of get_formatted_message_log's incremental
-       render (llm_message_utils.get_first_index_that_differs has no guard),
-       corrupting per-message token spans/masks, and silently deletes the CoT
-       we explicitly train on.
-    2. It merges consecutive `tool` messages into one user block whose closing
-       <|im_end|> moves when the next tool message arrives → also breaks
-       prefix stability. Here every message renders as its own self-contained
-       block, so render(messages[:i]) is always a strict prefix of
-       render(messages[:i+1]).
+  Why the stock Qwen3 template cannot be used here: NeMo-RL tokenizes a
+  conversation incrementally. get_formatted_message_log
+  (nemo_rl/data/llm_message_utils.py) renders messages[:i] and messages[:i+1]
+  and takes the textual difference as message i's tokens, so the render of
+  messages[:i] must always be an exact prefix of the render of messages[:i+1]
+  (get_first_index_that_differs does not verify this). The stock template
+  violates that in two ways:
+    1. It strips <think> blocks from all but the final assistant turn, so
+       earlier turns re-render differently once another turn is appended. That
+       corrupts the per-message token spans and loss masks, and it silently
+       deletes the chain-of-thought this pipeline explicitly trains on.
+    2. It merges consecutive `tool` messages into one user block, whose closing
+       <|im_end|> moves when the next tool message arrives — the same prefix
+       violation. Here every message renders as its own self-contained block.
 
-  Tool conventions match Qwen3/hermes so vLLM's hermes tool-call parser works
-  on generated <tool_call> blocks. `arguments` may be a JSON string (OpenAI
-  spec / traces_to_sft --tool-arg-format string) or an object (--tool-arg-format
-  object): both render as a JSON object, never double-encoded.
+  Tool-call conventions match Qwen3/hermes, so vLLM's hermes tool-call parser
+  can read generated <tool_call> blocks. `function.arguments` may arrive either
+  as a JSON-encoded string (the OpenAI chat format) or as an already-parsed
+  object; both render as a plain JSON object, never double-encoded.
 -#}
 {%- if messages[0].role == 'system' -%}
     <|im_start|>system

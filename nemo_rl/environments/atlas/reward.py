@@ -14,12 +14,13 @@
 
 """Correctness-gated reward for one CudaGym kernel evaluation.
 
-Shared by the single-turn and agentic paths (the Gym cudagym resources server
-vendors the same logic — keep the two in step). A kernel that is not
-numerically correct on EVERY workload earns exactly 0; a correct one earns the
-correctness weight plus the performance weight scaled by the anchored SOL
-score (see ``get_reward``). Format/compile/execute progress is observable in
-the metrics but never rewarded.
+Shared by the single-turn and agentic paths: the Gym cudagym resources server
+(``3rdparty/Gym-workspace/Gym/resources_servers/cudagym/app.py``) vendors a
+copy of this logic — keep the two in sync. A kernel that is not numerically
+correct on EVERY workload earns exactly 0; a correct one earns the correctness
+weight plus the performance weight scaled by the anchored SOL score (see
+``get_reward``). Format/compile/execute progress is observable in the metrics
+but never rewarded.
 """
 
 import math
@@ -32,56 +33,37 @@ def get_reward(
     weights: dict[str, float],
     perf_reward_config: dict[str, float],
 ) -> float:
-    """Compute the staged scalar reward for a single ``KernelEvalResult``.
+    """Correctness-gated reward: 0 until the kernel is right, then pay for speed.
 
-    Args:
-        result: the populated evaluation outcome (flags + speedup).
-        weights: per-stage weights, e.g.
-            ``{"format":1,"compiled":2,"executed":2,"correctness":4,"performance":8}``.
-        perf_reward_config: ``{"clip_max","clip_min","speedup_ratio"}`` for the
-            performance term's log-scale normalization.
+    A kernel that is not numerically correct on EVERY workload earns exactly 0.
+    Format/compile/execution progress is observable via the result flags (and
+    the aggregated metrics) but never rewarded: Triton/Python kernels have no
+    ahead-of-time compile stage that can fail, so paying for "compiled" would
+    reward a bare placeholder file.
 
-    Returns:
-        The summed reward. Early-returns at the first failed stage, so the value
-        is monotonic in how far the kernel got.
+    A correct kernel earns::
+
+        weights["correctness"] + weights["performance"] * perf_term
+
+    where ``perf_term`` is the anchored SOL score in [0, 1] (0.5 = match
+    human-best, 1.0 = speed-of-light — the metric solswarm/KFB reward on) when
+    the problem carries anchors. For anchor-less problems the fallback —
+    log-normalized speedup over the eager reference, also mapped into [0, 1]
+    before scaling — applies only when
+    ``perf_reward_config["allow_speedup_fallback"]`` is true; otherwise the
+    perf term is 0 and a correct kernel earns the correctness weight alone.
     """
-    reward = 0.0
+    if not (result.formatted and result.correctness):
+        return 0.0
 
-    # Format: the completion parsed into a well-formed Solution.
-    if result.formatted:
-        reward += weights.get("format", 0.0)
-    else:
-        return reward
-
-    # Compilation (skipped languages report compiled=True).
-    if result.compiled:
-        reward += weights.get("compiled", 0.0)
-    else:
-        return reward
-
-    # Execution: ran on the GPU without runtime errors.
-    if result.executed:
-        reward += weights.get("executed", 0.0)
-    else:
-        return reward
-
-    # Correctness: numerically matched the reference on every workload.
-    if result.correctness:
-        reward += weights.get("correctness", 0.0)
-    else:
-        return reward
-
-    # Performance — PREFER the SOL score (gap toward speed-of-light, anchored at
-    # human-best; the metric solswarm/KFB reward on). ``sol_score`` is in [0, 1]
-    # (0.5 = match human-best, 1.0 = roofline), scaled by the performance weight.
-    # Fall back to cudagym's eager-reference speedup only when the problem has no
-    # SOL/human-best anchors (-1.0); correctness-only workloads also leave both -1.
+    reward = weights.get("correctness", 0.0)
+    perf_weight = weights.get("performance", 0.0)
     if result.sol_score >= 0.0:
-        reward += weights.get("performance", 0.0) * result.sol_score
-    elif result.speedup != -1.0:
+        reward += perf_weight * result.sol_score
+    elif result.speedup != -1.0 and perf_reward_config.get("allow_speedup_fallback", True):
         reward += normalize_performance_reward(
             result.speedup,
-            scale=weights["performance"],
+            scale=perf_weight,
             clip_max=perf_reward_config["clip_max"],
             clip_min=perf_reward_config["clip_min"],
             speedup_ratio=perf_reward_config["speedup_ratio"],

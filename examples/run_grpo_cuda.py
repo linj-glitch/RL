@@ -14,7 +14,7 @@
 
 """Single-turn GRPO on CudaGym / KernelFactory problems.
 
-End-to-end wiring (current NeMo-RL ``setup``/``grpo_train`` API):
+End-to-end wiring:
 
   1. ``setup_environments`` builds one ``CudaGymEnvironment`` Ray actor per GPU
      SKU in ``env.cudagym`` (a thin CudaGym HTTP client, ``num_gpus=0``).
@@ -24,9 +24,10 @@ End-to-end wiring (current NeMo-RL ``setup``/``grpo_train`` API):
   3. ``cudagym_data_processor`` renders the problem into a single ``user`` prompt
      (``<think>`` + fenced kernel requested), applies the chat template, stores
      ``token_ids`` + the KernelFactory problem as ``extra_env_info``.
-  4. GRPO generates one completion/prompt; ``CudaGymEnvironment.step`` evaluates
-     it and returns the correctness-gated reward (single-turn, ``done=1``);
-     assistant tokens (``<think>`` + code) train, prompt tokens are masked.
+  4. Each episode is one model turn: GRPO samples a completion per (repeated)
+     prompt, and ``CudaGymEnvironment.step`` evaluates it and returns the
+     correctness-gated reward (``done=1``). Assistant tokens (``<think>`` + code)
+     train; prompt tokens are masked.
 
 The agentic path reuses the env's evaluation+reward via a NeMo-Gym
 ``cuda_agent``; this file is the single-turn baseline.
@@ -81,9 +82,10 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
 # ===============================================================================
 #                           Prompt construction
 # ===============================================================================
-# Problem-statement template: the words live HERE, once; code computes only the
-# values. (The surrounding instruction prose lives in the prompt_file template,
-# examples/prompts/cudagym.txt — this renders its {driver_code} slot.)
+# Problem-statement template. All problem-statement wording lives in this one
+# string; the code below only computes the values. The surrounding instruction
+# text lives in the prompt_file template (examples/prompts/cudagym.txt), whose
+# {driver_code} slot this renders.
 _PROBLEM_TEMPLATE = """\
 {description}# Inputs:
 {input_lines}
@@ -166,7 +168,7 @@ def cudagym_data_processor(
     prompt + its ``token_ids`` (system prompt, if any, folded in by the chat
     template); the KernelFactory problem rides in ``extra_env_info`` for the env's
     ``step``. Over-length prompts are stubbed + masked (``loss_multiplier=0``),
-    matching the SFT/reference behavior.
+    matching the built-in processors in ``nemo_rl/data/processors.py``.
     """
     language = datum_dict["language"]
     destination_passing_style = datum_dict.get("destination_passing_style", True)
@@ -340,7 +342,7 @@ def setup_environments(
 
 
 def main() -> None:
-    """Main entry point (mirrors the current ``run_grpo_*`` wiring)."""
+    """Main entry point; mirrors the other ``run_grpo_*`` example scripts."""
     register_omegaconf_resolvers()
     args, overrides = parse_args()
 

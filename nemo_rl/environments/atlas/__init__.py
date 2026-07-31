@@ -14,22 +14,27 @@
 
 """Atlas: GRPO on CudaGym / KernelFactory kernel-optimization problems.
 
-Two rollout shapes share one core:
+Two rollout modes share one evaluation core:
   * **single-turn** — a native ``EnvironmentInterface``
-    (``cudagym_environment.CudaGymEnvironment``): the policy emits one
-    ``<think>`` + fenced-kernel completion, the env evaluates it on CudaGym and
-    returns a staged reward. Lives in this package.
+    (``cudagym_environment.CudaGymEnvironment``). The policy emits one
+    ``<think>`` + fenced-kernel completion; the environment evaluates it on a
+    CudaGym server and returns the correctness-gated reward. Lives in this
+    package.
   * **agentic** — a NeMo-Gym ``cuda_agent`` wrapping OpenCode (see
-    ``3rdparty/Gym-workspace/Gym/responses_api_agents/cuda_agent``); the policy
-    iterates write -> ``cudagym evaluate`` -> read across turns.
+    ``3rdparty/Gym-workspace/Gym/responses_api_agents/cuda_agent``). The policy
+    iterates write -> ``cudagym evaluate`` -> read across turns; its resources
+    server (``3rdparty/Gym-workspace/Gym/resources_servers/cudagym/app.py``)
+    vendors a copy of this package's evaluation and reward logic.
 
-Both build typed CudaGym ``Solution``/``Definition``/``Workload`` objects and
-call ``cudagym.sdk.workflows.evaluate`` (``cudagym_client``), then score the
-returned ``Trace`` with the staged reward (``reward``).
+Both modes build typed CudaGym ``Solution``/``Definition``/``Workload`` objects,
+call ``cudagym.sdk.workflows.evaluate`` (see ``cudagym_client``), and score the
+returned ``Trace`` with the correctness-gated reward (see ``reward``).
 
 Only the lightweight, dependency-free containers are re-exported here so that
-``import nemo_rl.environments.atlas`` does not pull in ``cudagym``/``ray``; the
-Ray actor is imported by FQN (``...atlas.cudagym_environment.CudaGymEnvironment``).
+``import nemo_rl.environments.atlas`` does not pull in ``cudagym``/``ray``. The
+Ray actor is imported by its fully qualified name
+(``nemo_rl.environments.atlas.cudagym_environment.CudaGymEnvironment``, see
+``nemo_rl/distributed/ray_actor_environment_registry.py``).
 """
 
 from .cuda_kernel_utils import CudaGymEvalConfig, KernelEvalResult

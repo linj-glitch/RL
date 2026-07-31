@@ -666,20 +666,23 @@ def calculate_rewards(
 
 def _aggregate_env_metrics(
     rollout_metrics: dict[str, Any],
-    task_names: Optional[list],
-    metadata_list: Optional[list],
+    task_names: Optional[list[str]],
+    metadata_list: Optional[list[dict[str, Any] | None]],
     task_to_env: dict[str, EnvironmentInterface],
 ) -> None:
     """Merge per-env online metrics into ``rollout_metrics`` in place.
 
-    Groups samples by ``task_name`` and, for envs that wrote per-sample kernel-eval
-    metadata (a dict carrying the cudagym signature ``sol_score`` + ``human_best_speedup``),
-    calls the env's ``global_post_process_and_metrics`` on that metadata and merges
-    the result as ``{task_name}/{metric}``. Envs that don't populate such metadata
-    (math/code/...) are skipped: their ``global_post_process_and_metrics`` expects a
-    fully-processed batch (``is_end``/``generation_lengths``/...) not available at
-    rollout time. Best-effort, per task -- metric aggregation must never crash a
-    rollout. Shared by the sync + async native rollout paths so both log identically.
+    Groups samples by ``task_name`` and, for envs that wrote per-sample
+    kernel-eval metadata (a dict carrying the cudagym signature ``sol_score``
+    plus ``human_best_speedup``), calls the env's
+    ``global_post_process_and_metrics`` on that metadata and merges the result
+    in as ``{task_name}/{metric}``. Envs that don't populate such metadata
+    (math, code, ...) are skipped: their ``global_post_process_and_metrics``
+    expects a fully-processed batch (``is_end``, ``generation_lengths``, ...)
+    that is not available at rollout time. Aggregation is best-effort per
+    task; failures are printed rather than raised so metric aggregation can
+    never crash a rollout. Shared by the synchronous and asynchronous native
+    rollout paths so both log identical metrics.
     """
     if metadata_list is None or task_names is None:
         return
@@ -759,7 +762,7 @@ def run_multi_turn_rollout(
     sample_terminated = torch.zeros(batch_size, dtype=torch.bool)
     sample_truncated = torch.zeros(batch_size, dtype=torch.bool)
     sample_max_turns_reached = torch.zeros(batch_size, dtype=torch.bool)
-    # Track per-sample environment metadata (the env's output_metadata) so
+    # Track per-sample environment metadata (EnvironmentReturn.metadata) so
     # global_post_process_and_metrics can aggregate env-specific online metrics.
     sample_env_metadata: list[dict | None] = [None] * batch_size
 
@@ -977,8 +980,8 @@ def run_multi_turn_rollout(
     }
 
     # Merge per-env (kernel-eval) online metrics into rollout_metrics. Only envs
-    # that wrote per-sample "correctness" metadata (cudagym) are aggregated; others
-    # are skipped (see _aggregate_env_metrics).
+    # whose per-sample metadata carries the kernel-eval fields (cudagym) are
+    # aggregated; others are skipped (see _aggregate_env_metrics).
     _aggregate_env_metrics(
         rollout_metrics,
         current_batch.get("task_name"),
@@ -1101,8 +1104,9 @@ async def run_sample_multi_turn_rollout(
     terminated = False
     truncated = False
     max_turns_reached = False
-    # Latest env metadata for this sample (single-turn cudagym writes correctness/
-    # speedup/sol_score here) — collected for _aggregate_env_metrics.
+    # Latest env metadata for this sample (single-turn cudagym writes its
+    # correctness/speedup/sol_score fields here); collected for
+    # _aggregate_env_metrics.
     last_env_metadata: dict | None = None
 
     # Track per-turn metrics

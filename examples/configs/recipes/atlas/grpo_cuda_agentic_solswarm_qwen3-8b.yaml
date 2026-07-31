@@ -1,9 +1,10 @@
 # Agentic CudaGym GRPO in SolSwarm CONTAINER MODE: same training stack as
 # grpo_cuda_agentic_qwen3-8b.yaml, but each rollout runs SolSwarm's real
-# docker/agent/entrypoint.sh in a private mount namespace (sandbox_profile=
-# solswarm — the entrypoint renders the optimizer prompt, installs the skills,
-# writes the OpenCode config) and submits via the real /submit flow
-# (submission_mode=solswarm_submit -> rollout-scoped canonical evaluation;
+# docker/agent/entrypoint.sh in a private mount namespace
+# (sandbox_profile=solswarm — the entrypoint installs the skills, renders the
+# role prompt, and writes the OpenCode config) and submits via the real
+# /submit flow (submission_mode=solswarm_submit -> every submission is
+# canonically evaluated and recorded server-side, scoped to its rollout;
 # reward = best submission). See resources_servers/cudagym/configs/
 # cudagym_cuda_agent_solswarm.yaml; grpo.sh exports SOLSWARM_SURFACE_ROOT
 # (3rdparty/solswarm).
@@ -14,9 +15,9 @@ checkpointing:
 
 env:
   nemo_gym:
-    # Full replacement of the base list (OmegaConf merge replaces lists):
+    # Full replacement of the base list (OmegaConf merges replace lists):
     # base agent + training overlay + the solswarm-parity overlay LAST so its
-    # sandbox_profile/submission_mode/extra_args win.
+    # settings (sandbox_profile, submission_mode, solswarm_surface, ...) win.
     config_paths:
     - responses_api_models/vllm_model/configs/vllm_model_for_training.yaml
     - resources_servers/cudagym/configs/cudagym_cuda_agent.yaml

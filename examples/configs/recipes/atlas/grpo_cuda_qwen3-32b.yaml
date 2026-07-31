@@ -6,7 +6,7 @@ checkpointing:
   checkpoint_dir: "results/grpo-cuda-qwen3-32b"
 
 policy:
-  model_name: "Qwen/Qwen3-32B"  # base model for now; swap in the SFT'd kernel checkpoint
+  model_name: "Qwen/Qwen3-32B"  # base-model placeholder; swap in the SFT'd kernel checkpoint
   dtensor_cfg:
     tensor_parallel_size: 8
   generation:

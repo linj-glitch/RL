@@ -23,6 +23,7 @@ from omegaconf import OmegaConf
 from slurm.cudagym_hosting import (
     HostingError,
     ResolvedEntry,
+    check_registry_against_solswarm,
     load_endpoints,
     load_recipe_merged,
     probe_endpoint,
@@ -281,10 +282,8 @@ def test_disjoint_bounds_and_mode(tmp_path):
 
 
 def test_registry_drift_check_against_gpu_skus_toml(tmp_path):
-    """check_registry_against_solswarm parses the REAL toml shape:
-    [[gpu_skus]] tables with `id` + `cudagym_url`."""
-    from slurm.cudagym_hosting import check_registry_against_solswarm, load_endpoints
-
+    """check_registry_against_solswarm parses the actual gpu-skus.toml format:
+    [[gpu_skus]] tables with `id` and `cudagym_url`."""
     root = tmp_path / "solswarm"
     (root / "deployments" / "files").mkdir(parents=True)
     (root / "deployments" / "files" / "gpu-skus.toml").write_text(
@@ -322,7 +321,7 @@ def test_slurm_service_fields_and_warning(tmp_path):
                 "sku": "H100",
                 "hosting": {
                     "kind": "slurm-service",
-                    "service_cluster": "aws-iad-cs-002",
+                    "service_cluster": "aws-dfw-cs-001",
                     "num_service_nodes": 2,
                     "endpoint_port": 9100,
                 },
@@ -332,6 +331,21 @@ def test_slurm_service_fields_and_warning(tmp_path):
     )
     assert res.slurm_services[0].service["service_login_port"] == 8998
     assert any("experimental" in w for w in res.warnings)
+    with pytest.raises(HostingError, match="submit cluster itself"):
+        _resolve(
+            {
+                "svc": {
+                    "sku": "H100",
+                    "hosting": {
+                        "kind": "slurm-service",
+                        "service_cluster": "aws-iad-cs-002",
+                        "num_service_nodes": 2,
+                        "endpoint_port": 9100,
+                    },
+                }
+            },
+            ep_dir=_endpoints_dir(tmp_path),
+        )
 
 
 def test_agentic_requires_exactly_one_entry(tmp_path, modal_env):
@@ -410,8 +424,8 @@ def test_verify_health_payload_table():
     # A name that is not SupportedHardware at all is unverifiable, not a pass.
     ok, detail = verify_health_payload({"gpu_model": "Whatever"}, "not-a-gpu")
     assert ok is None and "SupportedHardware" in detail
-    # GB10 is an ALIAS of DGX_SPARK; the old hand-written table treated it as a
-    # SKU of its own, which made build_solution raise and blamed the model.
+    # GB10 is an alias of DGX_SPARK, not a SupportedHardware member of its own;
+    # the SDK-derived expectations must resolve the alias to the real SKU.
     assert (
         verify_health_payload(
             {"gpu_model": "NVIDIA GB10", "sm_version": "sm_121"}, "GB10"

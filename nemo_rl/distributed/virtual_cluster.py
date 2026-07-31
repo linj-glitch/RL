@@ -264,6 +264,11 @@ def init_ray(log_dir: Optional[str] = None) -> None:
 
     runtime_env = {
         "env_vars": env_vars,  # Pass thru all user environment variables
+        # Ray packages the working directory for its workers. The SolSwarm
+        # reference-context library (~350 MB of vendored kernel repos) is read
+        # off local disk by the agent sandbox on the driver node, never by a Ray
+        # worker, and packaging it exceeds Ray's package upload size limit.
+        "excludes": ["**/3rdparty/solswarm/docker/agent/context/**"],
     }
 
     cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "ALL")

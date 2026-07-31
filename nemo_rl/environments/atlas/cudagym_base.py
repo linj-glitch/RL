@@ -17,8 +17,10 @@
 ``BaseCudaEvaluator`` is a mixin: it turns (prompt, completion, problem-metadata)
 triples into ``KernelEvalResult``s (parse -> build typed ``Solution`` -> run the
 CudaGym SDK -> map the ``Trace``) and scores them with the correctness-gated
-reward (``reward.get_reward``). The single-turn env mixes this in; the
-agentic path reuses ``cudagym_client`` + ``reward`` directly.
+reward (``reward.get_reward``). The single-turn env mixes this in. The agentic
+path's resources server vendors a copy of the same client + reward logic
+(``3rdparty/Gym-workspace/Gym/resources_servers/cudagym/app.py``); keep the two
+in sync.
 
 Evaluation is async because the SDK client is aiohttp-based; the owning Ray
 actor supplies a live ``Client`` as ``self._client`` and drives
@@ -63,9 +65,12 @@ class BaseCudaEvaluator(ABC):
         (dict), ``workloads`` (list[dict]), ``language``, ``target_hardware``,
         ``destination_passing_style``.
 
-        Returns one ``KernelEvalResult`` per input, in order. All failures are
-        captured on the result (never raised) so a single malformed or
-        non-compiling completion cannot fail the whole batch.
+        Returns one ``KernelEvalResult`` per input, in order. Completion-level
+        failures (bad format, failed build, evaluation errors) are captured on
+        the result rather than raised, so a single malformed or non-compiling
+        completion cannot fail the whole batch. Malformed problem *metadata*
+        (a missing or unknown ``language``) does raise: that is a dataset bug,
+        not a model output, and it should stop the run.
         """
         assert len(prompts) == len(completions) == len(metadata_list), (
             "evaluate_batch inputs must have equal length"
@@ -87,16 +92,22 @@ class BaseCudaEvaluator(ABC):
                     "completion is not <think>...</think> followed by a fenced code block"
                 )
                 return
+            # Row validation first: definition/workloads are dataset data, so a
+            # malformed row is a config error, not the model's format error.
+            try:
+                definition, workloads = cudagym_client.parse_problem(meta)
+            except Exception as e:  # noqa: BLE001 - record the row problem verbatim
+                result.metadata["config_error"] = f"invalid problem row: {e}"
+                return
             try:
                 code = get_code(completions[idx], fence_lang)
-                definition, workloads = cudagym_client.parse_problem(meta)
                 row_sku = meta.get("target_hardware")
                 if row_sku and self.eval_config.sku and row_sku.upper() != self.eval_config.sku.upper():
                     # The endpoint handshake verifies eval_config.sku, but this
-                    # is the value that reaches Solution.spec.target_hardware --
-                    # so a row declaring B200 against an H100 endpoint compiled
-                    # for the wrong silicon and every sample scored 0, reading
-                    # as "the model cannot write kernels".
+                    # value is what reaches Solution.spec.target_hardware. A row
+                    # declaring B200 against an H100 endpoint would compile for
+                    # the wrong silicon and score 0 on every sample, which reads
+                    # as a model failure rather than a config error.
                     result.metadata["config_error"] = (
                         f"row target_hardware={row_sku!r} != env sku={self.eval_config.sku!r}; "
                         "the endpoint is verified against the env sku, so this row would build for other silicon"
@@ -131,7 +142,7 @@ class BaseCudaEvaluator(ABC):
                 result.compiled = True
                 result.metadata["execution_error"] = str(e)
                 return
-            except Exception as e:  # noqa: BLE001 - surface unexpected SDK/transport errors
+            except Exception as e:  # noqa: BLE001 - record unexpected SDK/transport errors
                 result.metadata["evaluation_error"] = str(e)
                 return
             cudagym_client.update_result_from_trace(

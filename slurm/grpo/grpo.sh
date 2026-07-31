@@ -55,9 +55,9 @@ export GPUS_PER_NODE=${GPUS_PER_NODE:-DEFAULT_GPUS_PER_NODE}
 
 # CACHE_PATH holds the HF cache only. The uv cache deliberately stays at
 # ray.sub's default (container-local): pointing UV_CACHE_DIR_OVERRIDE at a
-# SHARED Lustre dir let concurrent jobs race each other's cold-cache package
-# extraction — observed as `ImportError: ... from 'transformers' (unknown
-# location)` in freshly built venvs (jobs 2806903/2806906).
+# SHARED Lustre dir lets concurrent jobs race each other's cold-cache package
+# extraction, which shows up as `ImportError: ... from 'transformers'
+# (unknown location)` in freshly built venvs.
 export HF_HOME=${CACHE_PATH}/huggingface
 export OUTPUT_DIR=${OUTPUT_ROOT}/${EXP_NAME}
 
@@ -99,17 +99,17 @@ export MOUNTS="$cwd_parent:$cwd_parent,$cwd:/opt/nemo-rl,$WORKSPACE_PATH:$WORKSP
 export PYTHONPATH="$cwd/3rdparty/cudagym/src:${PYTHONPATH}"
 # The uploaded 3rdparty/cudagym tree has no .git, so setuptools-scm can't derive
 # its version when the venvs build it editable (uv atlas extra, Gym server
-# venvs). submit_grpo derives this from `git describe` on the submodule at
-# submit time — a hand-typed pin here silently went stale on every bump (it read
-# 2.2.3 while the submodule was already v2.2.3-19-g87aa3f6).
+# venvs). submit_grpo.py derives this from `git describe` on the submodule at
+# submit time so it tracks submodule bumps; a hand-typed pin here would go
+# stale silently.
 export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CUDAGYM=DEFAULT_CUDAGYM_VERSION
-# The SolSwarm checkout: container mode (sandbox_profile: solswarm) runs its
-# docker/agent/entrypoint.sh per rollout; the minimal profile's /submit skill
-# is staged from it.
+# The SolSwarm checkout. With sandbox_profile: solswarm the agent sandbox runs
+# its docker/agent/entrypoint.sh per rollout; with sandbox_profile: minimal the
+# /submit skill is staged from this tree.
 export SOLSWARM_SURFACE_ROOT="$cwd/3rdparty/solswarm"
-# Where the agent writes the job's sandbox diagnostics (pre-flight manifest +
-# the once-per-job sandbox_tree.json probe/diff) — on shared storage, next to
-# the logs.
+# Where the agent writes the job's sandbox diagnostics (the pre-flight manifest
+# and the once-per-job sandbox_tree.json file-tree snapshot/diff) — on shared
+# storage, next to the logs.
 export CUDA_AGENT_MANIFEST_DIR="${OUTPUT_DIR}/sandbox_manifests"
 
 # if -i flag is provided, run the command interactively

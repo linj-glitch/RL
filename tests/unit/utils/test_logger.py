@@ -22,6 +22,7 @@ import torch
 
 from nemo_rl.utils.logger import (
     Logger,
+    build_conversation_table,
     MLflowLogger,
     RayGpuMonitorLogger,
     SwanlabLogger,
@@ -2133,3 +2134,99 @@ def test_print_message_log_samples(capsys):
     assert "What is 2+2?" in captured.out
     assert "2+2 = 4" in captured.out
     assert "Sample 1 | Reward: 1.0000" in captured.out
+
+
+class TestBuildConversationTable:
+    """build_conversation_table renders both the single-turn env (real
+    ``content``) and the agentic NeMo-Gym path (empty ``content`` + token ids)."""
+
+    def _cols_row(self, columns, rows, i=0):
+        return {c: rows[i][j] for j, c in enumerate(columns)}
+
+    def test_single_turn_uses_content_no_tokenizer(self):
+        log = [
+            {"role": "user", "content": "Write a Triton kernel for FOO."},
+            {"role": "assistant", "content": "<think>plan</think>\nkernel body"},
+            {"role": "environment", "content": "Reward: 3.0\nCompiled: True"},
+        ]
+        columns, rows = build_conversation_table(
+            [log],
+            rewards=[3.0],
+            task_names=["b200"],
+            step=1,
+            tokenizer=None,
+            thinking_tags=["<think>", "</think>"],
+        )
+        r = self._cols_row(columns, rows)
+        assert columns == [
+            "step",
+            "sample_idx",
+            "task_name",
+            "num_turns",
+            "conversation",
+            "total_reward",
+        ]
+        assert (
+            r["num_turns"] == 1
+            and r["task_name"] == "b200"
+            and r["total_reward"] == 3.0
+        )
+        conv = r["conversation"]
+        assert "### prompt" in conv and "Write a Triton kernel" in conv
+        assert "### turn 1 — assistant" in conv and "kernel body" in conv
+        assert "### tool/env result" in conv and "Compiled: True" in conv
+
+    def test_agentic_decodes_empty_content_via_tokenizer(self):
+        # message log stores per-turn deltas with empty content + token ids
+        texts = [
+            "SYSTEM PROMPT ... user: optimize BAR",  # full prompt (msg 0)
+            "<think>"
+            + "z" * 4000
+            + '</think>\ntext\n<tool_call>{"name": "bash"}</tool_call>',
+            "<tool_response>ok</tool_response>",  # tool result delta
+        ]
+
+        class StubTok:
+            def __init__(self, seq):
+                self._seq = list(seq)
+
+            def batch_decode(self, batch):
+                # one call over exactly the empty-content messages, in order
+                assert len(batch) == len(self._seq)
+                return self._seq
+
+        log = [
+            {"role": "user", "content": "", "token_ids": torch.tensor([1, 2, 3])},
+            {
+                "role": "assistant",
+                "content": "",
+                "token_ids": torch.tensor([4, 5]),
+                "is_invalid_tool_call": True,
+            },
+            {"role": "user", "content": "", "token_ids": torch.tensor([6])},
+        ]
+        columns, rows = build_conversation_table(
+            [log],
+            rewards=[1.0],
+            task_names=["cuda_agent"],
+            step=2,
+            tokenizer=StubTok(texts),
+            thinking_tags=["<think>", "</think>"],
+        )
+        conv = self._cols_row(columns, rows)["conversation"]
+        assert "### prompt" in conv and "optimize BAR" in conv
+        assert "### turn 1 — assistant  [invalid_tool_call]" in conv
+        assert '<tool_call>{"name": "bash"}</tool_call>' in conv
+        assert "### tool/env result" in conv and "<tool_response>ok" in conv
+        # <think> folded, not shown in full
+        assert "z" * 4000 not in conv and "clipped" in conv
+        assert self._cols_row(columns, rows)["num_turns"] == 1
+
+    def test_agentic_without_tokenizer_shows_token_count_placeholder(self):
+        log = [
+            {"role": "user", "content": "", "token_ids": torch.tensor([1, 2, 3])},
+            {"role": "assistant", "content": "", "token_ids": torch.tensor([4, 5])},
+        ]
+        columns, rows = build_conversation_table([log], tokenizer=None)
+        conv = self._cols_row(columns, rows)["conversation"]
+        assert "[3 tokens]" in conv and "[2 tokens]" in conv

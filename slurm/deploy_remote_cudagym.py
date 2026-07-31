@@ -31,9 +31,8 @@ At submit time this module, driven by ``submit_grpo.py``:
 The training config then pins ``env.cudagym.<name>.server_url`` at
 ``http://<submit-login-node>:<endpoint_port>``.
 
-Experimental: restored from git history (deleted in the audit sweep as
-then-unreachable; re-wired behind ``hosting: {kind: slurm-service}``) and not
-yet re-validated live — inspect job/proxy logs on first use.
+This deployment path is experimental and has not been validated end to end.
+Check the service job and proxy logs on first use.
 """
 
 import time
@@ -50,10 +49,10 @@ def generate_cudagym_script(
     service_cluster: str,
     num_service_nodes: int,
 ) -> str:
-    """Generate CudaGym cluster script using generate_slurm_scripts.py.
+    """Run cudagym's ``generate_slurm_scripts.py`` on the service cluster.
 
     Returns:
-        Script filename that was generated (the generator's own
+        The generated script's filename (the generator's own
         ``cudagym_cluster_<host>_nodes_<n>.sh`` naming).
     """
     script_name = f"cudagym_cluster_{service_cluster}_nodes_{num_service_nodes}.sh"
@@ -84,7 +83,13 @@ def run_proxy(
     port: int,
     timeout: int,
 ) -> None:
-    """Run proxy.sh on a cluster."""
+    """Start cudagym's ``proxy.sh`` on a cluster's login node and wait until it is ready.
+
+    ``mode="service"`` passes a generated service sbatch script: the proxy
+    submits it and forwards to the service's load balancer once it is healthy.
+    ``mode="service-url"`` forwards to an already-running service (or another
+    proxy) at the given URL.
+    """
     # If using a service script, check that it exists
     if mode == "service":
         script_remote_path = f"{code_upload_path}/3rdparty/cudagym/deployments/multi_node/slurm/scripts/{service_url_or_script}"
@@ -110,7 +115,7 @@ def run_proxy(
     if rc != 0:
         raise RuntimeError(f"Failed to start proxy: {err or out}")
 
-    # Wait until proxy.sh discovers the service url and service is ready and returns /status 200
+    # Block until the proxy reports the upstream service ready.
     wait_proxy_ready(ssh_tunnel, port=port, timeout=timeout)
     print("✅ Service proxy is ready")
 
@@ -133,7 +138,7 @@ def wait_proxy_ready(ssh: SSHTunnel, port: int, timeout: float = 1800.0) -> None
 def _find_next_free_port(
     ssh: SSHTunnel, start_port: int = 8999, max_steps: int = 100
 ) -> int:
-    """Return first available TCP port >= start_port not currently listening on the login node."""
+    """Return the first TCP port >= ``start_port`` with no listener on the login node."""
     port = start_port
     for _ in range(max_steps):
         rc, _, _ = ssh.run_command(
@@ -154,7 +159,11 @@ def start_ssh_tunnel(
     remote_port: int,
     timeout: float = 30.0,
 ) -> None:
-    """Ensure a persistent SSH -L tunnel is running on the cluster login node. Auto-reconnects if the SSH link drops."""
+    """Ensure a persistent ``ssh -L`` tunnel is listening on the cluster's login node.
+
+    The tunnel runs inside a background retry loop, so it reconnects on its
+    own if the SSH link drops.
+    """
     print(
         f"🔗 Starting SSH tunnel on {ssh.host}:127.0.0.1:{tunnel_port} -> {remote_host}:{remote_port}"
     )
@@ -210,7 +219,6 @@ def wait_tunnel_ready(ssh: SSHTunnel, port: int, timeout: float = 30.0) -> None:
 def deploy_remote_cudagym(
     entry: ResolvedEntry,
     *,
-    submit_cluster: str,
     submit_cluster_config: dict[str, Any],
     submit_ssh: SSHTunnel,
     submit_code_upload_path: Path,
@@ -226,12 +234,6 @@ def deploy_remote_cudagym(
     """
     service = entry.service
     service_cluster = service["service_cluster"]
-    if service_cluster == submit_cluster:
-        raise SystemExit(
-            f"❌ env.cudagym.{entry.name}: slurm-service pointing at the submit "
-            f"cluster itself makes no sense — use hosting kind 'colocated' or "
-            f"'disjoint' instead."
-        )
     endpoint_port = service["endpoint_port"]
     service_login_port = service["service_login_port"]
     print(f"🌐 Readying remote CudaGym environment on {service_cluster}")

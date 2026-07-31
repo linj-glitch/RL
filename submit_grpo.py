@@ -55,7 +55,7 @@ SBATCH_TEMPLATE_PATH = Path(__file__).parent / "slurm" / "grpo" / "grpo.sh"
 
 
 def _vendored_cudagym_version() -> str:
-    """PEP 440 version for the vendored cudagym, from its own git metadata.
+    """Return a PEP 440 version for the vendored cudagym, from its git metadata.
 
     setuptools-scm cannot derive a version from the uploaded tree (no .git), and
     a hand-maintained literal drifts silently on every submodule bump.
@@ -82,6 +82,7 @@ def _vendored_cudagym_version() -> str:
 def launch_jobs(
     ssh_tunnel, code_upload_path, interactive: bool = False, num_jobs: int = 1
 ):
+    """Run the uploaded ``run.sh`` sbatch wrapper on the cluster, once per job."""
     for i in range(num_jobs):
         launch_cmd = f"cd {code_upload_path} && bash ../run.sh"
         if interactive:
@@ -95,9 +96,10 @@ def launch_jobs(
 
 
 def main():
+    """Validate CudaGym hosting, upload the code and sbatch script, and submit."""
     parser = argparse.ArgumentParser()
-    # exp-name and cluster are required on purpose: the stale conveniences they
-    # replaced (a dfw default, a 16-node default) silently reshaped jobs.
+    # exp-name and cluster deliberately have no defaults: a forgotten flag should
+    # fail fast rather than silently submit to an unintended cluster.
     parser.add_argument("--exp-name", "-e", required=True, type=str)
     parser.add_argument(
         "--config",
@@ -150,8 +152,9 @@ def main():
         help="Seconds to wait for a slurm-service CudaGym deployment's proxies to report ready",
     )
     # CudaGym hosting is declared per SKU in the recipe (env.cudagym.<name>.hosting;
-    # see slurm/cudagym_hosting.py). The old flags survive only as hidden stubs so
-    # passing them fails fast with a migration hint instead of "unrecognized argument".
+    # see slurm/cudagym_hosting.py). The removed flags are kept as hidden stubs so
+    # passing one fails fast with a migration hint instead of argparse's
+    # "unrecognized arguments" error.
     parser.add_argument("--cudagym-mode", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--cudagym-num-nodes", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--cudagym-url", default=None, help=argparse.SUPPRESS)
@@ -216,8 +219,8 @@ def main():
         print(f"⚠️  {warning}")
 
     # The endpoints/ registry was seeded from solswarm's gpu-skus.toml; the two
-    # are maintained separately, so flag (never fail) when they disagree — the
-    # tell that upstream bumped the managed fleet and our URLs went stale.
+    # are maintained separately, so flag (never fail) when they disagree — a
+    # mismatch usually means upstream moved the managed fleet and our URLs are stale.
     for line in check_registry_against_solswarm(
         load_endpoints(), Path(__file__).parent / "3rdparty" / "solswarm"
     ):
@@ -241,8 +244,8 @@ def main():
             # Never skippable: a reachable endpoint with the WRONG silicon would
             # silently mistime Triton kernels (JIT compiles on whatever GPU serves).
             raise SystemExit(f"❌ endpoint {entry.name}: {detail}")
-        # ok is None means nothing was checked -- report that as its own state
-        # rather than a tick, which is how an unknown SKU used to pass.
+        # ok is None means nothing was checked — report that as its own state
+        # rather than a pass, so an unverified SKU stays visible in the output.
         print(f"{'⚠️  NOT VERIFIED' if ok is None else '✅'} endpoint {entry.name}: {detail}")
 
     # Upload the nemorl codebase to the cluster
@@ -260,7 +263,6 @@ def main():
     for entry in hosting.slurm_services:
         service_url = deploy_remote_cudagym(
             entry,
-            submit_cluster=args.cluster,
             submit_cluster_config=cluster_config,
             submit_ssh=ssh_tunnel,
             submit_code_upload_path=code_upload_path,
@@ -321,9 +323,9 @@ def main():
             print(f"⚠️  {name} is not set locally — the job will run without it.")
         secrets[name] = val or ""
 
-    # Derived, not declared: the uploaded tree has no .git, so the venvs need a
-    # version handed to them -- but reading it from the submodule keeps it true
-    # across bumps instead of drifting from a literal in the template.
+    # The uploaded tree has no .git, so the venvs need a version handed to them.
+    # Deriving it from the submodule keeps it correct across bumps; a hand-typed
+    # literal in the template would drift.
     cudagym_version = _vendored_cudagym_version()
 
     sbatch_vars = {
@@ -348,14 +350,14 @@ def main():
         "ARTIFACTS_DIR": "",
         "CCACHE_DIR": "",
         # Single-endpoint jobs also carry the resolved URL in the ambient env —
-        # the agentic (NeMo-Gym) path and any entry using the escape hatch read
-        # it. Per-entry ++server_url overrides (above) take precedence for the
-        # single-turn env actors. In-allocation runs overwrite this with the LB
-        # URL inside ray.sub, exactly as before.
+        # the agentic (NeMo-Gym) path and any entry resolved from the
+        # CUDAGYM_UNIFIED_SERVER_URL escape hatch read it. Per-entry ++server_url
+        # overrides (above) take precedence for the single-turn env actors.
+        # In-allocation runs overwrite it with the load-balancer URL inside ray.sub.
         "CUDAGYM_UNIFIED_SERVER_URL": hosting.unified_server_url
         or os.getenv("CUDAGYM_UNIFIED_SERVER_URL")
         or "",
-        # From the recipe's hosting declarations (ray.sub contract unchanged).
+        # From the recipe's hosting declarations; ray.sub reads both variables.
         "CUDAGYM_MODE": hosting.cudagym_mode,
         "CUDAGYM_NUM_NODES": hosting.cudagym_num_nodes,
         "CUDAGYM_VERSION": cudagym_version,
@@ -376,8 +378,8 @@ def main():
                 "Cluster config missing container path(s); need 'container' or 'cudagym_container'."
             )
         # The image must carry the server runtime deps MATCHING the vendored SDK
-        # (the checkout rides PYTHONPATH; deps come from the image) — warn when
-        # the sqsh tag doesn't carry the SDK's major.minor.
+        # (the checkout is served via PYTHONPATH; its deps come from the image) —
+        # warn when the sqsh name doesn't carry the SDK's major.minor.
         major_minor = ".".join(cudagym_version.split(".")[:2])
         if major_minor != "0.0" and major_minor not in Path(cudagym_container).name:
             print(
