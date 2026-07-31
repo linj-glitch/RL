@@ -1273,6 +1273,8 @@ class Logger(LoggerInterface):
         task_names: Optional[Any] = None,
         step: int = 0,
         name: str = "train/conversations",
+        tokenizer: Optional[Any] = None,
+        thinking_tags: Optional[list[str]] = None,
     ) -> None:
         """Build and log a conversation table from message logs.
 
@@ -1292,6 +1294,8 @@ class Logger(LoggerInterface):
             rewards=rewards,
             task_names=task_names,
             step=step,
+            tokenizer=tokenizer,
+            thinking_tags=thinking_tags,
         )
         self.log_table(name=name, columns=columns, rows=rows, step=step)
 
@@ -1774,8 +1778,10 @@ def build_conversation_table(
     rewards: Optional[Any] = None,
     task_names: Optional[Any] = None,
     step: int = 0,
+    tokenizer: Optional[Any] = None,
+    thinking_tags: Optional[list[str]] = None,
 ) -> tuple[list[str], list[list[Any]]]:
-    """Convert message logs into a table representation suitable for logging.
+    """Render per-sample rollouts into a readable conversation table.
 
     Columns: step, sample_idx, task_name, num_turns, conversation, total_reward.
 
@@ -1816,32 +1822,27 @@ def build_conversation_table(
         )
         num_samples = min(num_samples, len(task_names_list))
 
+    decoded = _decode_empty_contents(message_logs[:num_samples], tokenizer)
+
     columns = [
         "step",
         "sample_idx",
         "task_name",
+        "num_turns",
         "conversation",
         "total_reward",
     ]
 
     rows: list[list[Any]] = []
     for i in range(num_samples):
-        conversation = message_logs[i]
-        parts: list[str] = []
         try:
-            for msg in conversation:
-                role = (
-                    msg.get("role", "unknown") if isinstance(msg, dict) else "unknown"
-                )
-                content = msg.get("content", "") if isinstance(msg, dict) else str(msg)
-                parts.append(f"**{role}**: {content}")
+            resolved = _resolve_message_texts(message_logs[i], decoded, i)
+            conversation_str, num_turns = _format_conversation(resolved, thinking_tags)
         except Exception as e:
-            parts.append(f"[error formatting conversation: {e}]")
-
-        formatted_conversation = "\n\n".join(parts).strip()
+            conversation_str, num_turns = f"[error formatting conversation: {e}]", 0
         task_name_val = task_names_list[i] if task_names_list is not None else None
         reward_val = rewards_list[i] if rewards_list is not None else None
-        rows.append([step, i, task_name_val, formatted_conversation, reward_val])
+        rows.append([step, i, task_name_val, num_turns, conversation_str, reward_val])
 
     return columns, rows
 
