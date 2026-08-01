@@ -87,6 +87,13 @@ export UV_EXTRAS=${UV_EXTRAS:-DEFAULT_UV_EXTRAS}
 # X ... this process ... Ray Y") whenever the image predates a dependency bump.
 export SETUP_COMMAND=${SETUP_COMMAND:-"uv sync ${UV_EXTRAS}"}
 
+# Rebuild the per-worker isolated venvs (/opt/ray_venvs/<worker class>) when the
+# container is older than uv.lock. They are baked at image build time, so after
+# a dependency bump a worker unpickles Ray internals against the stale version
+# and dies with e.g. "Can't get attribute '_get_opentelemetry'". Rebuilding the
+# container removes the need for this (and the per-job rebuild cost).
+export NRL_FORCE_REBUILD_VENVS=${NRL_FORCE_REBUILD_VENVS:-true}
+
 export COMMAND="uv run ${UV_EXTRAS} ${RUN_SCRIPT} \
     --config examples/configs/recipes/atlas/${CONFIG_NAME} \
     checkpointing.checkpoint_dir=${OUTPUT_DIR}/ckpts \
