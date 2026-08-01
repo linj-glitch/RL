@@ -84,6 +84,15 @@ policy:
     activation_checkpointing: true
     sequence_parallel: true
     context_parallel_size: 4        # long agentic trajectories at train time
+  # Packing loads the policy with flash_attention_2 (the packed path's required
+  # backend; nemo_rl/models/automodel/setup.py), and flash-attn's varlen kernel
+  # intermittently fails with "CUDA error: invalid argument" on packed long
+  # agentic trajectories during the logprob pass, after rollouts already
+  # succeeded. Disabled -> SDPA, which is stable. Rollouts dominate agentic
+  # wall time, so packing's training-step speedup is not worth the crash rate;
+  # re-enable per-run with ++policy.sequence_packing.enabled=true.
+  sequence_packing:
+    enabled: false
   generation:
     backend: "vllm"
     max_new_tokens: 16384           # per-call cap; matches opencode limit.output
