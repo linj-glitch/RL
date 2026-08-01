@@ -2978,7 +2978,7 @@ def grpo_train(
                         logger.log_conversations_from_message_logs(
                             message_logs=repeated_batch["message_log"],
                             rewards=repeated_batch.get("total_reward"),
-                            task_names=repeated_batch.get("task_name"),
+                            task_names=conv_task_names,
                             step=total_steps + 1,
                             name="train/conversations",
                             # Decodes the agentic path's empty-content turns and
