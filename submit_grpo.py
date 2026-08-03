@@ -41,6 +41,7 @@ from remote_utils import (
 from slurm.cudagym_hosting import (
     HostingError,
     check_registry_against_solswarm,
+    ensure_vendored_cudagym,
     load_endpoints,
     load_recipe_merged,
     probe_endpoint,
@@ -229,6 +230,15 @@ def main():
     # Preflight: ping every remote endpoint's /health and check the reported GPU
     # against the declared SKU. In-allocation servers don't exist yet — they get
     # the same check at runtime init (verify_endpoint_sku).
+    if hosting.endpoints:
+        # The GPU check needs the cudagym SDK's device table; without it the
+        # verdict would silently degrade to "unverifiable". Hard failure with
+        # the fix spelled out, not skippable: --skip-endpoint-check is for
+        # unreachable endpoints, not missing tooling.
+        try:
+            ensure_vendored_cudagym()
+        except HostingError as e:
+            raise SystemExit(f"❌ {e}") from e
     for entry in hosting.endpoints:
         try:
             payload = probe_endpoint(entry)

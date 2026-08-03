@@ -24,6 +24,7 @@ from slurm.cudagym_hosting import (
     HostingError,
     ResolvedEntry,
     check_registry_against_solswarm,
+    ensure_vendored_cudagym,
     load_endpoints,
     load_recipe_merged,
     probe_endpoint,
@@ -497,3 +498,59 @@ def test_probe_endpoint_http_error_raises(monkeypatch):
     )
     with pytest.raises(HostingError, match="HTTP 401"):
         probe_endpoint(entry, retries=0)
+
+
+# ---------------------------------------------------------------------------
+# ensure_vendored_cudagym
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_vendored_cudagym_noop_when_importable(monkeypatch):
+    import slurm.cudagym_hosting as hosting_mod
+
+    monkeypatch.setattr(hosting_mod, "_cudagym_import_error", lambda: None)
+    before = list(sys.path)
+    ensure_vendored_cudagym("/nonexistent")
+    assert sys.path == before
+
+
+def test_ensure_vendored_cudagym_errors_on_missing_checkout(tmp_path, monkeypatch):
+    import slurm.cudagym_hosting as hosting_mod
+
+    monkeypatch.setattr(
+        hosting_mod, "_cudagym_import_error", lambda: "No module named 'cudagym'"
+    )
+    with pytest.raises(HostingError, match="git submodule update --init"):
+        ensure_vendored_cudagym(tmp_path)
+
+
+def test_ensure_vendored_cudagym_errors_on_missing_deps(tmp_path, monkeypatch):
+    import slurm.cudagym_hosting as hosting_mod
+
+    src = tmp_path / "3rdparty" / "cudagym" / "src"
+    (src / "cudagym").mkdir(parents=True)
+    (src / "cudagym" / "__init__.py").write_text("")
+    monkeypatch.setattr(
+        hosting_mod, "_cudagym_import_error", lambda: "No module named 'pydantic'"
+    )
+    with pytest.raises(HostingError, match="loguru pydantic"):
+        ensure_vendored_cudagym(tmp_path)
+    # The failed bootstrap must not leave its path entry behind.
+    assert str(src) not in sys.path
+
+
+def test_ensure_vendored_cudagym_bootstraps_sys_path(tmp_path, monkeypatch):
+    import slurm.cudagym_hosting as hosting_mod
+
+    src = tmp_path / "3rdparty" / "cudagym" / "src"
+    (src / "cudagym").mkdir(parents=True)
+    (src / "cudagym" / "__init__.py").write_text("")
+    # First probe fails (no venv), the retry after the path insert succeeds.
+    outcomes = iter(["No module named 'cudagym'", None])
+    monkeypatch.setattr(hosting_mod, "_cudagym_import_error", lambda: next(outcomes))
+    try:
+        ensure_vendored_cudagym(tmp_path)
+        assert sys.path[0] == str(src)
+    finally:
+        while str(src) in sys.path:
+            sys.path.remove(str(src))

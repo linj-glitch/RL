@@ -47,9 +47,14 @@ escape hatch).
 Kept dependency-light on purpose (omegaconf + stdlib; ``requests`` imported
 lazily in ``probe_endpoint``): the recipe loader is the hydra-free
 ``nemo_rl.utils.config_inheritance``, shared with the training-side loader.
+The one exception is the GPU-identity preflight, which needs the cudagym SDK's
+device table: ``ensure_vendored_cudagym`` imports it from the repo's own
+``3rdparty/cudagym`` checkout (adding only ``loguru`` + ``pydantic`` to the
+requirements) and fails with instructions rather than skipping the check.
 """
 
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -379,6 +384,48 @@ def resolve_hosting(
 # --------------------------------------------------------------------------
 # Preflight probe + SKU verification.
 # --------------------------------------------------------------------------
+
+
+def _cudagym_import_error() -> Optional[str]:
+    """Try to import the cudagym SDK; return the ImportError message, or None on success."""
+    try:
+        import cudagym  # noqa: F401
+    except ImportError as e:
+        return str(e)
+    return None
+
+
+def ensure_vendored_cudagym(repo_root: Union[str, Path] = REPO_ROOT) -> None:
+    """Make the cudagym SDK importable, falling back to the vendored checkout.
+
+    The SKU preflight derives its expectations from the SDK's device table
+    (``sku_expectations`` in ``cuda_kernel_utils``); without the import it
+    could only report "unverifiable", and an unverified GPU identity is how a
+    silicon mismatch stays silent. The SDK ships in this repo at
+    ``3rdparty/cudagym`` — the same checkout the job's ``uv sync`` installs, so
+    a submit without it would fail at job start anyway — and its import chain
+    needs only ``loguru`` and ``pydantic`` beyond the stdlib. Machines without
+    the training venv therefore import it straight from the checkout; when even
+    that is impossible, this raises ``HostingError`` naming the fix instead of
+    letting the check degrade.
+    """
+    if _cudagym_import_error() is None:
+        return
+    src = Path(repo_root) / "3rdparty" / "cudagym" / "src"
+    if not (src / "cudagym" / "__init__.py").is_file():
+        raise HostingError(
+            "the cudagym SDK is not importable and the vendored checkout is missing "
+            f"({src}); initialize it with `git submodule update --init 3rdparty/cudagym`"
+        )
+    sys.path.insert(0, str(src))
+    error = _cudagym_import_error()
+    if error is not None:
+        sys.path.remove(str(src))
+        raise HostingError(
+            f"the cudagym SDK is not importable even from the vendored checkout ({src}): "
+            f"{error}. The GPU-identity preflight needs the SDK's device table; install "
+            "the import chain's two non-stdlib dependencies: `pip install loguru pydantic`"
+        )
 
 
 def _probe_headers(entry: ResolvedEntry) -> dict[str, str]:
