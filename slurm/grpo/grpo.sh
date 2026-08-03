@@ -135,7 +135,14 @@ export CUDA_AGENT_MANIFEST_DIR="${OUTPUT_DIR}/sandbox_manifests"
 # from CUDA_AGENT_ENROOT_IMAGE.
 export CUDA_AGENT_ENROOT_IMAGE=${CUDA_AGENT_ENROOT_IMAGE:-DEFAULT_CUDA_AGENT_ENROOT_IMAGE}
 if [ -n "$CUDA_AGENT_ENROOT_IMAGE" ]; then
-    export MOUNTS="$MOUNTS,/usr/bin/enroot:/usr/bin/enroot,/usr/lib/enroot:/usr/lib/enroot,/usr/share/enroot:/usr/share/enroot,/etc/enroot:/etc/enroot"
+    MOUNTS="$MOUNTS,/usr/lib/enroot:/usr/lib/enroot,/usr/share/enroot:/usr/share/enroot,/etc/enroot:/etc/enroot"
+    # enroot's runtime exec's sibling helper binaries by bare name
+    # (enroot-nsenter, enroot-mount, enroot-switchroot, ...), so every
+    # /usr/bin/enroot* file must ride along, not just the launcher.
+    for _enroot_bin in /usr/bin/enroot*; do
+        [ -e "$_enroot_bin" ] && MOUNTS="$MOUNTS,$_enroot_bin:$_enroot_bin"
+    done
+    export MOUNTS
     export SETUP_COMMAND="${SETUP_COMMAND} && (command -v gawk >/dev/null && command -v unsquashfs >/dev/null || (apt-get update -qq && apt-get install -y -qq gawk squashfs-tools))"
     # Node-local scratch for the extracted image: a rootfs is hundreds of
     # thousands of small files, which Lustre handles badly.
