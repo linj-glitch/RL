@@ -125,6 +125,22 @@ export SOLSWARM_SURFACE_ROOT="$cwd/3rdparty/solswarm"
 # and the once-per-job sandbox_tree.json file-tree snapshot/diff) — on shared
 # storage, next to the logs.
 export CUDA_AGENT_MANIFEST_DIR="${OUTPUT_DIR}/sandbox_manifests"
+# Per-rollout agent containers (Gym cuda_agent sandbox_runtime: enroot; enabled
+# by --enroot-agent-image at submit). Empty leaves the default namespace
+# runtime untouched. A path enables the plumbing: the host's enroot (bash plus
+# small glibc-only C helpers) is bind-mounted into the training container at
+# the paths this cluster's compute nodes provide, enroot's gawk and
+# squashfs-tools dependencies are apt-installed at node setup when the
+# training image lacks them, and the Gym agent server reads the image path
+# from CUDA_AGENT_ENROOT_IMAGE.
+export CUDA_AGENT_ENROOT_IMAGE=${CUDA_AGENT_ENROOT_IMAGE:-DEFAULT_CUDA_AGENT_ENROOT_IMAGE}
+if [ -n "$CUDA_AGENT_ENROOT_IMAGE" ]; then
+    export MOUNTS="$MOUNTS,/usr/bin/enroot:/usr/bin/enroot,/usr/lib/enroot:/usr/lib/enroot,/usr/share/enroot:/usr/share/enroot,/etc/enroot:/etc/enroot"
+    export SETUP_COMMAND="${SETUP_COMMAND} && (command -v gawk >/dev/null && command -v unsquashfs >/dev/null || (apt-get update -qq && apt-get install -y -qq gawk squashfs-tools))"
+    # Node-local scratch for the extracted image: a rootfs is hundreds of
+    # thousands of small files, which Lustre handles badly.
+    export CUDA_AGENT_ENROOT_DATA=${CUDA_AGENT_ENROOT_DATA:-/tmp/cuda-agent-enroot}
+fi
 
 # if -i flag is provided, run the command interactively
 if [ "$1" == "-i" ]; then

@@ -1,0 +1,29 @@
+# Enroot-runtime variant of the SolSwarm-container recipe: each rollout runs
+# inside a real instance of the published SolSwarm agent image (Gym
+# cuda_agent sandbox_runtime: enroot) instead of a mount namespace assembled
+# from the checkout. Everything else — submission flow, reward, token capture —
+# is the parent recipe's.
+#
+# Submit with --enroot-agent-image <cluster path to a solswarm-agent .sqsh
+# built for the cluster's CPU architecture>; grpo.sh then bind-mounts the host
+# enroot into the training container and exports CUDA_AGENT_ENROOT_IMAGE.
+# The image is extracted once per node ("enroot base extract" in the logs);
+# per-rollout startup latency is logged as "sandbox startup".
+defaults: "grpo_cuda_agentic_solswarm_qwen3-8b.yaml"
+
+env:
+  nemo_gym:
+    # Lists replace on merge, so this restates the parent's chain plus the
+    # enroot overlay at the end.
+    config_paths:
+    - responses_api_models/vllm_model/configs/vllm_model_for_training.yaml
+    - resources_servers/cudagym/configs/cudagym_cuda_agent.yaml
+    - resources_servers/cudagym/configs/cudagym_cuda_agent_training.yaml
+    - resources_servers/cudagym/configs/cudagym_cuda_agent_solswarm.yaml
+    - resources_servers/cudagym/configs/cudagym_cuda_agent_enroot.yaml
+
+checkpointing:
+  checkpoint_dir: "results/grpo-cuda-agentic-solswarm-enroot"
+
+logger:
+  log_dir: "logs/grpo-cuda-agentic-solswarm-enroot"

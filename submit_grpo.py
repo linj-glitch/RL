@@ -160,6 +160,17 @@ def main():
     parser.add_argument("--cudagym-num-nodes", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--cudagym-url", default=None, help=argparse.SUPPRESS)
     parser.add_argument(
+        "--enroot-agent-image",
+        default="",
+        help=(
+            "Cluster path of a SolSwarm agent-image squashfs. Non-empty enables the "
+            "sandbox_runtime: enroot plumbing in grpo.sh (host enroot bind-mounted "
+            "into the training container, CUDA_AGENT_ENROOT_IMAGE exported); the "
+            "recipe's Gym config must also select the runtime "
+            "(resources_servers/cudagym/configs/cudagym_cuda_agent_enroot.yaml)."
+        ),
+    )
+    parser.add_argument(
         "--skip-endpoint-check",
         action="store_true",
         help=(
@@ -371,6 +382,9 @@ def main():
         "CUDAGYM_MODE": hosting.cudagym_mode,
         "CUDAGYM_NUM_NODES": hosting.cudagym_num_nodes,
         "CUDAGYM_VERSION": cudagym_version,
+        # Empty (the default) leaves the namespace sandbox runtime untouched;
+        # a path switches grpo.sh's enroot plumbing on.
+        "CUDA_AGENT_ENROOT_IMAGE": args.enroot_agent_image or "",
         # cudagym_container is excluded: CUDAGYM_CONTAINER is set explicitly
         # (above/below), and both names fill the same DEFAULT_CUDAGYM_CONTAINER
         # template token.
