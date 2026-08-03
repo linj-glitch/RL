@@ -305,6 +305,49 @@ def test_registry_drift_check_against_gpu_skus_toml(tmp_path):
     )
 
 
+def test_registry_drift_check_matches_on_key_not_sku(tmp_path):
+    """The upstream id is the registry KEY, not the sku: an entry whose SDK enum
+    name differs from the fleet id (gb10 -> DGX_SPARK) must still be checked,
+    and entries sharing a sku (A100 memory variants) must not cross-compare."""
+    root = tmp_path / "solswarm"
+    (root / "deployments" / "files").mkdir(parents=True)
+    (root / "deployments" / "files" / "gpu-skus.toml").write_text(
+        '[[gpu_skus]]\nid = "gb10"\ncudagym_url = "https://titan/dgx-spark"\n'
+        '[[gpu_skus]]\nid = "a100"\ncudagym_url = "https://fleet-a100-web.modal.run"\n'
+        '[[gpu_skus]]\nid = "a100-40gb"\ncudagym_url = "https://fleet-a100-40gb-web.modal.run"\n'
+    )
+    ep_dir = tmp_path / "endpoints"
+    ep_dir.mkdir()
+    (ep_dir / "astra.yaml").write_text(
+        "gb10: {sku: DGX_SPARK, url: https://STALE/dgx-spark}\n"
+    )
+    (ep_dir / "modal.yaml").write_text(
+        "a100: {sku: A100, url: https://fleet-a100-web.modal.run}\n"
+        "a100-40gb: {sku: A100, url: https://fleet-a100-40gb-web.modal.run}\n"
+    )
+    lines = check_registry_against_solswarm(load_endpoints(ep_dir), root)
+    # gb10 is flagged via its key despite the DGX_SPARK sku; the A100 variants
+    # each match their own upstream id, so no false drift between them.
+    assert (
+        len(lines) == 1 and "astra/gb10" in lines[0] and "titan/dgx-spark" in lines[0]
+    )
+
+
+def test_shipped_registry_skus_are_exact_supported_hardware_values():
+    """Guard the shipped endpoints/*.yaml files: a registry sku is compared for
+    string equality with the recipe entry's sku, and the recipe sku must be an
+    exact (case-sensitive) SupportedHardware value at env init — so a registry
+    sku that is only a name alias (e.g. GB10 for DGX_SPARK) would force a recipe
+    that passes submit-time validation and then fails inside the job."""
+    ensure_vendored_cudagym()
+    from cudagym.contracts.solution import SupportedHardware
+
+    for name, entry in load_endpoints().items():
+        assert entry.sku in {h.value for h in SupportedHardware}, (
+            f"{name}: sku {entry.sku!r} is not an exact SupportedHardware value"
+        )
+
+
 def test_slurm_service_fields_and_warning(tmp_path):
     with pytest.raises(HostingError, match="missing fields"):
         _resolve(

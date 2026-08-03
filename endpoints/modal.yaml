@@ -17,3 +17,33 @@ h100:
 h200:
   sku: H200
   url: https://nvidia--cudagym-h200-kf-v2-2-2-web.modal.run
+
+rtx-pro-6000:
+  sku: RTX_PRO_6000
+  url: https://nvidia--cudagym-rtx-pro-6000-kf-v2-2-2-web.modal.run
+
+a10:
+  sku: A10
+  url: https://nvidia--cudagym-a10-kf-v2-2-2-web.modal.run
+
+# Upstream deploys a distinct Modal app per A100 memory size; all three keys
+# fold onto the single sm_80 A100 compile target, so they share one sku.
+a100:
+  sku: A100
+  url: https://nvidia--cudagym-a100-kf-v2-2-2-web.modal.run
+
+a100-40gb:
+  sku: A100
+  url: https://nvidia--cudagym-a100-40gb-kf-v2-2-2-web.modal.run
+
+a100-80gb:
+  sku: A100
+  url: https://nvidia--cudagym-a100-80gb-kf-v2-2-2-web.modal.run
+
+l4:
+  sku: L4
+  url: https://nvidia--cudagym-l4-kf-v2-2-2-web.modal.run
+
+l40s:
+  sku: L40S
+  url: https://nvidia--cudagym-l40s-kf-v2-2-2-web.modal.run

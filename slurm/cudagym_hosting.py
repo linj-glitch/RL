@@ -517,7 +517,14 @@ def check_registry_against_solswarm(
     lines = []
     for name, entry in (endpoints or {}).items():
         url = (getattr(entry, "url", "") or "").rstrip("/")
-        key = str(getattr(entry, "sku", name)).lower()
+        # Registry keys mirror the upstream fleet ids (modal/a100-40gb <-> id
+        # "a100-40gb"), so match on the key and fall back to the sku only for
+        # custom-named entries. Keying on the sku would miss entries whose SDK
+        # enum name differs from the fleet id (astra/gb10 carries DGX_SPARK)
+        # and cross-compare entries that share a sku (the three A100 variants).
+        key = name.split("/", 1)[-1].lower()
+        if key not in upstream_urls:
+            key = str(getattr(entry, "sku", name)).lower()
         if key in upstream_urls and url and url != upstream_urls[key]:
             lines.append(f"{name}: ours={url} solswarm={upstream_urls[key]}")
     return lines
