@@ -128,8 +128,9 @@ export CUDA_AGENT_MANIFEST_DIR="${OUTPUT_DIR}/sandbox_manifests"
 # Per-rollout agent containers (Gym cuda_agent sandbox_runtime: enroot; enabled
 # by --enroot-agent-image at submit). Empty leaves the default namespace
 # runtime untouched. A path enables the plumbing: the host's enroot (bash plus
-# small glibc-only C helpers) is bind-mounted into the training container at
-# the paths this cluster's compute nodes provide, enroot's gawk and
+# small glibc-only C helpers) is bind-mounted into the training container —
+# the /usr/bin/enroot* glob resolves on the login node running this script,
+# and the compute nodes provide the same paths — enroot's gawk and
 # squashfs-tools dependencies are apt-installed at node setup when the
 # training image lacks them, and the Gym agent server reads the image path
 # from CUDA_AGENT_ENROOT_IMAGE.

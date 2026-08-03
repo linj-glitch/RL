@@ -205,6 +205,24 @@ def main():
     # `++env.cudagym.b200.hosting.kind=colocated` changes the RESOLVED hosting,
     # not just the training-time config.
     recipe_cfg = load_recipe_merged(CONFIG_PATH / args.config)
+
+    # The enroot sandbox runtime needs BOTH sides: the Gym overlay in the
+    # recipe (sandbox_runtime: enroot) and the image-path flag (the grpo.sh
+    # plumbing). A mismatch otherwise surfaces only at agent-server startup,
+    # minutes into the job. The overlay is recognized by its config-path name
+    # because the Gym-side YAML is merged by Gym, not here.
+    gym_config_paths = [str(p) for p in (OmegaConf.select(recipe_cfg, "env.nemo_gym.config_paths") or [])]
+    has_enroot_overlay = any("cudagym_cuda_agent_enroot" in p for p in gym_config_paths)
+    if args.enroot_agent_image and not has_enroot_overlay:
+        raise SystemExit(
+            "❌ --enroot-agent-image is set, but the recipe's env.nemo_gym.config_paths does not "
+            "include cudagym_cuda_agent_enroot.yaml — the sandbox runtime would stay 'namespace'."
+        )
+    if has_enroot_overlay and not args.enroot_agent_image:
+        raise SystemExit(
+            "❌ the recipe enables sandbox_runtime=enroot (cudagym_cuda_agent_enroot.yaml), but "
+            "--enroot-agent-image was not given — the agent server would fail its startup validation."
+        )
     cli_overrides = [
         opt.lstrip("+") for opt in args.extra_config_opts.split() if "=" in opt
     ]
