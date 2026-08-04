@@ -1,13 +1,18 @@
 host: dfw
-hostname: cw-dfw-cs-001-login-01.cw-dfw-cs-001.hpc.nvidia.com
+hostname: cw-dfw-cs-001-login-02.cw-dfw-cs-001.hpc.nvidia.com  # -01 is oversubscribed
 sku: h100
 gpus_per_node: 8
 
 paths:
-  workspace: /lustre/fs1/portfolios/coreai/users/alexandery
+  # /lustre/fs1 and /lustre/fsw are the same filesystem; both resolve to
+  # /lustre/fs1/portfolios/coreai/projects/coreai_nvfm_cupilot/users/alexandery.
+  workspace: /lustre/fsw/portfolios/coreai/users/alexandery
   cache: ${paths.workspace}/.cache
-  container: ${paths.workspace}/containers/nemorl-1115.sqsh
-  # build from thirdparty/cudagym docker/<profile>; pre-1.9 images lack cudagym.servers.serve
+  # imported on a dc node: enroot import docker://nvcr.io#0685833318436291/nemorl-atlas:<tag>
+  container: ${paths.workspace}/containers/nemorl-atlas.sqsh
+  # required only for in-allocation (colocated/disjoint) hosting; import before using those
+  # kinds. Build from thirdparty/cudagym docker/<profile>; pre-1.9 images lack
+  # cudagym.servers.serve.
   cudagym_container: ${paths.workspace}/containers/cudagym-1.9.sqsh
   models: ${paths.workspace}/models
   output: ${paths.workspace}/experiments/nemorl
@@ -15,8 +20,10 @@ paths:
   artifacts: ${paths.workspace}/cudagym_cache/artifacts
   ccache: ${paths.workspace}/cudagym_cache/ccache
 
+# QoS-scheduled (MARS): --qos is required on every submission.
 account: coreai_nvfm_cupilot
 partition: batch
+qos: normal
 
 # dfw's login node cannot reach other clusters' login nodes directly, so a
 # slurm-service CudaGym deployment bridges them with an SSH tunnel first
