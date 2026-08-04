@@ -198,7 +198,9 @@ def _auth_env_names(entry: ResolvedEntry) -> tuple[str, ...]:
     return PROVIDER_REQUIRED_ENV.get(entry.endpoint.provider, ())
 
 
-def _resolve_disjoint(name: str, sku: str, hosting: dict, num_nodes: int) -> ResolvedEntry:
+def _resolve_disjoint(
+    name: str, sku: str, hosting: dict, num_nodes: int
+) -> ResolvedEntry:
     """Validate a ``kind: disjoint`` entry: reserve eval nodes out of the allocation.
 
     Requires ``num_nodes`` in ``[1, --num-nodes)`` so at least one node remains
@@ -233,7 +235,9 @@ def _resolve_endpoint(
     ref = hosting.get("endpoint")
     url = hosting.get("url")
     if ref and url:
-        raise HostingError(f"env.cudagym.{name}.hosting: `endpoint` and `url` are mutually exclusive")
+        raise HostingError(
+            f"env.cudagym.{name}.hosting: `endpoint` and `url` are mutually exclusive"
+        )
     ep: Optional[EndpointEntry] = None
     if ref:
         # Registry ref: take that entry's URL; refuse disabled or SKU-mismatched entries.
@@ -255,14 +259,20 @@ def _resolve_endpoint(
         url = ep.url
     if not url:
         # Neither ref nor url: fall back to the environment-variable escape hatch, and say so.
-        url = os.environ.get("CUDAGYM_UNIFIED_SERVER_URL") or os.environ.get("CUDAGYM_URL")
+        url = os.environ.get("CUDAGYM_UNIFIED_SERVER_URL") or os.environ.get(
+            "CUDAGYM_URL"
+        )
         if not url:
             raise HostingError(
                 f"env.cudagym.{name}.hosting has neither `endpoint` nor `url`, and "
                 f"CUDAGYM_UNIFIED_SERVER_URL is not set (the escape hatch)."
             )
-        warnings.append(f"env.cudagym.{name}: endpoint URL taken from the environment ({url}).")
-    entry = ResolvedEntry(name=name, sku=sku, kind="endpoint", url=str(url).rstrip("/"), endpoint=ep)
+        warnings.append(
+            f"env.cudagym.{name}: endpoint URL taken from the environment ({url})."
+        )
+    entry = ResolvedEntry(
+        name=name, sku=sku, kind="endpoint", url=str(url).rstrip("/"), endpoint=ep
+    )
     missing = [v for v in _auth_env_names(entry) if not os.environ.get(v)]
     if missing:
         raise HostingError(
@@ -371,7 +381,9 @@ def resolve_hosting(
                 registry = load_endpoints(endpoints_dir)
             resolved.append(_resolve_endpoint(name, sku, hosting, registry, warnings))
         else:  # slurm-service
-            resolved.append(_resolve_slurm_service(name, sku, hosting, cluster_cfg, warnings))
+            resolved.append(
+                _resolve_slurm_service(name, sku, hosting, cluster_cfg, warnings)
+            )
 
     # Cross-entry rule: ray.sub can stand up servers for at most one in-allocation
     # entry (CUDAGYM_MODE / CUDAGYM_NUM_NODES describe a single deployment).
