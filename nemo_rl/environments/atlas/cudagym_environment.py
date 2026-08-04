@@ -168,6 +168,8 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
         if not self.eval_config.verify_endpoint_sku:
             return
         resp = await self._client.health()
+        # A load-balanced endpoint nests per-server payloads under "servers";
+        # a single server reports one "health" dict at top level.
         payloads = (
             [s.get("health") or {} for s in resp["servers"]]
             if "servers" in resp
@@ -177,18 +179,31 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
             raise ValueError(
                 f"CudaGym endpoint unhealthy at env init (sku={self.eval_config.sku}): {resp}"
             )
-        # Prefer a payload that actually reports a GPU (compile-only responders don't).
-        payload = next((p for p in payloads if p.get("gpu_model")), payloads[0])
-        ok, detail = verify_health_payload(payload, self.eval_config.sku or "")
-        if not ok:
-            raise ValueError(
-                f"CudaGym endpoint SKU mismatch for env sku={self.eval_config.sku}: {detail} "
-                f"(set verify_endpoint_sku: false to override deliberately)"
+        # Check EVERY pool member (like the Gym resources server's copy): one
+        # matching server must not vouch for a heterogeneous pool. The verdict
+        # is three-valued — False is a confirmed mismatch (raise), None means
+        # the payload reports nothing checkable (warn; compile-only responders
+        # have no GPU fields), True is a confirmed match.
+        confirmed = False
+        for payload in payloads:
+            ok, detail = verify_health_payload(payload, self.eval_config.sku or "")
+            if ok is False:
+                raise ValueError(
+                    f"CudaGym endpoint SKU mismatch for env sku={self.eval_config.sku}: {detail} "
+                    f"(set verify_endpoint_sku: false to override deliberately)"
+                )
+            if ok is None:
+                LOG.warning("cudagym endpoint SKU check (%s): %s", self.eval_config.sku, detail)
+            else:
+                confirmed = True
+                LOG.info("cudagym endpoint SKU check (%s): %s", self.eval_config.sku, detail)
+        # An endpoint where nothing could be checked is reported, not passed:
+        # silent non-verification is how a silicon mismatch hides.
+        if not confirmed:
+            LOG.warning(
+                "cudagym endpoint SKU NOT VERIFIED (sku=%s): no pool member reported a checkable GPU",
+                self.eval_config.sku,
             )
-        if detail.startswith("unverifiable"):
-            LOG.warning("cudagym endpoint SKU check (%s): %s", self.eval_config.sku, detail)
-        else:
-            LOG.info("cudagym endpoint SKU check (%s): %s", self.eval_config.sku, detail)
 
     def get_eval_config(self) -> CudaGymEvalConfig:
         """Return this env's evaluation config (read by ``examples/run_grpo_cuda.py`` during data setup)."""
@@ -210,6 +225,7 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
         Returns:
             ``EnvironmentReturn`` with ``terminateds`` all True (single-turn).
         """
+        # Split each conversation into the prompt and the completion to evaluate.
         user_prompt_batch: list[str] = []
         completion_batch: list[str] = []
         for conversation in message_log_batch:
