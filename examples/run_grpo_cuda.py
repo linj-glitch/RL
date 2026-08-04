@@ -100,13 +100,18 @@ _PROBLEM_TEMPLATE = """\
 
 
 def _tensor_lines(specs: dict) -> str:
+    """Render one ``#   <name>: shape=..., dtype=...`` line per tensor spec."""
     # Hard-indexed on purpose: a definition missing shape/dtype should fail the
     # row loudly at data time, not render a '?' prompt the model can't solve.
     return "\n".join(f"#   {name}: shape={spec['shape']}, dtype={spec['dtype']}" for name, spec in specs.items())
 
 
 def _axis_parts(axes: dict) -> list[str]:
-    """Which dims are fixed (const) vs vary per workload (expr/var)."""
+    """Render one ``name=value`` part per axis.
+
+    Const axes show their value and expr axes their expression; every other
+    axis varies per workload and renders as ``name=variable``.
+    """
     parts = []
     for axis_name, axis_spec in axes.items():
         if axis_spec.get("type") == "const":

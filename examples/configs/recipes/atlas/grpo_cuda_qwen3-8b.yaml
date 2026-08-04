@@ -17,7 +17,7 @@ defaults: "../../grpo_math_1B.yaml"
 grpo:
   num_prompts_per_step: 8
   num_generations_per_prompt: 8  # effective batch = 8 * 8 = 64 completions / step
-  max_rollout_turns: 1  # SINGLE-TURN: prompt -> one kernel completion -> reward -> done
+  max_rollout_turns: 1  # SINGLE-TURN: one kernel completion per prompt, then reward and terminate
   max_num_steps: 200
   max_num_epochs: 1
   normalize_rewards: true

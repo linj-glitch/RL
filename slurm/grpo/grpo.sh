@@ -43,7 +43,7 @@ export WANDB_PROJECT="${WANDB_PROJECT:-atlas_nemorl}"
 export WANDB_API_KEY=${WANDB_API_KEY:-DEFAULT_WANDB_API_KEY}
 export HF_TOKEN=${HF_TOKEN:-DEFAULT_HF_TOKEN}
 export CUDAGYM_AUTH_TOKEN=${CUDAGYM_AUTH_TOKEN:-DEFAULT_CUDAGYM_AUTH_TOKEN}
-# Modal edge proxy-auth for .modal.run eval endpoints (remote mode).
+# Modal edge proxy-auth for .modal.run eval endpoints (the `endpoint` hosting kind).
 export MODAL_PROXY_TOKEN_ID=${MODAL_PROXY_TOKEN_ID:-DEFAULT_MODAL_PROXY_TOKEN_ID}
 export MODAL_PROXY_TOKEN_SECRET=${MODAL_PROXY_TOKEN_SECRET:-DEFAULT_MODAL_PROXY_TOKEN_SECRET}
 
@@ -123,9 +123,10 @@ export PYTHONPATH="$cwd/3rdparty/cudagym/src:${PYTHONPATH}"
 # submit time so it tracks submodule bumps; a hand-typed pin here would go
 # stale silently.
 export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CUDAGYM=DEFAULT_CUDAGYM_VERSION
-# The SolSwarm checkout. With sandbox_profile: solswarm the agent sandbox runs
-# its docker/agent/entrypoint.sh per rollout; with sandbox_profile: minimal the
-# /submit skill is staged from this tree.
+# The SolSwarm checkout. With sandbox_profile: solswarm it supplies the
+# stitched problem extras (submission_rule.md) and keys the reference-sandbox
+# cache; with sandbox_profile: minimal the /submit skill is staged from this
+# tree.
 export SOLSWARM_SURFACE_ROOT="$cwd/3rdparty/solswarm"
 # Where the agent writes the job's sandbox diagnostics (the pre-flight manifest
 # and the once-per-job sandbox_tree.json file-tree snapshot/diff) — on shared
@@ -135,11 +136,10 @@ export CUDA_AGENT_MANIFEST_DIR="${OUTPUT_DIR}/sandbox_manifests"
 # from --enroot-agent-image at submit, which requires it for them). Empty
 # (non-container recipes) skips the plumbing entirely. A path enables it: the
 # host's enroot (bash plus small glibc-only C helpers) is bind-mounted into
-# the training container —
-# the /usr/bin/enroot* glob resolves on the login node running this script,
-# and the compute nodes provide the same paths — enroot's gawk and
-# squashfs-tools dependencies are apt-installed at node setup when the
-# training image lacks them, and the Gym agent server reads the image path
+# the training container. The /usr/bin/enroot* glob resolves on the login node
+# running this script, and the compute nodes provide the same paths. enroot's
+# gawk and squashfs-tools dependencies are apt-installed at node setup when
+# the training image lacks them, and the Gym agent server reads the image path
 # from CUDA_AGENT_ENROOT_IMAGE.
 export CUDA_AGENT_ENROOT_IMAGE=${CUDA_AGENT_ENROOT_IMAGE:-DEFAULT_CUDA_AGENT_ENROOT_IMAGE}
 if [ -n "$CUDA_AGENT_ENROOT_IMAGE" ]; then

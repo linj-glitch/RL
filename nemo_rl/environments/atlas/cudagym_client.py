@@ -19,7 +19,7 @@ Responsibilities:
   * ``parse_problem``   — KernelFactory-schema metadata dict -> typed ``Definition`` + ``Workload``s.
   * ``build_solution``  — one extracted code block -> typed single-file ``Solution``.
   * ``evaluate_solution`` — run the two-phase evaluation via ``cudagym.sdk.workflows.evaluate``
-                            (compile solution & reference -> execute -> parse) -> ``Trace``.
+                            (it compiles solution & reference, executes, and parses) -> ``Trace``.
   * ``update_result_from_trace`` — ``Trace`` -> ``KernelEvalResult`` (the reward inputs).
 
 The language -> (filename, entry point, fence tag) table lives in
@@ -253,8 +253,8 @@ def update_result_from_trace(
     # human-best (0.5) and speed-of-light (1.0). ``sol_anchors`` maps workload uuid ->
     # {"human_best_latency_ms", "sol_latency_ms"}. Only workloads with a positive
     # human-best contribute; ``sol_latency_ms`` may be 0 (then ``sol_score`` degrades
-    # to a bounded speedup-over-human-best). No usable anchors -> sol_score stays -1
-    # and the reward falls back to the eager speedup above.
+    # to a bounded speedup-over-human-best). With no usable anchors sol_score stays
+    # -1 and the reward falls back to the eager speedup above.
     if sol_anchors:
         scores: list[float] = []
         human_best_speedups: list[float] = []

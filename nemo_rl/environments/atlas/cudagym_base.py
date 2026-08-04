@@ -15,9 +15,9 @@
 """Shared CudaGym evaluation + reward for the atlas environments.
 
 ``BaseCudaEvaluator`` is a mixin: it turns (prompt, completion, problem-metadata)
-triples into ``KernelEvalResult``s (parse -> build typed ``Solution`` -> run the
-CudaGym SDK -> map the ``Trace``) and scores them with the correctness-gated
-reward (``reward.get_reward``). The single-turn env mixes this in. The agentic
+triples into ``KernelEvalResult``s (it parses each completion, builds the typed
+``Solution``, runs the CudaGym SDK, and maps the ``Trace``) and scores them with
+the correctness-gated reward (``reward.get_reward``). The single-turn env mixes this in. The agentic
 path's resources server vendors a copy of the same client + reward logic
 (``3rdparty/Gym-workspace/Gym/resources_servers/cudagym/app.py``); keep the two
 in sync.
@@ -81,6 +81,7 @@ class BaseCudaEvaluator(ABC):
         ]
 
         async def _evaluate_one(idx: int) -> None:
+            """Evaluate one (prompt, completion, problem) triple onto ``results[idx]``."""
             result = results[idx]
             meta = metadata_list[idx]
             language = meta["language"]

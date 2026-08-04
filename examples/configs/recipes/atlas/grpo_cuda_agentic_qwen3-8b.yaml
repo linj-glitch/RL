@@ -88,7 +88,7 @@ policy:
   # backend; nemo_rl/models/automodel/setup.py), and flash-attn's varlen kernel
   # intermittently fails with "CUDA error: invalid argument" on packed long
   # agentic trajectories during the logprob pass, after rollouts already
-  # succeeded. Disabled -> SDPA, which is stable. Rollouts dominate agentic
+  # succeeded. With packing disabled the policy uses SDPA, which is stable. Rollouts dominate agentic
   # wall time, so packing's training-step speedup is not worth the crash rate;
   # re-enable per-run with ++policy.sequence_packing.enabled=true.
   sequence_packing:
@@ -160,9 +160,11 @@ env:
     - responses_api_models/vllm_model/configs/vllm_model_for_training.yaml  # required, *_for_training
     - resources_servers/cudagym/configs/cudagym_cuda_agent.yaml
     - resources_servers/cudagym/configs/cudagym_cuda_agent_training.yaml    # adds model_server -> policy_model (token capture)
-    # Optional full SolSwarm parity (optimizer prompt + skills + the /context
-    # reference library + the real /submit flow; needs SOLSWARM_SURFACE_ROOT ->
-    # 3rdparty/solswarm, exported by grpo.sh):
+    # Optional full SolSwarm parity — container mode: each rollout runs inside
+    # the real agent image (submit with --enroot-agent-image <cluster .sqsh
+    # path>), which supplies the optimizer prompt, skills, and /context
+    # reference library; the /submit flow is real, and SOLSWARM_SURFACE_ROOT
+    # (exported by grpo.sh) supplies the stitched problem extras:
     # - resources_servers/cudagym/configs/cudagym_cuda_agent_solswarm.yaml
     policy_model:
       responses_api_models:

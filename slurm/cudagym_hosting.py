@@ -352,8 +352,9 @@ def resolve_hosting(
 
         hosting = entry.get("hosting")
         if hosting is None:
-            # A bare `server_url:` was once accepted as an endpoint declaration;
-            # it is not honored, so name it in the error when it is present.
+            # A bare `server_url:` looks like an endpoint declaration but is
+            # not honored; when one is present, name it in the error so the
+            # author learns where the URL belongs.
             legacy_hint = (
                 " (a bare `server_url:` is not honored; put the URL in the hosting block)"
                 if entry.get("server_url")
@@ -442,7 +443,7 @@ def resolve_hosting(
 
 
 # --------------------------------------------------------------------------
-# Preflight probe + SKU verification.
+# Submit-time /health preflight + SKU verification.
 # --------------------------------------------------------------------------
 
 

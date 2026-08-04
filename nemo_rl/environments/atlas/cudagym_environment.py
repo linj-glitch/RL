@@ -22,11 +22,16 @@ and shares the evaluation + reward logic with it via ``BaseCudaEvaluator``
 (``cudagym_base``).
 
 Flow per ``step`` (everything is batched):
-  message_log_batch -> (first user prompt, last assistant completion) per sample
-    -> ``evaluate_batch`` (parse -> build Solution -> cudagym evaluate -> Trace -> KernelEvalResult)
-    -> ``get_reward`` (correctness-gated)
-    -> EnvironmentReturn(observations, metadata+{correctness,speedup,human_best_speedup,sol_score}, next_stop_strings=None,
-                         rewards=Tensor[B], terminateds=ones, answers=None)
+
+  1. Split each sample's message log into the first ``user`` prompt and the
+     last ``assistant`` completion.
+  2. ``evaluate_batch`` parses each completion, builds the typed ``Solution``,
+     runs the CudaGym evaluation, and maps the ``Trace`` to a ``KernelEvalResult``.
+  3. ``get_reward`` scores each result with the correctness-gated reward.
+  4. The ``EnvironmentReturn`` carries the feedback observations, the metadata
+     with {correctness, speedup, human_best_speedup, sol_score} written back,
+     ``rewards`` as a Tensor[B], ``terminateds`` all ones, and no stop strings.
+
 GRPO then trains the assistant tokens (``<think>`` + code) against this reward;
 prompt and environment-observation tokens are excluded from the loss.
 """
@@ -78,7 +83,10 @@ class CudaGymEnvironmentMetadata(TypedDict, total=False):
 
 @ray.remote  # pragma: no cover
 class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
+    """Ray actor for single-turn kernel evaluation: a thin CudaGym HTTP client (no GPUs)."""
+
     def __init__(self, config: dict):
+        """Validate the raw ``env.cudagym.<name>`` mapping and build the SDK client."""
         # The raw YAML dict (env.cudagym.<sku>) is the only calling convention:
         # the driver passes the recipe mapping straight through Ray.
         from dataclasses import fields as dataclass_fields
@@ -125,10 +133,11 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
         # config without pulling in cudagym. cudagym >= 2.x speaks split
         # compile/GPU URLs; our launch plumbing carries ONE unified endpoint
         # (the in-allocation LB or a managed remote), so it is passed as both.
-        # Resolution: recipe-pinned server_url -> CUDAGYM_UNIFIED_SERVER_URL /
-        # CUDAGYM_URL (how colocated mode injects the LB address) ->
-        # Client.from_env() (native split CUDAGYM_{COMPILE,GPU}_SERVER_URL;
-        # raises with a clear message when nothing is set).
+        # Resolution order: the recipe-pinned server_url, then
+        # CUDAGYM_UNIFIED_SERVER_URL / CUDAGYM_URL (how colocated mode injects
+        # the LB address), then Client.from_env() (native split
+        # CUDAGYM_{COMPILE,GPU}_SERVER_URL; raises with a clear message when
+        # nothing is set).
         from cudagym.sdk import Client
 
         server_url = (

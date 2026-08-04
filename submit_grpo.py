@@ -74,7 +74,7 @@ def _vendored_cudagym_version() -> str:
     if not raw:
         print("⚠️  could not derive the vendored cudagym version; falling back to 0.0.0")
         return "0.0.0"
-    # v2.2.3-19-g87aa3f6[-dirty] -> 2.2.3.post19+g87aa3f6 (setuptools-scm shape)
+    # v2.2.3-19-g87aa3f6[-dirty] -> 2.2.3.post19+g87aa3f6 (setuptools-scm's version format)
     parts = raw.split("-")
     if len(parts) >= 3:
         return f"{parts[0]}.post{parts[1]}+{parts[2]}"
@@ -163,9 +163,9 @@ def main():
         help="Seconds to wait for a slurm-service CudaGym deployment's proxies to report ready",
     )
     # CudaGym hosting is declared per SKU in the recipe (env.cudagym.<name>.hosting;
-    # see slurm/cudagym_hosting.py). The removed flags are kept as hidden stubs so
-    # passing one fails fast with a migration hint instead of argparse's
-    # "unrecognized arguments" error.
+    # see slurm/cudagym_hosting.py). These three flags are defunct and exist only
+    # as hidden stubs, so passing one fails fast with a migration hint instead of
+    # argparse's "unrecognized arguments" error.
     parser.add_argument("--cudagym-mode", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--cudagym-num-nodes", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--cudagym-url", default=None, help=argparse.SUPPRESS)
@@ -192,7 +192,7 @@ def main():
     )
     args = parser.parse_args()
 
-    # A removed hosting flag was passed: fail with the migration hint.
+    # A defunct hosting flag was passed: fail with the migration hint.
     if any(v is not None for v in (args.cudagym_mode, args.cudagym_num_nodes, args.cudagym_url)):
         parser.error(
             "--cudagym-mode/--cudagym-url/--cudagym-num-nodes were removed: hosting is now "
@@ -219,7 +219,7 @@ def main():
 
     # Container mode needs BOTH sides: the SolSwarm overlay in the recipe and
     # the image-path flag (the grpo.sh enroot plumbing). A mismatch otherwise
-    # surfaces only at agent-server startup, minutes into the job. The overlay
+    # shows up only at agent-server startup, minutes into the job. The overlay
     # is recognized by its config-path name because the Gym-side YAML is
     # merged by Gym, not here.
     gym_config_paths = [str(p) for p in (OmegaConf.select(recipe_cfg, "env.nemo_gym.config_paths") or [])]
@@ -263,8 +263,8 @@ def main():
     for warning in hosting.warnings:
         print(f"⚠️  {warning}")
 
-    # The endpoints/ registry was seeded from solswarm's gpu-skus.toml; the two
-    # are maintained separately, so flag (never fail) when they disagree — a
+    # The endpoints/ registry mirrors solswarm's gpu-skus.toml but the two are
+    # maintained separately, so flag (never fail) when they disagree — a
     # mismatch usually means upstream moved the managed fleet and our URLs are stale.
     for line in check_registry_against_solswarm(
         load_endpoints(), Path(__file__).parent / "3rdparty" / "solswarm"

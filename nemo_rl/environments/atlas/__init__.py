@@ -22,7 +22,8 @@ Two rollout modes share one evaluation core:
     package.
   * **agentic** — a NeMo-Gym ``cuda_agent`` wrapping OpenCode (see
     ``3rdparty/Gym-workspace/Gym/responses_api_agents/cuda_agent``). The policy
-    iterates write -> ``cudagym evaluate`` -> read across turns; its resources
+    iterates across turns, writing the kernel, running ``cudagym evaluate``,
+    and reading the feedback; its resources
     server (``3rdparty/Gym-workspace/Gym/resources_servers/cudagym/app.py``)
     vendors a copy of this package's evaluation and reward logic.
 
