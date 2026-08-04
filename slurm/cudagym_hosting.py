@@ -198,6 +198,117 @@ def _auth_env_names(entry: ResolvedEntry) -> tuple[str, ...]:
     return PROVIDER_REQUIRED_ENV.get(entry.endpoint.provider, ())
 
 
+def _resolve_disjoint(name: str, sku: str, hosting: dict, num_nodes: int) -> ResolvedEntry:
+    """Validate a ``kind: disjoint`` entry: reserve eval nodes out of the allocation.
+
+    Requires ``num_nodes`` in ``[1, --num-nodes)`` so at least one node remains
+    for training; ray.sub carves the trailing nodes off the Ray cluster.
+    """
+    n = int(hosting.get("num_nodes") or 0)
+    if not (1 <= n < num_nodes):
+        raise HostingError(
+            f"env.cudagym.{name}.hosting.num_nodes must be in [1, --num-nodes) "
+            f"(got {n} with --num-nodes={num_nodes})"
+        )
+    return ResolvedEntry(name=name, sku=sku, kind="disjoint", num_nodes=n)
+
+
+def _resolve_endpoint(
+    name: str,
+    sku: str,
+    hosting: dict,
+    registry: dict[str, EndpointEntry],
+    warnings: list[str],
+) -> ResolvedEntry:
+    """Validate a ``kind: endpoint`` entry: an already-running eval server.
+
+    The server is named by exactly one of a registry ref (``endpoint:
+    <provider>/<key>``, resolved through ``endpoints/*.yaml`` and refused when
+    disabled or SKU-mismatched) or an inline ``url:``; with neither, the URL
+    comes from the ``CUDAGYM_UNIFIED_SERVER_URL`` / ``CUDAGYM_URL`` escape
+    hatch (recorded as a warning). Providers with required auth must have their
+    env vars set in the submitting shell — the /health preflight and the job
+    both send them.
+    """
+    ref = hosting.get("endpoint")
+    url = hosting.get("url")
+    if ref and url:
+        raise HostingError(f"env.cudagym.{name}.hosting: `endpoint` and `url` are mutually exclusive")
+    ep: Optional[EndpointEntry] = None
+    if ref:
+        # Registry ref: take that entry's URL; refuse disabled or SKU-mismatched entries.
+        ep = registry.get(str(ref))
+        if ep is None:
+            raise HostingError(
+                f"env.cudagym.{name}.hosting.endpoint={ref!r} not found in "
+                f"endpoints/*.yaml (known: {', '.join(sorted(registry)) or 'none'})"
+            )
+        if ep.disabled_reason:
+            raise HostingError(
+                f"endpoint {ep.name} is disabled: {ep.disabled_reason} "
+                f"(use an inline `url:` to override deliberately)"
+            )
+        if ep.sku.upper() != sku:
+            raise HostingError(
+                f"env.cudagym.{name} declares sku {sku} but endpoint {ep.name} serves {ep.sku}"
+            )
+        url = ep.url
+    if not url:
+        # Neither ref nor url: fall back to the environment-variable escape hatch, and say so.
+        url = os.environ.get("CUDAGYM_UNIFIED_SERVER_URL") or os.environ.get("CUDAGYM_URL")
+        if not url:
+            raise HostingError(
+                f"env.cudagym.{name}.hosting has neither `endpoint` nor `url`, and "
+                f"CUDAGYM_UNIFIED_SERVER_URL is not set (the escape hatch)."
+            )
+        warnings.append(f"env.cudagym.{name}: endpoint URL taken from the environment ({url}).")
+    entry = ResolvedEntry(name=name, sku=sku, kind="endpoint", url=str(url).rstrip("/"), endpoint=ep)
+    missing = [v for v in _auth_env_names(entry) if not os.environ.get(v)]
+    if missing:
+        raise HostingError(
+            f"endpoint {ep.name if ep else url} requires env var(s) "
+            f"{', '.join(missing)} to be set in the submitting shell "
+            f"(provider '{ep.provider if ep else '?'}')."
+        )
+    return entry
+
+
+def _resolve_slurm_service(
+    name: str, sku: str, hosting: dict, cluster_cfg: Any, warnings: list[str]
+) -> ResolvedEntry:
+    """Validate a ``kind: slurm-service`` entry: a service job on ANOTHER cluster.
+
+    Requires the target cluster, its node count, and the submit-side proxy port
+    (``endpoint_port``); ``service_login_port`` is the proxy port on the
+    SERVICE cluster's login node. Deployment happens at submit time
+    (``slurm/deploy_remote_cudagym.py``). Pointing at the submit cluster itself
+    is refused — that is what the in-allocation kinds are for.
+    """
+    required = ("service_cluster", "num_service_nodes", "endpoint_port")
+    missing_fields = [f for f in required if not hosting.get(f)]
+    if missing_fields:
+        raise HostingError(
+            f"env.cudagym.{name}.hosting (slurm-service) missing fields: "
+            f"{', '.join(missing_fields)}"
+        )
+    service = {
+        "service_cluster": hosting["service_cluster"],
+        "num_service_nodes": int(hosting["num_service_nodes"]),
+        "endpoint_port": int(hosting["endpoint_port"]),
+        "service_login_port": int(hosting.get("service_login_port") or 8998),
+    }
+    if str(service["service_cluster"]) == str(cluster_cfg.get("host") or ""):
+        raise HostingError(
+            f"env.cudagym.{name}.hosting (slurm-service) points at the submit "
+            f"cluster itself — use hosting kind 'colocated' or 'disjoint' instead."
+        )
+    warnings.append(
+        f"env.cudagym.{name}: hosting kind 'slurm-service' is experimental "
+        f"(pending live validation of the refreshed cudagym slurm deployment)."
+    )
+    return ResolvedEntry(name=name, sku=sku, kind="slurm-service", service=service)
+
+
 def resolve_hosting(
     recipe_cfg: DictConfig,
     cluster_cfg: Any,
@@ -207,8 +318,11 @@ def resolve_hosting(
 ) -> HostingResolution:
     """Validate every ``env.cudagym.<name>.hosting`` declaration and resolve URLs.
 
-    Raises ``HostingError`` with a user-facing message on any invalid
-    combination; see the module docstring for the schema.
+    Dispatches each entry to its kind's validator (``_resolve_disjoint`` /
+    ``_resolve_endpoint`` / ``_resolve_slurm_service``; colocated has nothing
+    to validate), then applies the cross-entry rules. Raises ``HostingError``
+    with a user-facing message on any invalid combination; see the module
+    docstring for the schema.
     """
     warnings: list[str] = []
     # Pull the recipe's env.cudagym mapping; a recipe without one has no entries.
@@ -251,109 +365,13 @@ def resolve_hosting(
             # colocated: eval servers share the training nodes; nothing more to declare.
             resolved.append(ResolvedEntry(name=name, sku=sku, kind=kind))
         elif kind == "disjoint":
-            # disjoint: reserve num_nodes of the allocation for eval servers;
-            # at least one node must remain for training.
-            n = int(hosting.get("num_nodes") or 0)
-            if not (1 <= n < num_nodes):
-                raise HostingError(
-                    f"env.cudagym.{name}.hosting.num_nodes must be in [1, --num-nodes) "
-                    f"(got {n} with --num-nodes={num_nodes})"
-                )
-            resolved.append(ResolvedEntry(name=name, sku=sku, kind=kind, num_nodes=n))
+            resolved.append(_resolve_disjoint(name, sku, hosting, num_nodes))
         elif kind == "endpoint":
-            # endpoint: an already-running server, named by a registry ref or an
-            # inline URL (one or the other, never both).
-            ref = hosting.get("endpoint")
-            url = hosting.get("url")
-            if ref and url:
-                raise HostingError(
-                    f"env.cudagym.{name}.hosting: `endpoint` and `url` are mutually exclusive"
-                )
-            ep: Optional[EndpointEntry] = None
-            if ref:
-                # Registry ref: resolve "<provider>/<key>" through endpoints/*.yaml
-                # and take that entry's URL; refuse disabled or SKU-mismatched entries.
-                if registry is None:
-                    registry = load_endpoints(endpoints_dir)
-                ep = registry.get(str(ref))
-                if ep is None:
-                    raise HostingError(
-                        f"env.cudagym.{name}.hosting.endpoint={ref!r} not found in "
-                        f"{endpoints_dir}/*.yaml (known: {', '.join(sorted(registry)) or 'none'})"
-                    )
-                if ep.disabled_reason:
-                    raise HostingError(
-                        f"endpoint {ep.name} is disabled: {ep.disabled_reason} "
-                        f"(use an inline `url:` to override deliberately)"
-                    )
-                if ep.sku.upper() != sku:
-                    raise HostingError(
-                        f"env.cudagym.{name} declares sku {sku} but endpoint {ep.name} "
-                        f"serves {ep.sku}"
-                    )
-                url = ep.url
-            if not url:
-                # Neither ref nor url: fall back to the environment-variable
-                # escape hatch, and say so.
-                url = os.environ.get("CUDAGYM_UNIFIED_SERVER_URL") or os.environ.get(
-                    "CUDAGYM_URL"
-                )
-                if not url:
-                    raise HostingError(
-                        f"env.cudagym.{name}.hosting has neither `endpoint` nor `url`, and "
-                        f"CUDAGYM_UNIFIED_SERVER_URL is not set (the escape hatch)."
-                    )
-                warnings.append(
-                    f"env.cudagym.{name}: endpoint URL taken from the environment ({url})."
-                )
-            entry_resolved = ResolvedEntry(
-                name=name, sku=sku, kind=kind, url=str(url).rstrip("/"), endpoint=ep
-            )
-            # Providers with required auth (PROVIDER_REQUIRED_ENV) need the env
-            # vars in the submitting shell now: the /health preflight and the job
-            # both send them.
-            missing = [
-                v for v in _auth_env_names(entry_resolved) if not os.environ.get(v)
-            ]
-            if missing:
-                raise HostingError(
-                    f"endpoint {ep.name if ep else url} requires env var(s) "
-                    f"{', '.join(missing)} to be set in the submitting shell "
-                    f"(provider '{ep.provider if ep else '?'}')."
-                )
-            resolved.append(entry_resolved)
+            if registry is None:
+                registry = load_endpoints(endpoints_dir)
+            resolved.append(_resolve_endpoint(name, sku, hosting, registry, warnings))
         else:  # slurm-service
-            # slurm-service: a CudaGym service job stood up on ANOTHER Slurm
-            # cluster at submit time (slurm/deploy_remote_cudagym.py); needs the
-            # target cluster, its node count, and the submit-side proxy port.
-            required = ("service_cluster", "num_service_nodes", "endpoint_port")
-            missing_fields = [f for f in required if not hosting.get(f)]
-            if missing_fields:
-                raise HostingError(
-                    f"env.cudagym.{name}.hosting (slurm-service) missing fields: "
-                    f"{', '.join(missing_fields)}"
-                )
-            # service_login_port is the proxy port on the SERVICE cluster's login
-            # node; endpoint_port is its counterpart on the submit cluster's.
-            service = {
-                "service_cluster": hosting["service_cluster"],
-                "num_service_nodes": int(hosting["num_service_nodes"]),
-                "endpoint_port": int(hosting["endpoint_port"]),
-                "service_login_port": int(hosting.get("service_login_port") or 8998),
-            }
-            # Targeting the submit cluster itself is what the in-allocation kinds are for.
-            if str(service["service_cluster"]) == str(cluster_cfg.get("host") or ""):
-                raise HostingError(
-                    f"env.cudagym.{name}.hosting (slurm-service) points at the submit "
-                    f"cluster itself — use hosting kind 'colocated' or 'disjoint' instead."
-                )
-            warnings.append(
-                f"env.cudagym.{name}: hosting kind 'slurm-service' is experimental "
-                f"(pending live validation of the refreshed cudagym slurm deployment)."
-            )
-            resolved.append(
-                ResolvedEntry(name=name, sku=sku, kind=kind, service=service)
-            )
+            resolved.append(_resolve_slurm_service(name, sku, hosting, cluster_cfg, warnings))
 
     # Cross-entry rule: ray.sub can stand up servers for at most one in-allocation
     # entry (CUDAGYM_MODE / CUDAGYM_NUM_NODES describe a single deployment).
