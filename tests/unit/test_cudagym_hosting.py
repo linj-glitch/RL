@@ -206,13 +206,14 @@ def test_missing_modal_auth_env_fails(tmp_path, monkeypatch):
         )
 
 
-def test_legacy_server_url_shim_warns(tmp_path):
-    res = _resolve(
-        {"b200": {"sku": "B200", "server_url": "http://legacy:8000"}},
-        ep_dir=_endpoints_dir(tmp_path),
-    )
-    assert res.endpoints[0].url == "http://legacy:8000"
-    assert any("deprecated" in w for w in res.warnings)
+def test_bare_server_url_is_not_honored(tmp_path):
+    """The legacy shim is gone: a `server_url:` without `hosting:` errors, and
+    the error names the unhonored field so migration is one obvious edit."""
+    with pytest.raises(HostingError, match="server_url.*not honored"):
+        _resolve(
+            {"b200": {"sku": "B200", "server_url": "http://legacy:8000"}},
+            ep_dir=_endpoints_dir(tmp_path),
+        )
 
 
 def test_entry_without_hosting_errors(tmp_path):

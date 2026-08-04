@@ -38,10 +38,8 @@ don't exist yet at submit) get the same check at runtime init
 job on ANOTHER Slurm cluster at submit time and chain login-node proxies back
 to this one (``slurm.deploy_remote_cudagym``).
 
-Back-compat: a legacy ``server_url:`` with no ``hosting:`` block is treated as
-``hosting: {kind: endpoint, url: <server_url>}`` with a deprecation warning, and
-``hosting: {kind: endpoint}`` with neither ``endpoint`` nor ``url`` resolves from
-``CUDAGYM_UNIFIED_SERVER_URL`` / ``CUDAGYM_URL`` (the environment-variable
+``hosting: {kind: endpoint}`` with neither ``endpoint`` nor ``url`` resolves
+from ``CUDAGYM_UNIFIED_SERVER_URL`` / ``CUDAGYM_URL`` (the environment-variable
 escape hatch).
 
 Kept dependency-light on purpose (omegaconf + stdlib; ``requests`` imported
@@ -230,19 +228,17 @@ def resolve_hosting(
 
         hosting = entry.get("hosting")
         if hosting is None:
-            # Back-compat: a bare `server_url:` still works as an endpoint
-            # declaration; anything else without `hosting:` is an error.
-            if entry.get("server_url"):
-                warnings.append(
-                    f"env.cudagym.{name}: bare `server_url:` is deprecated — declare "
-                    f"`hosting: {{kind: endpoint, url: ...}}` instead."
-                )
-                hosting = {"kind": "endpoint", "url": entry["server_url"]}
-            else:
-                raise HostingError(
-                    f"env.cudagym.{name} declares no `hosting:` block. Every entry must "
-                    f"say where its eval servers live, e.g.:\n{EXAMPLE_HOSTING_BLOCK}"
-                )
+            # A bare `server_url:` was once accepted as an endpoint declaration;
+            # it is not honored, so name it in the error when it is present.
+            legacy_hint = (
+                " (a bare `server_url:` is not honored; put the URL in the hosting block)"
+                if entry.get("server_url")
+                else ""
+            )
+            raise HostingError(
+                f"env.cudagym.{name} declares no `hosting:` block{legacy_hint}. Every entry "
+                f"must say where its eval servers live, e.g.:\n{EXAMPLE_HOSTING_BLOCK}"
+            )
         if not isinstance(hosting, dict):
             raise HostingError(f"env.cudagym.{name}.hosting must be a mapping")
         kind = hosting.get("kind")
