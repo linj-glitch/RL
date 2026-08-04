@@ -131,10 +131,11 @@ export SOLSWARM_SURFACE_ROOT="$cwd/3rdparty/solswarm"
 # and the once-per-job sandbox_tree.json file-tree snapshot/diff) — on shared
 # storage, next to the logs.
 export CUDA_AGENT_MANIFEST_DIR="${OUTPUT_DIR}/sandbox_manifests"
-# Per-rollout agent containers (Gym cuda_agent sandbox_runtime: enroot; enabled
-# by --enroot-agent-image at submit). Empty leaves the default namespace
-# runtime untouched. A path enables the plumbing: the host's enroot (bash plus
-# small glibc-only C helpers) is bind-mounted into the training container —
+# Per-rollout agent containers (container-mode recipes; the image path comes
+# from --enroot-agent-image at submit, which requires it for them). Empty
+# (non-container recipes) skips the plumbing entirely. A path enables it: the
+# host's enroot (bash plus small glibc-only C helpers) is bind-mounted into
+# the training container —
 # the /usr/bin/enroot* glob resolves on the login node running this script,
 # and the compute nodes provide the same paths — enroot's gawk and
 # squashfs-tools dependencies are apt-installed at node setup when the

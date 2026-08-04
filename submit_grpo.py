@@ -173,11 +173,11 @@ def main():
         "--enroot-agent-image",
         default="",
         help=(
-            "Cluster path of a SolSwarm agent-image squashfs. Non-empty enables the "
-            "sandbox_runtime: enroot plumbing in grpo.sh (host enroot bind-mounted "
-            "into the training container, CUDA_AGENT_ENROOT_IMAGE exported); the "
-            "recipe's Gym config must also select the runtime "
-            "(resources_servers/cudagym/configs/cudagym_cuda_agent_enroot.yaml)."
+            "Cluster path of a SolSwarm agent-image squashfs. Required by container-mode "
+            "recipes (cudagym_cuda_agent_solswarm.yaml in the Gym config paths): each "
+            "rollout runs inside a real instance of this image. Enables the enroot "
+            "plumbing in grpo.sh (host enroot bind-mounted into the training container, "
+            "CUDA_AGENT_ENROOT_IMAGE exported)."
         ),
     )
     parser.add_argument(
@@ -217,22 +217,23 @@ def main():
     # not just the training-time config.
     recipe_cfg = load_recipe_merged(CONFIG_PATH / args.config)
 
-    # The enroot sandbox runtime needs BOTH sides: the Gym overlay in the
-    # recipe (sandbox_runtime: enroot) and the image-path flag (the grpo.sh
-    # plumbing). A mismatch otherwise surfaces only at agent-server startup,
-    # minutes into the job. The overlay is recognized by its config-path name
-    # because the Gym-side YAML is merged by Gym, not here.
+    # Container mode needs BOTH sides: the SolSwarm overlay in the recipe and
+    # the image-path flag (the grpo.sh enroot plumbing). A mismatch otherwise
+    # surfaces only at agent-server startup, minutes into the job. The overlay
+    # is recognized by its config-path name because the Gym-side YAML is
+    # merged by Gym, not here.
     gym_config_paths = [str(p) for p in (OmegaConf.select(recipe_cfg, "env.nemo_gym.config_paths") or [])]
-    has_enroot_overlay = any("cudagym_cuda_agent_enroot" in p for p in gym_config_paths)
-    if args.enroot_agent_image and not has_enroot_overlay:
+    is_container_mode = any("cudagym_cuda_agent_solswarm" in p for p in gym_config_paths)
+    if args.enroot_agent_image and not is_container_mode:
         raise SystemExit(
             "❌ --enroot-agent-image is set, but the recipe's env.nemo_gym.config_paths does not "
-            "include cudagym_cuda_agent_enroot.yaml — the sandbox runtime would stay 'namespace'."
+            "include cudagym_cuda_agent_solswarm.yaml — nothing in this job runs agent containers."
         )
-    if has_enroot_overlay and not args.enroot_agent_image:
+    if is_container_mode and not args.enroot_agent_image:
         raise SystemExit(
-            "❌ the recipe enables sandbox_runtime=enroot (cudagym_cuda_agent_enroot.yaml), but "
-            "--enroot-agent-image was not given — the agent server would fail its startup validation."
+            "❌ the recipe is container mode (cudagym_cuda_agent_solswarm.yaml): each rollout runs "
+            "inside a real agent-image instance, so --enroot-agent-image <cluster .sqsh path> is "
+            "required — without it the agent server fails its startup validation."
         )
     cli_overrides = [
         opt.lstrip("+") for opt in args.extra_config_opts.split() if "=" in opt
