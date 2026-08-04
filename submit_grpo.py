@@ -416,8 +416,8 @@ def main():
         "CUDAGYM_MODE": hosting.cudagym_mode,
         "CUDAGYM_NUM_NODES": hosting.cudagym_num_nodes,
         "CUDAGYM_VERSION": cudagym_version,
-        # Empty (the default) leaves the namespace sandbox runtime untouched;
-        # a path switches grpo.sh's enroot plumbing on.
+        # Empty for non-container recipes (grpo.sh then skips the enroot
+        # plumbing); container-mode recipes require the flag, checked above.
         "CUDA_AGENT_ENROOT_IMAGE": args.enroot_agent_image or "",
         # cudagym_container is excluded: CUDAGYM_CONTAINER is set explicitly
         # (above/below), and both names fill the same DEFAULT_CUDAGYM_CONTAINER
