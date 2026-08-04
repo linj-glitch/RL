@@ -1,4 +1,4 @@
-host: dfw
+host: cw-dfw-cs-001
 hostname: cw-dfw-cs-001-login-02.cw-dfw-cs-001.hpc.nvidia.com  # -01 is oversubscribed
 sku: h100
 gpus_per_node: 8
@@ -25,7 +25,7 @@ account: coreai_nvfm_cupilot
 partition: batch
 qos: normal
 
-# dfw's login node cannot reach other clusters' login nodes directly, so a
+# cw-dfw-cs-001's login node cannot reach other clusters' login nodes directly, so a
 # slurm-service CudaGym deployment bridges them with an SSH tunnel first
 # (slurm/deploy_remote_cudagym.py).
 requires_proxy_tunnel: true

@@ -17,7 +17,7 @@ Usage:
     python submit_sft.py --exp-name <exp-name> --config <config-path> --cluster <cluster-name>
 
     # atlas c1 32b
-    python submit_sft.py --exp-name atlas_c1_32b --config sft_megatron_qwen3-32b.yaml --cluster dfw --num-nodes 16
+    python submit_sft.py --exp-name atlas_c1_32b --config sft_megatron_qwen3-32b.yaml --cluster cw-dfw-cs-001 --num-nodes 16
 
 """
 
@@ -82,7 +82,7 @@ def main():
         "--cluster",
         "-c",
         type=str,
-        default="hsg",
+        required=True,
         choices=get_available_clusters(CLUSTER_CONFIG_PATH),
     )
     parser.add_argument(
