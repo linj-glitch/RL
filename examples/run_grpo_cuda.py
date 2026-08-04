@@ -151,6 +151,27 @@ def _annotate_kernelfactory_problem(
     )
 
 
+def _parse_json_field(datum_dict: dict[str, Any], key: str) -> Any:
+    """Parse a dataset field stored as a JSON string.
+
+    The dataset builder (``write_kfb_dataset`` in
+    ``nemo_rl/data/atlas_datasets/grpo_cuda_dataset.py``) stores
+    ``definition``/``workloads``/``sol_anchors`` as JSON strings so the
+    HuggingFace dataset schema stays uniform across structurally-different
+    problems. Any other type means the row came from a different builder, so
+    raise a ``TypeError`` that names the expected format.
+    """
+    value = datum_dict[key]
+    if not isinstance(value, str):
+        raise TypeError(
+            f"dataset field {key!r} must be a JSON string, got "
+            f"{type(value).__name__}; rebuild the dataset with "
+            "nemo_rl.data.atlas_datasets.grpo_cuda_dataset.write_kfb_dataset "
+            "(it stores this field as a JSON string)"
+        )
+    return json.loads(value)
+
+
 def cudagym_data_processor(
     datum_dict: dict[str, Any],
     task_data_spec: TaskDataSpec,
@@ -160,8 +181,8 @@ def cudagym_data_processor(
 ) -> DatumSpec:
     """Process one KernelFactory problem row into a ``DatumSpec`` (the turn-0 prompt).
 
-    Expects (from ``format_cuda_problem``): ``task_name``, ``definition`` (dict),
-    ``workloads`` (list), ``language``, ``target_hardware``,
+    Expects (from ``format_cuda_problem``): ``task_name``, ``definition`` /
+    ``workloads`` (JSON strings), ``language``, ``target_hardware``,
     ``destination_passing_style``.
 
     Output ``message_log`` is a single ``user`` turn holding the fully templated
@@ -172,15 +193,10 @@ def cudagym_data_processor(
     """
     language = datum_dict["language"]
     destination_passing_style = datum_dict.get("destination_passing_style", True)
-    # definition/workloads are baked as JSON strings by the data layer (so the HF
-    # dataset schema stays uniform across structurally-different problems); parse
-    # them back here. Tolerate a raw dict/list for older datasets.
-    definition = datum_dict["definition"]
-    if isinstance(definition, str):
-        definition = json.loads(definition)
-    workloads = datum_dict["workloads"]
-    if isinstance(workloads, str):
-        workloads = json.loads(workloads)
+    # definition/workloads are baked as JSON strings by the data layer; parse
+    # them back here.
+    definition = _parse_json_field(datum_dict, "definition")
+    workloads = _parse_json_field(datum_dict, "workloads")
     # Render the definition into the human-readable problem statement.
     entry_function = entry_symbol_for(language)
     problem_text = _annotate_kernelfactory_problem(definition, destination_passing_style, entry_function)
@@ -231,11 +247,13 @@ def cudagym_data_processor(
         loss_multiplier = 0.0
 
     # Per-workload SOL/human-best anchors: baked as a JSON string by the data
-    # layer (same tolerance as definition/workloads above) — drives the
-    # SOL-score perf reward in the env's step().
-    sol_anchors = datum_dict.get("sol_anchors") or {}
-    if isinstance(sol_anchors, str):
-        sol_anchors = json.loads(sol_anchors)
+    # layer (like definition/workloads above) — drives the SOL-score perf
+    # reward in the env's step(). An absent/empty field means "no anchors".
+    sol_anchors = (
+        _parse_json_field(datum_dict, "sol_anchors")
+        if datum_dict.get("sol_anchors")
+        else {}
+    )
     extra_env_info = {
         "language": language,
         "definition": definition,
