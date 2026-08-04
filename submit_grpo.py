@@ -25,6 +25,7 @@ import subprocess
 import argparse
 import os
 import re
+import shlex
 from pathlib import Path
 
 from omegaconf import OmegaConf
@@ -81,6 +82,18 @@ def _vendored_cudagym_version() -> str:
     return parts[0]
 
 
+def parse_extra_config_opts(extra_config_opts: str) -> list[str]:
+    """Split ``--extra-config-opts`` into dotlist overrides for the submit-time merge.
+
+    ``shlex.split`` honors shell quoting, so a quoted value containing spaces
+    stays one override instead of being silently split in half. Leading ``+``
+    prefixes are stripped because OmegaConf's ``from_dotlist`` knows no hydra
+    prefixes; items without ``=`` (e.g. stray flags) carry no override and are
+    skipped.
+    """
+    return [opt.lstrip("+") for opt in shlex.split(extra_config_opts) if "=" in opt]
+
+
 def launch_jobs(
     ssh_tunnel, code_upload_path, interactive: bool = False, num_jobs: int = 1
 ):
@@ -116,7 +129,7 @@ def main():
         "--config",
         type=str,
         default="grpo_cuda_qwen3-8b.yaml",
-        choices=get_available_configs(CONFIG_PATH, "grpo*.yaml", return_stems=False),
+        choices=get_available_configs(CONFIG_PATH, "grpo*.yaml"),
     )
     parser.add_argument(
         "--cluster",
@@ -216,30 +229,36 @@ def main():
     # `++env.cudagym.b200.hosting.kind=colocated` changes the RESOLVED hosting,
     # not just the training-time config.
     recipe_cfg = load_recipe_merged(CONFIG_PATH / args.config)
+    cli_overrides = parse_extra_config_opts(args.extra_config_opts)
+    if cli_overrides:
+        recipe_cfg = OmegaConf.merge(recipe_cfg, OmegaConf.from_dotlist(cli_overrides))
 
     # Container mode needs BOTH sides: the SolSwarm overlay in the recipe and
     # the image-path flag (the grpo.sh enroot plumbing). A mismatch otherwise
     # shows up only at agent-server startup, minutes into the job. The overlay
     # is recognized by its config-path name because the Gym-side YAML is
-    # merged by Gym, not here.
-    gym_config_paths = [str(p) for p in (OmegaConf.select(recipe_cfg, "env.nemo_gym.config_paths") or [])]
-    is_container_mode = any("cudagym_cuda_agent_solswarm" in p for p in gym_config_paths)
+    # merged by Gym, not here. This gate runs AFTER the --extra-config-opts
+    # merge above, so an override that adds or removes the overlay faces the
+    # same checks as a recipe that declares it.
+    gym_config_paths = [
+        str(p)
+        for p in (OmegaConf.select(recipe_cfg, "env.nemo_gym.config_paths") or [])
+    ]
+    is_container_mode = any(
+        "cudagym_cuda_agent_solswarm" in p for p in gym_config_paths
+    )
     if args.enroot_agent_image and not is_container_mode:
         raise SystemExit(
-            "❌ --enroot-agent-image is set, but the recipe's env.nemo_gym.config_paths does not "
-            "include cudagym_cuda_agent_solswarm.yaml — nothing in this job runs agent containers."
+            "❌ --enroot-agent-image is set, but the merged config's env.nemo_gym.config_paths "
+            "(defaults chain + --extra-config-opts) does not include "
+            "cudagym_cuda_agent_solswarm.yaml — nothing in this job runs agent containers."
         )
     if is_container_mode and not args.enroot_agent_image:
         raise SystemExit(
-            "❌ the recipe is container mode (cudagym_cuda_agent_solswarm.yaml): each rollout runs "
-            "inside a real agent-image instance, so --enroot-agent-image <cluster .sqsh path> is "
-            "required — without it the agent server fails its startup validation."
+            "❌ the merged config is container mode (cudagym_cuda_agent_solswarm.yaml): each rollout "
+            "runs inside a real agent-image instance, so --enroot-agent-image <cluster .sqsh path> "
+            "is required — without it the agent server fails its startup validation."
         )
-    cli_overrides = [
-        opt.lstrip("+") for opt in args.extra_config_opts.split() if "=" in opt
-    ]
-    if cli_overrides:
-        recipe_cfg = OmegaConf.merge(recipe_cfg, OmegaConf.from_dotlist(cli_overrides))
     # Whether the recipe drives the agentic (NeMo-Gym) path: it changes the
     # hosting rules here and the runner + uv extras below.
     uses_nemo_gym = bool(
@@ -307,6 +326,32 @@ def main():
     output_dir = Path(cluster_config["paths"]["output"]) / args.exp_name
     code_upload_path = output_dir / "code"
     ssh_tunnel = SSHTunnel(cluster_config["hostname"])
+    # Container-mode preflight over the fresh tunnel, before the (slow) code
+    # upload: a typo'd image path otherwise costs a full allocation and bringup
+    # before the agent server fails its startup validation.
+    if is_container_mode:
+        rc, _, _ = ssh_tunnel.run_command(
+            f"test -f {shlex.quote(args.enroot_agent_image)}"
+        )
+        if rc != 0:
+            raise SystemExit(
+                f"❌ --enroot-agent-image {args.enroot_agent_image} is not a file on "
+                f"{cluster_config['hostname']} (checked with `test -f` over SSH). Each "
+                f"rollout extracts this squashfs, so the job would only fail at "
+                f"agent-server startup, after full allocation."
+            )
+        rc, _, _ = ssh_tunnel.run_command("command -v enroot")
+        if rc != 0:
+            # Only a warning: what container mode actually needs is enroot on the
+            # COMPUTE nodes (grpo.sh bind-mounts the login node's /usr/bin/enroot*
+            # into the training container, and the compute nodes provide the same
+            # paths); the login node is a proxy for that requirement.
+            print(
+                "⚠️  no `enroot` on the login node's PATH. Container-mode rollouts need "
+                "the enroot binaries on the compute nodes; the login node is only a "
+                "proxy for that requirement, so continuing — but if the compute nodes "
+                "lack /usr/bin/enroot*, the job will fail."
+            )
     package_code(ssh_tunnel, code_upload_path, skip_commit_check=args.skip_commit_check)
 
     # Per-entry resolved endpoint URLs ride into the training config as ++overrides
@@ -337,19 +382,13 @@ def main():
     sbatch_script = SBATCH_TEMPLATE_PATH.read_text()
     # Some clusters have different gpu hw and node topology so include those overrides in the config
     extra_config_opts = (
-        (
-            args.extra_config_opts
-            + " "
-            + cluster_config["extra_config_opts"]
-            + f" +cluster.host={args.cluster}"  # add information about the name of the current job's cluster
-            + f" +cluster.sku={cluster_config['sku']}"  # add information about the GPU SKU of the current job's cluster
-            + f" +cluster.endpoint_hostname={cluster_config['hostname']}"  # add information about the hostname of the current job's login node for the CudaGym environment
-            + " "
-            + " ".join(
-                remote_env_extra_opts
-            )  # add information about the remote environment sku
-        ).strip()
-    )
+        args.extra_config_opts
+        + " "
+        + cluster_config["extra_config_opts"]
+        + " "
+        # The per-entry resolved ++server_url overrides from hosting resolution.
+        + " ".join(remote_env_extra_opts)
+    ).strip()
 
     # Pick the runner + uv extras from the recipe: the NeMo-Gym agentic path
     # uses a different driver script and needs the nemo_gym extra on top of atlas.

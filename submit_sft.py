@@ -86,7 +86,7 @@ def main():
         "--config",
         type=str,
         default="sft_cuda_qwen3-8b.yaml",
-        choices=get_available_configs(CONFIG_PATH, "sft*.yaml", return_stems=False),
+        choices=get_available_configs(CONFIG_PATH, "sft*.yaml"),
     )
     parser.add_argument(
         "--cluster",

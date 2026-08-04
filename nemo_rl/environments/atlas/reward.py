@@ -56,15 +56,17 @@ def get_reward(
     if not (result.formatted and result.correctness):
         return 0.0
 
-    reward = weights.get("correctness", 0.0)
-    perf_weight = weights.get("performance", 0.0)
+    # Hard-indexed like normalize_performance_reward's parameters: a missing
+    # weight or fallback flag is a config bug, not 0.0/True.
+    reward = weights["correctness"]
+    perf_weight = weights["performance"]
     # Anchored row: sol_score is the perf term (with human-best-only anchors it
     # already holds the degraded bounded speedup-over-human-best).
     if result.sol_score >= 0.0:
         reward += perf_weight * result.sol_score
     # Anchor-less row with a measured eager speedup: log-normalized fallback,
     # when the config allows it.
-    elif result.speedup != -1.0 and perf_reward_config.get("allow_speedup_fallback", True):
+    elif result.speedup != -1.0 and perf_reward_config["allow_speedup_fallback"]:
         reward += normalize_performance_reward(
             result.speedup,
             scale=perf_weight,

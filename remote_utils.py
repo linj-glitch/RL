@@ -135,10 +135,6 @@ class SSHTunnel:
         """Copy a local file to the remote host with ``scp``."""
         _run(self._scp_base() + [local_path, f"{self._dest()}:{remote_path}"])
 
-    def get_file(self, remote_path: str, local_path: str) -> None:
-        """Copy a remote file to the local machine with ``scp``."""
-        _run(self._scp_base() + [f"{self._dest()}:{remote_path}", local_path])
-
 
 def check_for_uncommitted_changes():
     """Raise if the repository or any submodule has uncommitted changes."""
@@ -265,11 +261,9 @@ def get_available_clusters(cluster_config_dir: Path) -> list[str]:
     return [p.stem for p in cluster_config_dir.glob("*.yaml")]
 
 
-def get_available_configs(
-    config_dir: Path, glob_pattern: str, return_stems: bool = False
-) -> list[str]:
-    """List config files under a directory by a glob pattern."""
-    return [p.stem if return_stems else p.name for p in config_dir.glob(glob_pattern)]
+def get_available_configs(config_dir: Path, glob_pattern: str) -> list[str]:
+    """List config file names under a directory by a glob pattern."""
+    return [p.name for p in config_dir.glob(glob_pattern)]
 
 
 def load_cluster_config(cluster_config_dir: Path, cluster_name: str) -> dict:
@@ -303,21 +297,27 @@ def validate_cluster_paths(paths: dict) -> None:
 
 
 def fill_template(sbatch_script: str, var_name: str, value) -> str:
-    """Replace every ``DEFAULT_<VAR>`` token in the sbatch script text with a value.
+    r"""Replace every ``DEFAULT_<VAR>`` token in the sbatch script text with a value.
 
     Matching is token-exact: a trailing negative lookahead keeps
     ``DEFAULT_ARTIFACTS`` from also matching the prefix of
     ``DEFAULT_ARTIFACTS_DIR``. ``None`` renders as an empty quoted string
     rather than the literal ``None``; ints and floats are inserted bare; every
-    other value (str, Path, ...) is double-quoted.
+    other value (str, Path, ...) is single-quoted, with embedded single quotes
+    escaped as ``'\''``, so the job shell reads the value byte-for-byte — a
+    ``$``, backtick, or ``"`` in e.g. a secret is never expanded. No template
+    slot relies on job-shell expansion: cluster/container paths arrive fully
+    resolved from the cluster YAML, and EXTRA_CONFIG_OPTS was already expanded
+    by the submitting shell.
     """
     var = var_name.upper()
     if value is None:
-        value_str = '""'
+        value_str = "''"
     elif isinstance(value, (int, float)) and not isinstance(value, bool):
         value_str = str(value)
     else:
-        value_str = f'"{value}"'
+        escaped = str(value).replace("'", "'\\''")
+        value_str = f"'{escaped}'"
     return re.sub(
         rf"DEFAULT_{re.escape(var)}(?![A-Za-z0-9_])",
         lambda _m: value_str,

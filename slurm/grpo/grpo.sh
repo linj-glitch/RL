@@ -147,9 +147,19 @@ if [ -n "$CUDA_AGENT_ENROOT_IMAGE" ]; then
     # enroot's runtime exec's sibling helper binaries by bare name
     # (enroot-nsenter, enroot-mount, enroot-switchroot, ...), so every
     # /usr/bin/enroot* file must ride along, not just the launcher.
+    _enroot_bins_found=0
     for _enroot_bin in /usr/bin/enroot*; do
-        [ -e "$_enroot_bin" ] && MOUNTS="$MOUNTS,$_enroot_bin:$_enroot_bin"
+        if [ -e "$_enroot_bin" ]; then
+            MOUNTS="$MOUNTS,$_enroot_bin:$_enroot_bin"
+            _enroot_bins_found=1
+        fi
     done
+    # An unmatched glob would silently bind nothing and the agent server would
+    # only fail at startup, minutes into the allocation — refuse to submit.
+    if [ "$_enroot_bins_found" -eq 0 ]; then
+        echo "ERROR: container mode is requested (CUDA_AGENT_ENROOT_IMAGE is set) but /usr/bin/enroot* matches no file on this node, so no enroot binaries can be bind-mounted into the training container. Install enroot or submit without --enroot-agent-image." >&2
+        exit 1
+    fi
     export MOUNTS
     export SETUP_COMMAND="${SETUP_COMMAND} && (command -v gawk >/dev/null && command -v unsquashfs >/dev/null || (apt-get update -qq && apt-get install -y -qq gawk squashfs-tools))"
     # Node-local scratch for the extracted image: a rootfs is hundreds of
@@ -209,6 +219,10 @@ fi
 SBATCH_ARGS+=(
     ray.sub
 )
+
+# Slurm does not create the --output directory; without it the job dies
+# immediately and leaves no log behind.
+mkdir -p "${BASE_LOG_DIR}"
 
 # Submit, pulling the job id out of sbatch's "Submitted batch job <id>" line.
 JOB_ID=$(sbatch ${SBATCH_ARGS[@]} | awk '{print $4}')

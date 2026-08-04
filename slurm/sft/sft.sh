@@ -115,6 +115,10 @@ SBATCH_ARGS+=(
     ray.sub
 )
 
+# Slurm does not create the --output directory; without it the job dies
+# immediately and leaves no log behind.
+mkdir -p "${BASE_LOG_DIR}"
+
 JOB_ID=$(sbatch ${SBATCH_ARGS[@]} | awk '{print $4}')
 
 echo "Submitted batch job ${JOB_ID}"

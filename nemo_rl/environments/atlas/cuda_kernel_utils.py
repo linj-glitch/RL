@@ -357,7 +357,16 @@ def aggregate_kernel_metrics(records: list[dict[str, Any]]) -> dict[str, float]:
         averaged over CORRECT records only, dropping ``-1.0`` sentinels so anchorless or
         incorrect samples don't drag the mean toward zero;
       * ``perf_ref_fallback_rate`` — fraction of correct records whose performance reward
-        fell back to speedup-over-ref for lack of a SOL/human-best anchor (``sol_score < 0``).
+        fell back to speedup-over-ref for lack of a SOL/human-best anchor (``sol_score < 0``);
+      * ``submission_rate`` — fraction of records that recorded at least one scored
+        submission (``n_submissions > 0``);
+      * ``eval_error_rate`` — fraction of records whose ``evaluation_error`` is non-empty
+        (submissions lost to eval-infrastructure failures, expired state, malformed rows).
+
+    ``submission_rate`` and ``eval_error_rate`` read fields only the agentic path's
+    verify response carries (the Gym cudagym resources server), so each is emitted
+    only when at least one record has its field; single-turn records lack both and
+    their metric output is unchanged.
 
     This is the single source of truth for these metrics: the single-turn env
     (``cudagym_environment.CudaGymEnvironment.global_post_process_and_metrics``)
@@ -391,5 +400,17 @@ def aggregate_kernel_metrics(records: list[dict[str, Any]]) -> dict[str, float]:
             if ok and float(r.get("sol_score", -1.0)) < 0.0
         )
         metrics["perf_ref_fallback_rate"] = n_fallback / n_correct
+
+    # Failure-class observability for the agentic path (see the docstring):
+    # without these, submissions lost to infrastructure and rollouts that never
+    # submitted both just read as correctness going to 0.
+    if any("n_submissions" in r for r in records):
+        metrics["submission_rate"] = sum(
+            1 for r in records if int(r.get("n_submissions") or 0) > 0
+        ) / len(records)
+    if any("evaluation_error" in r for r in records):
+        metrics["eval_error_rate"] = sum(
+            1 for r in records if r.get("evaluation_error")
+        ) / len(records)
 
     return metrics

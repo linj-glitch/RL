@@ -154,7 +154,6 @@ env:
     # Gym server ports inherit the default [5000, 5999) — the range ray.sub's
     # port layout reserves for them (the GB200 ephemeral range starts at 9000,
     # so an override up there risks intermittent binds).
-    rollout_max_attempts_to_avoid_lp_nan: 1   # 1 = no retries on NaN-logprob rollouts (read + popped by NeMo-RL, not Gym)
     is_trajectory_collection: false           # true = dump rollouts instead of training (read + popped by NeMo-RL, not Gym)
     config_paths:
     - responses_api_models/vllm_model/configs/vllm_model_for_training.yaml  # required, *_for_training

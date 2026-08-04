@@ -21,7 +21,7 @@
 # Eval-side CudaGym servers use a SEPARATE image (slurm/clusters/*.yaml
 # paths.cudagym_container) built from the cudagym repo's docker/<profile>
 # (sol_execbench_external or kernel_factory). Images predating
-# cudagym.servers.serve won't work — rebuild from thirdparty/cudagym.
+# cudagym.servers.serve won't work — rebuild from 3rdparty/cudagym.
 
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}

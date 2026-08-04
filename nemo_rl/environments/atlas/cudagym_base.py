@@ -69,8 +69,9 @@ class BaseCudaEvaluator(ABC):
         failures (bad format, failed build, evaluation errors) are captured on
         the result rather than raised, so a single malformed or non-compiling
         completion cannot fail the whole batch. Malformed problem *metadata*
-        (a missing or unknown ``language``) does raise: that is a dataset bug,
-        not a model output, and it should stop the run.
+        (a missing or unknown ``language``, a missing
+        ``destination_passing_style``) does raise: that is a dataset bug, not a
+        model output, and it should stop the run.
         """
         assert len(prompts) == len(completions) == len(metadata_list), (
             "evaluate_batch inputs must have equal length"
@@ -84,7 +85,11 @@ class BaseCudaEvaluator(ABC):
             """Evaluate one (prompt, completion, problem) triple onto ``results[idx]``."""
             result = results[idx]
             meta = metadata_list[idx]
+            # Hard-indexed like language: the data processor always writes the
+            # key, so a missing one is a dataset bug and should stop the run,
+            # not read as the model's format error.
             language = meta["language"]
+            destination_passing_style = meta["destination_passing_style"]
             fence_lang = fence_lang_for(language)
 
             # Stage 1 (format): parse <think>+fenced code -> typed Solution.
@@ -120,9 +125,7 @@ class BaseCudaEvaluator(ABC):
                     language=language,
                     definition_name=definition.name,
                     target_hardware=row_sku or self.eval_config.sku,
-                    destination_passing_style=meta.get(
-                        "destination_passing_style", True
-                    ),
+                    destination_passing_style=destination_passing_style,
                 )
             except Exception as e:  # noqa: BLE001 - any parse/validation error is a format error
                 result.metadata["format_error"] = f"failed to build solution: {e}"

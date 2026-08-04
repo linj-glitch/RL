@@ -9,7 +9,7 @@ paths:
   cache: ${paths.workspace}/.cache
   # the nemorl image needs the atlas overlay (docker/Dockerfile.atlas)
   container: ${paths.workspace}/containers/nemorl-atlas.sqsh
-  # build from thirdparty/cudagym docker/<profile>; pre-1.9 images lack cudagym.servers.serve
+  # build from 3rdparty/cudagym docker/<profile>; pre-1.9 images lack cudagym.servers.serve
   cudagym_container: ${paths.workspace}/containers/cudagym-1.9.sqsh
   models: ${paths.workspace}/models
   output: ${paths.workspace}/experiments/nemorl

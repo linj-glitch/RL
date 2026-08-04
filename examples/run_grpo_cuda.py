@@ -197,7 +197,10 @@ def cudagym_data_processor(
     matching the built-in processors in ``nemo_rl/data/processors.py``.
     """
     language = datum_dict["language"]
-    destination_passing_style = datum_dict.get("destination_passing_style", True)
+    # Hard-indexed: format_cuda_problem always writes the key, and a wrong
+    # guess would render a prompt whose output convention the evaluation
+    # then rejects on every workload.
+    destination_passing_style = datum_dict["destination_passing_style"]
     # definition/workloads are baked as JSON strings by the data layer; parse
     # them back here.
     definition = _parse_json_field(datum_dict, "definition")

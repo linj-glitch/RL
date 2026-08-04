@@ -61,6 +61,9 @@ _EXEC_FAIL = {
     EvaluationStatus.TIMEOUT,
     EvaluationStatus.INVALID_REFERENCE,
 }
+# CUDAGRAPH_INCOMPATIBLE (numerically correct but not graph-capturable) is
+# deliberately excluded: the agentic overlay bans CUDA graphs, so the status
+# should not occur, and a kernel that trips it anyway earns 0.
 _CORRECT_OK = {EvaluationStatus.PASSED, EvaluationStatus.CORRECTNESS_PASSED}
 
 
@@ -156,9 +159,11 @@ async def evaluate_solution(
     ``workflows.evaluate`` compiles the solution (and the reference, if it ships
     native sources), runs ``eval_driver`` on the GPU server over every workload,
     and parses the per-workload results into a ``Trace``. Raises
-    ``CudaGymCompilationError`` if the solution fails to build and
-    ``CudaGymExecutionError`` if the GPU job itself crashes; per-workload
-    correctness/runtime failures are returned inside the ``Trace`` instead.
+    ``CudaGymCompilationError`` if the solution fails to build,
+    ``CudaGymExecutionError`` if the GPU job itself crashes, and
+    ``RuntimeError`` if the trace is missing workloads (a truncated
+    evaluation); per-workload correctness/runtime failures are returned inside
+    the ``Trace`` instead.
     """
     # Empty benchmark_config means no overrides: pass None so the server
     # applies its defaults.
@@ -169,7 +174,7 @@ async def evaluate_solution(
     )
     # GPU timeout scales with the workload count (the SDK default is per-run).
     timeout = float(eval_config.execution_timeout_per_trial * max(1, len(workloads)))
-    return await workflows.evaluate(
+    trace = await workflows.evaluate(
         client,
         solution=solution,
         definition=definition,
@@ -178,6 +183,17 @@ async def evaluate_solution(
         compile_timeout=float(eval_config.compilation_timeout),
         timeout=timeout,
     )
+    # The eval driver emits one workload trace per workload even for run-level
+    # failures, so a shortfall means the evaluation was truncated upstream.
+    # Scoring the returned subset would let a partial run earn full credit;
+    # the caller records this as an evaluation (infrastructure) error.
+    if len(trace.workload_traces) != len(workloads):
+        raise RuntimeError(
+            f"cudagym evaluation returned {len(trace.workload_traces)} workload "
+            f"traces for {len(workloads)} workloads; refusing to score a "
+            "partial evaluation"
+        )
+    return trace
 
 
 def update_result_from_trace(
@@ -252,9 +268,10 @@ def update_result_from_trace(
     # SOL score (PREFERRED — what solswarm/KFB reward on): per workload, anchored at
     # human-best (0.5) and speed-of-light (1.0). ``sol_anchors`` maps workload uuid ->
     # {"human_best_latency_ms", "sol_latency_ms"}. Only workloads with a positive
-    # human-best contribute; ``sol_latency_ms`` may be 0 (then ``sol_score`` degrades
-    # to a bounded speedup-over-human-best). With no usable anchors sol_score stays
-    # -1 and the reward falls back to the eager speedup above.
+    # human-best AND a positive measured latency contribute; ``sol_latency_ms`` may
+    # be 0 (then ``sol_score`` degrades to a bounded speedup-over-human-best). With
+    # no usable anchors sol_score stays -1 and the reward falls back to the eager
+    # speedup above.
     if sol_anchors:
         scores: list[float] = []
         human_best_speedups: list[float] = []
@@ -270,11 +287,14 @@ def update_result_from_trace(
             if not anchor or human_best <= 0.0:
                 continue
             t_k = float(evaluation.performance.latency_ms)
+            # latency_ms 0.0 is the SDK's unmeasured default; scoring it would
+            # award the maximum performance term.
+            if t_k <= 0:
+                continue
             scores.append(
                 sol_score(t_k, human_best, float(anchor.get("sol_latency_ms") or 0.0))
             )
-            if t_k > 0:
-                human_best_speedups.append(human_best / t_k)
+            human_best_speedups.append(human_best / t_k)
         if scores:
             result.sol_score = sum(scores) / len(
                 scores

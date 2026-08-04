@@ -207,8 +207,8 @@ def test_missing_modal_auth_env_fails(tmp_path, monkeypatch):
 
 
 def test_bare_server_url_is_not_honored(tmp_path):
-    """The legacy shim is gone: a `server_url:` without `hosting:` errors, and
-    the error names the unhonored field so migration is one obvious edit."""
+    """A bare `server_url:` without `hosting:` errors, and the error names the
+    unhonored field so the fix is one obvious edit."""
     with pytest.raises(HostingError, match="server_url.*not honored"):
         _resolve(
             {"b200": {"sku": "B200", "server_url": "http://legacy:8000"}},
@@ -391,6 +391,29 @@ def test_slurm_service_fields_and_warning(tmp_path):
             },
             ep_dir=_endpoints_dir(tmp_path),
         )
+
+
+def test_agentic_refuses_slurm_service_hosting(tmp_path):
+    """slurm-service hosting delivers its URL only as a ++server_url override,
+    which the NeMo-Gym servers never read (they take CUDAGYM_UNIFIED_SERVER_URL,
+    filled only by kind=endpoint), so an agentic recipe declaring it must be
+    refused with the working alternatives named."""
+    entries = {
+        "svc": {
+            "sku": "H100",
+            "hosting": {
+                "kind": "slurm-service",
+                "service_cluster": "cw-dfw-cs-001",
+                "num_service_nodes": 2,
+                "endpoint_port": 9100,
+            },
+        }
+    }
+    with pytest.raises(HostingError, match="kind: endpoint.*colocated"):
+        _resolve(entries, agentic=True, ep_dir=_endpoints_dir(tmp_path))
+    # The same declaration stays valid for single-turn (non-agentic) recipes.
+    res = _resolve(entries, agentic=False, ep_dir=_endpoints_dir(tmp_path))
+    assert res.slurm_services[0].name == "svc"
 
 
 def test_agentic_requires_exactly_one_entry(tmp_path, modal_env):
@@ -589,7 +612,7 @@ def test_ensure_vendored_cudagym_bootstraps_sys_path(tmp_path, monkeypatch):
     src = tmp_path / "3rdparty" / "cudagym" / "src"
     (src / "cudagym").mkdir(parents=True)
     (src / "cudagym" / "__init__.py").write_text("")
-    # First probe fails (no venv), the retry after the path insert succeeds.
+    # The first import check fails (no venv); the retry after the path insert succeeds.
     outcomes = iter(["No module named 'cudagym'", None])
     monkeypatch.setattr(hosting_mod, "_cudagym_import_error", lambda: next(outcomes))
     try:

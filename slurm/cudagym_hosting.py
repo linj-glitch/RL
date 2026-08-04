@@ -36,7 +36,8 @@ reported GPU is checked against the declared SKU; in-allocation servers (which
 don't exist yet at submit) get the same check at runtime init
 (``verify_endpoint_sku``). ``slurm-service`` entries stand up a CudaGym service
 job on ANOTHER Slurm cluster at submit time and chain login-node proxies back
-to this one (``slurm.deploy_remote_cudagym``).
+to this one (``slurm.deploy_remote_cudagym``); agentic (NeMo-Gym) recipes
+refuse this kind because the deployed URL is not plumbed to the Gym servers.
 
 ``hosting: {kind: endpoint}`` with neither ``endpoint`` nor ``url`` resolves
 from ``CUDAGYM_UNIFIED_SERVER_URL`` / ``CUDAGYM_URL`` (the environment-variable
@@ -411,13 +412,29 @@ def resolve_hosting(
     endpoints = [e for e in resolved if e.kind == "endpoint"]
     slurm_services = [e for e in resolved if e.kind == "slurm-service"]
 
-    # Agentic (NeMo-Gym) rules: exactly one entry, and in-allocation hosting only
-    # warns — usable for smoke tests, wrong for timed rewards.
+    # Agentic (NeMo-Gym) rules: exactly one entry, slurm-service hosting is
+    # refused (its URL never reaches the Gym servers), and in-allocation
+    # hosting only warns — usable for smoke tests, wrong for timed rewards.
     if uses_nemo_gym:
         if len(resolved) != 1:
             raise HostingError(
                 f"agentic (NeMo-Gym) recipes must declare exactly one env.cudagym entry "
                 f"(the resources server speaks one endpoint); got {len(resolved)}."
+            )
+        if slurm_services:
+            # The deployed service's URL travels only as a
+            # ++env.cudagym.<name>.server_url training-config override, which
+            # only the single-turn env actor reads; the NeMo-Gym servers take
+            # their endpoint from CUDAGYM_UNIFIED_SERVER_URL, which only
+            # kind=endpoint entries fill. Allowing the combination would bring
+            # the job up with a dead evaluation endpoint.
+            raise HostingError(
+                f"env.cudagym.{slurm_services[0].name}: hosting kind 'slurm-service' cannot "
+                f"serve an agentic (NeMo-Gym) recipe — the deployed service URL is not "
+                f"plumbed to the Gym servers (they read CUDAGYM_UNIFIED_SERVER_URL, which "
+                f"only kind=endpoint fills), so kernel evaluation would silently point at "
+                f"nothing. Use `kind: endpoint` (an already-running eval server) or "
+                f"in-allocation hosting (`kind: colocated` / `kind: disjoint`) instead."
             )
         if in_alloc:
             warnings.append(

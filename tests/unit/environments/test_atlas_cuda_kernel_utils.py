@@ -126,3 +126,56 @@ def test_missing_keys_default_to_sentinels():
     assert metrics["avg_speedup_over_ref"] == 0.0
     assert metrics["avg_sol_score"] == 0.0
     assert metrics["perf_ref_fallback_rate"] == 1.0
+
+
+def test_submission_and_eval_error_rates_from_agentic_records():
+    # Agentic records (the Gym verify response) always carry n_submissions and
+    # evaluation_error; the rates separate "never submitted" and "submissions
+    # lost to infrastructure" from correctness going to 0.
+    metrics = aggregate_kernel_metrics(
+        [
+            {
+                "correctness": True,
+                "speedup": 2.0,
+                "human_best_speedup": 1.5,
+                "sol_score": 0.8,
+                "n_submissions": 2,
+                "evaluation_error": None,
+            },
+            {
+                "correctness": False,
+                "speedup": -1.0,
+                "human_best_speedup": -1.0,
+                "sol_score": -1.0,
+                "n_submissions": 0,
+                "evaluation_error": "1 of 1 submissions lost to evaluation-infrastructure failures: boom",
+            },
+            {
+                "correctness": False,
+                "speedup": -1.0,
+                "human_best_speedup": -1.0,
+                "sol_score": -1.0,
+                "n_submissions": 0,
+                "evaluation_error": None,  # submitted nothing, no infra failure
+            },
+        ]
+    )
+    assert metrics["submission_rate"] == 1 / 3
+    assert metrics["eval_error_rate"] == 1 / 3
+
+
+def test_submission_metrics_are_omitted_for_single_turn_records():
+    # Single-turn records carry neither field, so the two agentic metrics are
+    # not emitted (rather than logging a misleading constant 0).
+    metrics = aggregate_kernel_metrics(
+        [
+            {
+                "correctness": True,
+                "speedup": 1.0,
+                "human_best_speedup": 1.0,
+                "sol_score": 0.5,
+            }
+        ]
+    )
+    assert "submission_rate" not in metrics
+    assert "eval_error_rate" not in metrics

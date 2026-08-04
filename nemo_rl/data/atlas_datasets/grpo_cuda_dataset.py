@@ -119,11 +119,14 @@ def format_cuda_problem(
         "task_name": chosen_task,
         "definition": data["definition"],
         "workloads": data["workloads"],
-        "language": data.get("language", "triton"),
+        # language and destination_passing_style are hard-indexed: the dataset
+        # builders always write them, and a silent default here would evaluate
+        # the row as something the builder never declared.
+        "language": data["language"],
         # Fall back to the chosen env's sku when the row doesn't pin hardware.
         "target_hardware": data.get("target_hardware")
         or getattr(task_to_env_config[chosen_task], "sku", None),
-        "destination_passing_style": data.get("destination_passing_style", True),
+        "destination_passing_style": data["destination_passing_style"],
         # Per-workload SOL/human-best anchors (JSON string) for the SOL-score reward.
         "sol_anchors": data.get("sol_anchors", "{}"),
     }
