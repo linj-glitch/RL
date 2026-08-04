@@ -430,10 +430,13 @@ def main():
     # ray head/worker containers so the driver can reach the remote endpoint.
     if hosting.in_allocation is not None:
         paths = cluster_config["paths"]
-        cudagym_container = paths.get("cudagym_container", paths.get("container"))
+        # No fallback to the training container: it has no cudagym server
+        # runtime, so the in-allocation servers would fail long after submit.
+        cudagym_container = paths.get("cudagym_container")
         if not cudagym_container:
-            raise ValueError(
-                "Cluster config missing container path(s); need 'container' or 'cudagym_container'."
+            raise SystemExit(
+                f"❌ cluster '{args.cluster}' declares no paths.cudagym_container, which "
+                f"{hosting.in_allocation.kind} hosting needs for its evaluation servers."
             )
         # The image must carry the server runtime deps MATCHING the vendored SDK
         # (the checkout is served via PYTHONPATH; its deps come from the image) —

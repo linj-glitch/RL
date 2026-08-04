@@ -33,7 +33,7 @@ from slurm.cudagym_hosting import (
 )
 
 CLUSTER_H100 = {"host": "aws-iad-cs-002", "sku": "h100"}
-CLUSTER_GB200 = {"host": "aws-dfw-cs-001", "sku": "gb200"}
+CLUSTER_GB200 = {"host": "cluster-gb200", "sku": "gb200"}
 
 
 def _endpoints_dir(tmp_path):
@@ -366,7 +366,7 @@ def test_slurm_service_fields_and_warning(tmp_path):
                 "sku": "H100",
                 "hosting": {
                     "kind": "slurm-service",
-                    "service_cluster": "aws-dfw-cs-001",
+                    "service_cluster": "cw-dfw-cs-001",
                     "num_service_nodes": 2,
                     "endpoint_port": 9100,
                 },

@@ -17,12 +17,13 @@ Usage:
     python submit_sft.py --exp-name <exp-name> --config <config-path> --cluster <cluster-name>
 
     # atlas c1 32b
-    python submit_sft.py --exp-name atlas_c1_32b --config sft_megatron_qwen3-32b.yaml --cluster cw-dfw-cs-001 --num-nodes 16
+    python submit_sft.py --exp-name atlas_c1_32b --config sft_cuda_qwen3-32b.yaml --cluster cw-dfw-cs-001 --num-nodes 16
 
 """
 
 import argparse
 import os
+import re
 from pathlib import Path
 
 from remote_utils import (
@@ -62,10 +63,19 @@ def launch_jobs(
             launch_cmd += " -i"
 
         print(f"🚀 Running sbatch script ({i + 1}/{num_jobs}): {launch_cmd}")
-        _, stdout, stderr = ssh_tunnel.run_command(launch_cmd)
+        rc, stdout, stderr = ssh_tunnel.run_command(launch_cmd)
         print(stdout)
         if stderr:
-            raise RuntimeError("Error running sbatch script: " + stderr)
+            # Submit-plugin advisories (e.g. the stale-data quota notice on
+            # cw-dfw) arrive on stderr even when sbatch succeeds, so stderr
+            # alone is not a failure signal.
+            print(f"⚠️  sbatch stderr: {stderr.strip()}")
+        # sft.sh ends with `Submitted batch job <id>`; an empty id means
+        # sbatch itself failed even if the wrapper exited 0.
+        if rc != 0 or not re.search(r"Submitted batch job \d+", stdout):
+            raise RuntimeError(
+                f"Error running sbatch script (rc={rc}): {stderr.strip() or stdout.strip()}"
+            )
 
 
 def main():

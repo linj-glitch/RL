@@ -200,7 +200,7 @@ if [ -n "$SLURM_QOS" ]; then
         --qos=${SLURM_QOS} \
     )
 fi
-# EOS does not support --gpus-per-node argument
+# Clusters whose sbatch rejects --gpus-per-node set skip_gres in their cluster yaml.
 if [ -z "$SKIP_GRES_ARG" ]; then
     SBATCH_ARGS+=(
         --gpus-per-node=${GPUS_PER_NODE} \
