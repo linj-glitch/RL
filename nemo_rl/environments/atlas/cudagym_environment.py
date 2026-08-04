@@ -78,27 +78,25 @@ class CudaGymEnvironmentMetadata(TypedDict, total=False):
 
 @ray.remote  # pragma: no cover
 class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
-    def __init__(self, config: CudaGymEvalConfig | dict):
-        # Accept either a typed config or the raw YAML dict (env.cudagym.<sku>).
-        if isinstance(config, CudaGymEvalConfig):
-            self.eval_config = config
-        else:
-            from dataclasses import fields as dataclass_fields
+    def __init__(self, config: dict):
+        # The raw YAML dict (env.cudagym.<sku>) is the only calling convention:
+        # the driver passes the recipe mapping straight through Ray.
+        from dataclasses import fields as dataclass_fields
 
-            # Kwargs come from the dataclass itself, and unknown keys are
-            # REJECTED (the same class of typo that validate_benchmark_config
-            # catches one level down): a misspelled `reward_weight:` would
-            # otherwise be silently dropped and the run would train on
-            # defaults. `hosting` is the one submit-time-only key
-            # (slurm/cudagym_hosting.py reads it; the actor never does).
-            known = {f.name for f in dataclass_fields(CudaGymEvalConfig)}
-            unknown = set(config) - known - {"hosting"}
-            if unknown:
-                raise ValueError(
-                    f"unknown env.cudagym keys {sorted(unknown)}; "
-                    f"valid keys: {sorted(known)} (+ submit-time-only 'hosting')"
-                )
-            self.eval_config = CudaGymEvalConfig(**{k: v for k, v in config.items() if k in known})
+        # Kwargs come from the dataclass itself, and unknown keys are
+        # REJECTED (the same class of typo that validate_benchmark_config
+        # catches one level down): a misspelled `reward_weight:` would
+        # otherwise be silently dropped and the run would train on
+        # defaults. `hosting` is the one submit-time-only key
+        # (slurm/cudagym_hosting.py reads it; the actor never does).
+        known = {f.name for f in dataclass_fields(CudaGymEvalConfig)}
+        unknown = set(config) - known - {"hosting"}
+        if unknown:
+            raise ValueError(
+                f"unknown env.cudagym keys {sorted(unknown)}; "
+                f"valid keys: {sorted(known)} (+ submit-time-only 'hosting')"
+            )
+        self.eval_config = CudaGymEvalConfig(**{k: v for k, v in config.items() if k in known})
 
         if not self.eval_config.sku:
             raise ValueError(
