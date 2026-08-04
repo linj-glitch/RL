@@ -153,7 +153,13 @@ def all_recipe_yaml_rel_paths():
     for recipe_path in glob.glob(
         os.path.join(recipes_dir, "**", "*.yaml"), recursive=True
     ):
-        all_recipes.append(recipe_path[len(recipes_dir) + 1 :])
+        rel_path = recipe_path[len(recipes_dir) + 1 :]
+        # Recipes under atlas/ are launched with submit_grpo.py/submit_sft.py on
+        # dedicated clusters, not through the tools/launch test suites, so they
+        # are exempt from the suite bookkeeping and its naming convention.
+        if rel_path.startswith("atlas" + os.sep):
+            continue
+        all_recipes.append(rel_path)
     return all_recipes
 
 
