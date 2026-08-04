@@ -24,6 +24,7 @@ Usage:
 import subprocess
 import argparse
 import os
+import re
 from pathlib import Path
 
 from omegaconf import OmegaConf
@@ -90,10 +91,19 @@ def launch_jobs(
             launch_cmd += " -i"
 
         print(f"🚀 Running sbatch script ({i + 1}/{num_jobs}): {launch_cmd}")
-        _, stdout, stderr = ssh_tunnel.run_command(launch_cmd)
+        rc, stdout, stderr = ssh_tunnel.run_command(launch_cmd)
         print(stdout)
         if stderr:
-            raise RuntimeError("Error running sbatch script: " + stderr)
+            # Submit-plugin advisories (e.g. the stale-data quota notice on
+            # cw-dfw) arrive on stderr even when sbatch succeeds, so stderr
+            # alone is not a failure signal.
+            print(f"⚠️  sbatch stderr: {stderr.strip()}")
+        # grpo.sh ends with `Submitted batch job <id>`; an empty id means
+        # sbatch itself failed even if the wrapper exited 0.
+        if rc != 0 or not re.search(r"Submitted batch job \d+", stdout):
+            raise RuntimeError(
+                f"Error running sbatch script (rc={rc}): {stderr.strip() or stdout.strip()}"
+            )
 
 
 def main():
