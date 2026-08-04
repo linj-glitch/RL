@@ -182,6 +182,7 @@ def main():
     )
     args = parser.parse_args()
 
+    # A removed hosting flag was passed: fail with the migration hint.
     if any(v is not None for v in (args.cudagym_mode, args.cudagym_num_nodes, args.cudagym_url)):
         parser.error(
             "--cudagym-mode/--cudagym-url/--cudagym-num-nodes were removed: hosting is now "
@@ -228,6 +229,8 @@ def main():
     ]
     if cli_overrides:
         recipe_cfg = OmegaConf.merge(recipe_cfg, OmegaConf.from_dotlist(cli_overrides))
+    # Whether the recipe drives the agentic (NeMo-Gym) path: it changes the
+    # hosting rules here and the runner + uv extras below.
     uses_nemo_gym = bool(
         OmegaConf.select(recipe_cfg, "env.should_use_nemo_gym", default=False)
     )
@@ -237,6 +240,7 @@ def main():
         )
     except HostingError as e:
         raise SystemExit(f"❌ {e}") from e
+    # Echo the resolved hosting table plus any validation warnings.
     print("🔎 CudaGym hosting:")
     for entry in hosting.entries:
         detail = f"kind={entry.kind}"
@@ -272,6 +276,7 @@ def main():
         try:
             payload = probe_endpoint(entry)
         except HostingError as e:
+            # Unreachable endpoint: the one failure --skip-endpoint-check may waive.
             if args.skip_endpoint_check:
                 print(f"⚠️  {e} (continuing: --skip-endpoint-check)")
                 continue

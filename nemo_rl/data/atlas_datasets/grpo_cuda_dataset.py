@@ -80,6 +80,7 @@ def _sample_task(
     pin that no configured environment serves raises here instead.
     """
     tasks = list(task_to_env_config)
+    # Pinned row: only environments whose sku matches may serve it.
     if target_hardware:
         tasks = [
             t
@@ -92,6 +93,7 @@ def _sample_task(
                 f"no configured env serves target_hardware={target_hardware!r} "
                 f"(envs: {list(task_to_env_config)})"
             )
+    # Weighted draw among the eligible environments.
     weights = [task_to_env_config[t].weight for t in tasks]
     if sum(weights) <= 0:
         raise ValueError(
@@ -156,6 +158,8 @@ def prepare_cuda_dataset(
             [Dataset.from_json(p) for p in val_json_file_paths]
         )
 
+    # Normalize each row and tag it with its evaluating env; remove_columns
+    # leaves only format_cuda_problem's output fields.
     format_fn = partial(format_cuda_problem, task_to_env_config=task_to_env_config)
     formatted_ds = original_ds.map(format_fn, remove_columns=original_ds.column_names)
     val_formatted_ds = (
@@ -258,6 +262,8 @@ def load_sol_anchors_from_problem_dir(problem_dir: str) -> dict[str, dict[str, f
     result = (json.loads(sol_path.read_text()) or {}).get("kernel_factory_result") or {}
     if not result.get("is_correct"):
         return {}
+    # Canonical (sorted-keys) axes JSON is the join key between per_workload
+    # entries and workload.jsonl rows.
     uuid_by_axes: dict[str, str] = {}
     for line in (pdir / "workload.jsonl").read_text().splitlines():
         if line.strip():
@@ -509,6 +515,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # Keep only directories holding both problem files; note the rest.
     dirs, skipped = [], []
     for p in args.problems:
         path = Path(p)
@@ -530,6 +537,8 @@ def main() -> None:
         destination_passing_style=args.destination_passing_style,
         sol_latencies_csv=args.sol_latencies_csv,
     )
+    # Re-read what was written and count rows carrying anchors — rows store
+    # sol_anchors as a JSON string, gym-seeds as a dict under verifier_metadata.
     anchored = 0
     with open(args.out, encoding="utf-8") as f:
         for line in f:

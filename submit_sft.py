@@ -124,6 +124,7 @@ def main():
     )
     args = parser.parse_args()
 
+    # Conversion jobs are short single jobs: force a 30-minute limit, no chaining.
     if args.convert:
         if args.num_jobs > 1:
             parser.error("Cannot specify --num-jobs when --convert is specified")
@@ -141,6 +142,7 @@ def main():
     code_upload_path = output_dir / "code"
     ssh_tunnel = SSHTunnel(cluster_config["hostname"])
     if args.convert is not None:
+        # Conversion reuses the code tree the training submit already uploaded.
         print("🔄 Skipping code upload for conversion job")
     else:
         package_code(
@@ -180,7 +182,7 @@ def main():
         "SLURM_ACCOUNT": cluster_config["account"],
         "SLURM_PARTITION": cluster_config["partition"],
         "SLURM_QOS": cluster_config.get("qos", ""),
-    } | {**cluster_config["paths"]}
+    } | {**cluster_config["paths"]}  # every paths.* key fills its DEFAULT_<KEY> token
 
     for k, v in sbatch_vars.items():
         sbatch_script = fill_template(

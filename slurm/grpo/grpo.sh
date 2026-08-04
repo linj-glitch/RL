@@ -61,6 +61,7 @@ export GPUS_PER_NODE=${GPUS_PER_NODE:-DEFAULT_GPUS_PER_NODE}
 export HF_HOME=${CACHE_PATH}/huggingface
 export OUTPUT_DIR=${OUTPUT_ROOT}/${EXP_NAME}
 
+# Set for clusters whose sbatch rejects --gpus-per-node (applied at the sbatch call).
 export SKIP_GRES_ARG=${SKIP_GRES_ARG:-DEFAULT_SKIP_GRES_ARG}
 
 # In disjoint mode the trailing CUDAGYM_NUM_NODES nodes host CudaGym and never
@@ -106,10 +107,15 @@ export COMMAND="uv run ${UV_EXTRAS} ${RUN_SCRIPT} \
     ${EXTRA_CONFIG_OPTS}
 "
 
+# This script runs from inside the uploaded code tree (`cd code && bash ../run.sh`),
+# so cwd is the code and its parent is the experiment output dir (logs, ckpts).
 cwd=$(pwd -P)
 cwd_parent=$(dirname $cwd)
 
+# Mount the experiment dir at its own path, the code tree also at /opt/nemo-rl,
+# plus the workspace, model, and dataset roots.
 export MOUNTS="$cwd_parent:$cwd_parent,$cwd:/opt/nemo-rl,$WORKSPACE_PATH:$WORKSPACE_PATH,$MODELS_PATH:/models,$DATASETS_PATH:/datasets"
+# Import the vendored cudagym SDK straight from the checkout on every node.
 export PYTHONPATH="$cwd/3rdparty/cudagym/src:${PYTHONPATH}"
 # The uploaded 3rdparty/cudagym tree has no .git, so setuptools-scm can't derive
 # its version when the venvs build it editable (uv atlas extra, Gym server
@@ -176,6 +182,8 @@ export SLURM_ACCOUNT=${SLURM_ACCOUNT:-DEFAULT_SLURM_ACCOUNT}
 export SLURM_PARTITION=${SLURM_PARTITION:-DEFAULT_SLURM_PARTITION}
 export SLURM_QOS=${SLURM_QOS:-DEFAULT_SLURM_QOS}
 
+# Assemble the sbatch arguments; ray.sub is the batch script. --dependency=singleton
+# queues repeat submissions of the same experiment (--num-jobs) back to back.
 SBATCH_ARGS=(
     --nodes=${NUM_NODES} \
     --account=${SLURM_ACCOUNT} \
@@ -201,6 +209,7 @@ SBATCH_ARGS+=(
     ray.sub
 )
 
+# Submit, pulling the job id out of sbatch's "Submitted batch job <id>" line.
 JOB_ID=$(sbatch ${SBATCH_ARGS[@]} | awk '{print $4}')
 
 echo "Submitted batch job ${JOB_ID}"

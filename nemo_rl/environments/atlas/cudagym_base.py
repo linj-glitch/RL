@@ -99,6 +99,7 @@ class BaseCudaEvaluator(ABC):
             except Exception as e:  # noqa: BLE001 - record the row problem verbatim
                 result.metadata["config_error"] = f"invalid problem row: {e}"
                 return
+            # Rest of stage 1: extract the fenced code and build the typed Solution.
             try:
                 code = get_code(completions[idx], fence_lang)
                 row_sku = meta.get("target_hardware")

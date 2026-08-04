@@ -104,6 +104,7 @@ def run_proxy(
     print(
         f"🌐 Starting proxy at http://{ssh_tunnel.host}:{port}, forwarding requests to {service_url_or_script} service"
     )
+    # --force kills any proxy a previous submit left listening on the port.
     base_cmd = f"cd {code_upload_path}/3rdparty/cudagym && ./deployments/multi_cluster/proxy.sh start"
     if mode == "service-url":
         cmd = f"{base_cmd} --service-url {service_url_or_script} --port {port} --force"
@@ -266,11 +267,14 @@ def deploy_remote_cudagym(
     )
 
     # Start proxy on current cluster
+    # Default upstream: the service cluster's login-node proxy, reached directly.
     service_url = f"http://{service_ssh.host}:{service_login_port}"
 
     # If the cluster requires a tunnel, start a persistent SSH tunnel to the
     # remote cluster's login node and point the proxy at it
     if submit_cluster_config.get("requires_proxy_tunnel"):
+        # Search upward from endpoint_port + 1 so the tunnel listener cannot
+        # collide with the port the submit-side proxy claims below.
         tunnel_port = _find_next_free_port(submit_ssh, start_port=endpoint_port + 1)
         start_ssh_tunnel(
             ssh=submit_ssh,

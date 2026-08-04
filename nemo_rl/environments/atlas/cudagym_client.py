@@ -160,6 +160,8 @@ async def evaluate_solution(
     ``CudaGymExecutionError`` if the GPU job itself crashes; per-workload
     correctness/runtime failures are returned inside the ``Trace`` instead.
     """
+    # Empty benchmark_config means no overrides: pass None so the server
+    # applies its defaults.
     config = (
         EvalConfig(**eval_config.benchmark_config)
         if eval_config.benchmark_config
@@ -199,6 +201,7 @@ def update_result_from_trace(
 
     evaluations = [wt.evaluation for wt in workload_traces]
     statuses = [e.status if e is not None else None for e in evaluations]
+    # Record every workload's status up front, visible whichever stage fails below.
     result.metadata["workload_statuses"] = [
         s.value if s else "MISSING" for s in statuses
     ]
@@ -216,6 +219,8 @@ def update_result_from_trace(
             lambda s: s == EvaluationStatus.REWARD_HACK
         )
 
+    # Stage ladder: stop at the first denied stage, so later flags stay False
+    # and only that stage's error is recorded.
     result.compiled = all(s not in _COMPILE_FAIL for s in statuses)
     if not result.compiled:
         result.metadata["compile_error"] = _first_log(lambda s: s in _COMPILE_FAIL)

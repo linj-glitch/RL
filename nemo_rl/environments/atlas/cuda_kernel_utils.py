@@ -228,7 +228,10 @@ def sku_expectations(sku: str) -> Optional[tuple[tuple[str, ...], str]]:
     except ImportError:  # pragma: no cover - no-op without cudagym (data layer)
         return None
 
+    # Normalize the configured name so case and hyphen/space variants still resolve.
     normalized = sku.strip().upper().replace("-", "_")
+    # Resolve to a SupportedHardware member: match the enum value first, then
+    # the SDK's vendor aliases.
     hardware = None
     for candidate in SupportedHardware:
         if candidate.value.upper().replace("-", "_") == normalized:
@@ -239,6 +242,7 @@ def sku_expectations(sku: str) -> Optional[tuple[tuple[str, ...], str]]:
             break
     if hardware is None:
         return None
+    # A recognized member with no GPU_SPECS entry is likewise uncheckable.
     spec = GPU_SPECS.get(hardware)
     if spec is None:
         return None
@@ -281,6 +285,8 @@ def verify_health_payload(payload: dict[str, Any], sku: str) -> tuple[Optional[b
                 False,
                 f"endpoint reports gpu_model={gpu_model!r}, which is not {sku}",
             )
+    # The SM version is checked independently: a matching name with the wrong
+    # SM version still fails.
     if sm_version and sm_prefix and not sm_version.startswith(sm_prefix):
         return (
             False,

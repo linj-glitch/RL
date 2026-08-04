@@ -181,6 +181,7 @@ def cudagym_data_processor(
     workloads = datum_dict["workloads"]
     if isinstance(workloads, str):
         workloads = json.loads(workloads)
+    # Render the definition into the human-readable problem statement.
     entry_function = entry_symbol_for(language)
     problem_text = _annotate_kernelfactory_problem(definition, destination_passing_style, entry_function)
 
@@ -199,6 +200,8 @@ def cudagym_data_processor(
             language=language,
         )
 
+    # Apply the chat template and tokenize; the fully templated prompt travels
+    # as a single user turn.
     messages = []
     if task_data_spec.system_prompt:
         messages.append({"role": "system", "content": task_data_spec.system_prompt})
@@ -259,6 +262,8 @@ def setup_data(
 ) -> tuple[AllTaskProcessedDataset, AllTaskProcessedDataset]:
     """Build the processed train/validation datasets for the CudaGym task(s)."""
     print("\n▶ Setting up data...")
+    # Accept either a path list (dataset_paths) or a single path (dataset_path);
+    # likewise for validation.
     data_paths: list[str] = data_config.get("dataset_paths") or [
         data_config["dataset_path"]
     ]
@@ -321,6 +326,7 @@ def setup_environments(
 
     if "cudagym" in env_configs:
         for env_name, cfg in env_configs["cudagym"].items():
+            # Copy so the setdefault below cannot mutate the caller's config dict.
             cfg = dict(cfg)
             # Default sku = env name; upper-cased because SupportedHardware is a
             # case-sensitive enum ("b200" would pass every preflight and then
@@ -331,6 +337,8 @@ def setup_environments(
                 runtime_env={"py_executable": get_actor_python_env(_CUDAGYM_ENV_FQN)},
             ).remote(cfg)
             task_to_env[env_name] = env
+            # Read the typed config back from the actor: validated, with the
+            # defaults (weight, sku) the data layer reads already filled.
             task_to_env_config[env_name] = ray.get(env.get_eval_config.remote())
             # Fail fast if the eval endpoint reports different silicon than the
             # entry's sku (no-op when verify_endpoint_sku is false).
@@ -392,6 +400,8 @@ def main() -> None:
         tokenizer, config.data, config.grpo, task_to_env_config
     )
 
+    # setup() builds the whole training stack; the NeMo-Gym handle and teacher
+    # worker groups are unused in this single-turn recipe.
     (
         policy,
         policy_generation,

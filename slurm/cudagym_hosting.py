@@ -129,6 +129,7 @@ class EndpointEntry:
 def load_endpoints(endpoints_dir: Path = ENDPOINTS_DIR) -> dict[str, EndpointEntry]:
     """Read every ``endpoints/<provider>.yaml`` into a ``provider/key`` map."""
     entries: dict[str, EndpointEntry] = {}
+    # One yaml per provider; the file stem becomes the "<provider>/" name prefix.
     for path in sorted(endpoints_dir.glob("*.yaml")):
         provider = path.stem
         data = OmegaConf.to_container(OmegaConf.load(path), resolve=True) or {}
@@ -212,20 +213,25 @@ def resolve_hosting(
     combination; see the module docstring for the schema.
     """
     warnings: list[str] = []
+    # Pull the recipe's env.cudagym mapping; a recipe without one has no entries.
     selected = OmegaConf.select(recipe_cfg, "env.cudagym")
     raw = {} if selected is None else OmegaConf.to_container(selected, resolve=True)
     if not isinstance(raw, dict):
         raise HostingError("env.cudagym must be a mapping of per-SKU entries")
 
+    # The endpoint registry is only read once some entry references it by name.
     registry: Optional[dict[str, EndpointEntry]] = None
     resolved: list[ResolvedEntry] = []
     for name, entry in raw.items():
         if not isinstance(entry, dict):
             raise HostingError(f"env.cudagym.{name} must be a mapping")
+        # The SKU defaults to the entry name (env.cudagym.b200 -> B200).
         sku = str(entry.get("sku") or name).upper()
 
         hosting = entry.get("hosting")
         if hosting is None:
+            # Back-compat: a bare `server_url:` still works as an endpoint
+            # declaration; anything else without `hosting:` is an error.
             if entry.get("server_url"):
                 warnings.append(
                     f"env.cudagym.{name}: bare `server_url:` is deprecated — declare "
@@ -246,8 +252,11 @@ def resolve_hosting(
             )
 
         if kind == "colocated":
+            # colocated: eval servers share the training nodes; nothing more to declare.
             resolved.append(ResolvedEntry(name=name, sku=sku, kind=kind))
         elif kind == "disjoint":
+            # disjoint: reserve num_nodes of the allocation for eval servers;
+            # at least one node must remain for training.
             n = int(hosting.get("num_nodes") or 0)
             if not (1 <= n < num_nodes):
                 raise HostingError(
@@ -256,6 +265,8 @@ def resolve_hosting(
                 )
             resolved.append(ResolvedEntry(name=name, sku=sku, kind=kind, num_nodes=n))
         elif kind == "endpoint":
+            # endpoint: an already-running server, named by a registry ref or an
+            # inline URL (one or the other, never both).
             ref = hosting.get("endpoint")
             url = hosting.get("url")
             if ref and url:
@@ -264,6 +275,8 @@ def resolve_hosting(
                 )
             ep: Optional[EndpointEntry] = None
             if ref:
+                # Registry ref: resolve "<provider>/<key>" through endpoints/*.yaml
+                # and take that entry's URL; refuse disabled or SKU-mismatched entries.
                 if registry is None:
                     registry = load_endpoints(endpoints_dir)
                 ep = registry.get(str(ref))
@@ -284,6 +297,8 @@ def resolve_hosting(
                     )
                 url = ep.url
             if not url:
+                # Neither ref nor url: fall back to the environment-variable
+                # escape hatch, and say so.
                 url = os.environ.get("CUDAGYM_UNIFIED_SERVER_URL") or os.environ.get(
                     "CUDAGYM_URL"
                 )
@@ -298,6 +313,9 @@ def resolve_hosting(
             entry_resolved = ResolvedEntry(
                 name=name, sku=sku, kind=kind, url=str(url).rstrip("/"), endpoint=ep
             )
+            # Providers with required auth (PROVIDER_REQUIRED_ENV) need the env
+            # vars in the submitting shell now: the /health preflight and the job
+            # both send them.
             missing = [
                 v for v in _auth_env_names(entry_resolved) if not os.environ.get(v)
             ]
@@ -309,6 +327,9 @@ def resolve_hosting(
                 )
             resolved.append(entry_resolved)
         else:  # slurm-service
+            # slurm-service: a CudaGym service job stood up on ANOTHER Slurm
+            # cluster at submit time (slurm/deploy_remote_cudagym.py); needs the
+            # target cluster, its node count, and the submit-side proxy port.
             required = ("service_cluster", "num_service_nodes", "endpoint_port")
             missing_fields = [f for f in required if not hosting.get(f)]
             if missing_fields:
@@ -316,12 +337,15 @@ def resolve_hosting(
                     f"env.cudagym.{name}.hosting (slurm-service) missing fields: "
                     f"{', '.join(missing_fields)}"
                 )
+            # service_login_port is the proxy port on the SERVICE cluster's login
+            # node; endpoint_port is its counterpart on the submit cluster's.
             service = {
                 "service_cluster": hosting["service_cluster"],
                 "num_service_nodes": int(hosting["num_service_nodes"]),
                 "endpoint_port": int(hosting["endpoint_port"]),
                 "service_login_port": int(hosting.get("service_login_port") or 8998),
             }
+            # Targeting the submit cluster itself is what the in-allocation kinds are for.
             if str(service["service_cluster"]) == str(cluster_cfg.get("host") or ""):
                 raise HostingError(
                     f"env.cudagym.{name}.hosting (slurm-service) points at the submit "
@@ -335,12 +359,16 @@ def resolve_hosting(
                 ResolvedEntry(name=name, sku=sku, kind=kind, service=service)
             )
 
+    # Cross-entry rule: ray.sub can stand up servers for at most one in-allocation
+    # entry (CUDAGYM_MODE / CUDAGYM_NUM_NODES describe a single deployment).
     in_alloc = [e for e in resolved if e.kind in IN_ALLOCATION_KINDS]
     if len(in_alloc) > 1:
         names = ", ".join(f"{e.name}({e.kind})" for e in in_alloc)
         raise HostingError(
             f"at most one env.cudagym entry may be hosted in-allocation per job; got: {names}"
         )
+    # In-allocation servers run on the cluster's own GPUs, so the declared SKU
+    # must match the cluster silicon (per CLUSTER_SILICON; GB200 serves B200).
     if in_alloc:
         cluster_sku = str(cluster_cfg.get("sku") or "").lower()
         silicon = CLUSTER_SILICON.get(cluster_sku, cluster_sku.upper())
@@ -351,9 +379,13 @@ def resolve_hosting(
                 f"{cluster_sku or 'unknown'} silicon (serves {silicon or 'unknown'})."
             )
 
+    # Group by kind for the submit-side callers: endpoints get the /health
+    # preflight, slurm-service entries get deployed.
     endpoints = [e for e in resolved if e.kind == "endpoint"]
     slurm_services = [e for e in resolved if e.kind == "slurm-service"]
 
+    # Agentic (NeMo-Gym) rules: exactly one entry, and in-allocation hosting only
+    # warns — usable for smoke tests, wrong for timed rewards.
     if uses_nemo_gym:
         if len(resolved) != 1:
             raise HostingError(
@@ -367,6 +399,8 @@ def resolve_hosting(
                 "can't be locked. OK for smoke tests; use an endpoint for real runs."
             )
 
+    # Each endpoint URL rides into the training config as a ++server_url override;
+    # only a single-endpoint job also gets the ambient CUDAGYM_UNIFIED_SERVER_URL.
     extra_opts = [f"++env.cudagym.{e.name}.server_url={e.url}" for e in endpoints]
     unified = endpoints[0].url if len(endpoints) == 1 else ""
 
@@ -409,17 +443,22 @@ def ensure_vendored_cudagym(repo_root: Union[str, Path] = REPO_ROOT) -> None:
     that is impossible, this raises ``HostingError`` naming the fix instead of
     letting the check degrade.
     """
+    # Already importable (e.g. the training venv) — nothing to do.
     if _cudagym_import_error() is None:
         return
+    # Fall back to the vendored submodule checkout, which must be initialized.
     src = Path(repo_root) / "3rdparty" / "cudagym" / "src"
     if not (src / "cudagym" / "__init__.py").is_file():
         raise HostingError(
             "the cudagym SDK is not importable and the vendored checkout is missing "
             f"({src}); initialize it with `git submodule update --init 3rdparty/cudagym`"
         )
+    # Put the checkout on sys.path and try the import again.
     sys.path.insert(0, str(src))
     error = _cudagym_import_error()
     if error is not None:
+        # Still failing (the SDK's own deps are missing): undo the path edit so
+        # a failed preflight leaves sys.path untouched, then name the fix.
         sys.path.remove(str(src))
         raise HostingError(
             f"the cudagym SDK is not importable even from the vendored checkout ({src}): "
@@ -437,6 +476,7 @@ def _probe_headers(entry: ResolvedEntry) -> dict[str, str]:
     token = os.environ.get(token_env)
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    # Modal's edge proxy wants its own header pair on top of any bearer token.
     if entry.endpoint and entry.endpoint.provider == "modal":
         headers["Modal-Key"] = os.environ.get("MODAL_PROXY_TOKEN_ID", "")
         headers["Modal-Secret"] = os.environ.get("MODAL_PROXY_TOKEN_SECRET", "")
@@ -462,6 +502,8 @@ def probe_endpoint(
     url = f"{entry.url}/health"
     headers = _probe_headers(entry)
     last_error = ""
+    # Retry transport errors and non-200 answers alike, remembering the last
+    # failure for the final message.
     for attempt in range(retries + 1):
         try:
             resp = requests.get(url, headers=headers, timeout=timeout)
@@ -474,6 +516,7 @@ def probe_endpoint(
                 return payload
             last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
         except HostingError:
+            # A malformed 200 payload is a server bug, not transient — no retry.
             raise
         except Exception as e:  # noqa: BLE001 - report the transport failure verbatim
             last_error = str(e)
@@ -494,6 +537,7 @@ def check_registry_against_solswarm(
     worth flagging, not blocking.
     """
     toml_path = Path(solswarm_root) / "deployments" / "files" / "gpu-skus.toml"
+    # Without a solswarm checkout there is nothing to compare against.
     if not toml_path.is_file():
         return []
     try:
@@ -503,6 +547,7 @@ def check_registry_against_solswarm(
     except Exception:  # noqa: BLE001 - a drift check must never break a submit
         return []
 
+    # Collect the upstream map: lowercase fleet id -> unified endpoint URL.
     upstream_urls: dict[str, str] = {}
     for sku_entry in upstream.get("gpu_skus") or []:
         if (
@@ -514,6 +559,7 @@ def check_registry_against_solswarm(
                 sku_entry["cudagym_url"]
             ).rstrip("/")
 
+    # Report every registry entry whose URL disagrees with its upstream row.
     lines = []
     for name, entry in (endpoints or {}).items():
         url = (getattr(entry, "url", "") or "").rstrip("/")

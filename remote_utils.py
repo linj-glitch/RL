@@ -54,6 +54,7 @@ def _list_submodule_paths(repo_root: str) -> list:
     except subprocess.CalledProcessError:
         return []
     sub_paths = []
+    # Each status line is "<flag><sha> <path> (<describe>)"; take the path field.
     for line in sub_status.splitlines():
         line = line.strip()
         if not line:
