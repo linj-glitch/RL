@@ -9,12 +9,18 @@
 # kernel is always compiled for and timed on the GPU its row declared. A row
 # naming a GPU with no endpoint is refused rather than scored on another one.
 #
-# Note on the reward: KernelFactory-Bench publishes speed-of-light anchors for
-# B200 only. B200 rows are therefore scored on the anchored SOL term, while rows
-# for other GPUs carry no anchors and fall back to log-normalized speedup over
-# the timed reference (perf_reward_config.allow_speedup_fallback). The two are
-# both in [0, 1] and both correctness-gated, but they are not the same measure,
-# so read per-SKU metrics rather than one pooled performance number.
+# IMPORTANT, on the reward: KernelFactory-Bench publishes speed-of-light anchors
+# for B200 only, so only B200 rows earn the anchored performance term. Rows for
+# any other GPU carry no anchors, and the speedup fallback that would otherwise
+# cover them CANNOT FIRE as the resources server ships: the fallback needs a
+# timed reference, which requires `benchmark_config: {benchmark_reference: true}`
+# in cudagym_cuda_agent.yaml, and that config is empty by default. Those rows
+# therefore earn the correctness weight and no performance gradient.
+#
+# So as it stands this recipe trains performance on B200 and correctness only on
+# the rest. Either enable benchmark_reference (it costs an extra timed run per
+# submission) or read the per-SKU metrics knowing the two GPUs are optimized for
+# different things -- a pooled performance average is meaningless here.
 #
 # Launch (needs MODAL_PROXY_TOKEN_ID/SECRET for both endpoints):
 #   uv run --extra atlas python submit_grpo.py -e agsol_multisku \

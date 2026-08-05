@@ -12,6 +12,10 @@ policy:
   dtensor_cfg:
     tensor_parallel_size: 8
     context_parallel_size: 4
+    # Raising context parallelism above 1 requires sequence parallelism off:
+    # the DTensor worker refuses the combination (NVIDIA-NeMo/RL issue 659),
+    # and the 8B parent leaves it on because it keeps context parallelism at 1.
+    sequence_parallel: false
   generation:
     vllm_cfg:
       tensor_parallel_size: 4   # fit 32B weights + KV cache at the inherited 40960 context
