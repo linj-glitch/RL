@@ -1,0 +1,62 @@
+# Agentic CudaGym GRPO in SolSwarm container mode with a 131072-token training
+# window, so a rollout's full multi-turn trajectory is trained on rather than
+# truncated. Same stack as grpo_cuda_agentic_solswarm_qwen3-8b.yaml; the three
+# changes are the sequence length, the rope scaling that lets the model reach
+# it, and the parallelism that lets one node hold it.
+#
+# 1. max_total_sequence_length 131072. This is both the vLLM window (so OpenCode
+#    conversations grow to it instead of failing at 40960) and the trained
+#    sequence length. OpenCode's own limit.context already tracks
+#    max_model_len (cudagym_cuda_agent.yaml reads policy_max_model_len), so
+#    raising this one value moves all three together.
+#
+# 2. YaRN rope scaling. Base Qwen3-8B is trained for 40960 positions; 131072 is
+#    3.2x that, so the model needs rope scaling to attend that far. NeMo-RL
+#    copies policy.hf_config_overrides into vLLM's hf_overrides (grpo.py), so
+#    this one block scales both the training policy and the generation server.
+#
+# 3. Context parallelism. A 131072-token sequence will not fit one GPU's
+#    activations, so it is split across GPUs. The DTensor worker refuses context
+#    parallelism together with sequence parallelism (NVIDIA-NeMo/RL issue 659),
+#    so sequence_parallel is off here and tensor_parallel_size * context_parallel
+#    _size fills the node's 8 GPUs (2 * 4).
+#
+# Launch (single B200 endpoint, needs MODAL_PROXY_TOKEN_ID/SECRET):
+#   uv run --extra atlas python submit_grpo.py -e agsol_longctx \
+#     --config grpo_cuda_agentic_solswarm_longctx_qwen3-8b.yaml \
+#     --cluster cw-dfw-cs-001 --num-nodes 1 --time 3:00:00 \
+#     --enroot-agent-image $W/containers/solswarm-agent-amd64.sqsh
+defaults: "grpo_cuda_agentic_solswarm_qwen3-8b.yaml"
+
+checkpointing:
+  checkpoint_dir: "results/grpo-cuda-agentic-solswarm-longctx"
+
+policy:
+  max_total_sequence_length: 131072
+  # The logprob pass over a 131072-token sequence is chunked so its activations
+  # do not have to materialize at once.
+  logprob_chunk_size: 2048
+  # CP splits the sequence, so it must divide evenly; 16 covers CP=4 with room.
+  make_sequence_length_divisible_by: 16
+  dtensor_cfg:
+    # Context parallelism instead of sequence parallelism (they are mutually
+    # exclusive in the DTensor worker). TP=2 * CP=4 uses the node's 8 GPUs.
+    sequence_parallel: false
+    context_parallel_size: 4
+  hf_config_overrides:
+    rope_scaling:
+      rope_type: yarn
+      rope_theta: 1000000
+      # 131072 / 40960. Kept as the literal so the recipe reads without the
+      # interpolation, and so a change to max_total_sequence_length is a
+      # deliberate two-line edit rather than a silent rescale.
+      factor: 3.2
+      original_max_position_embeddings: 40960
+      truncate: true
+      beta_fast: 32
+      beta_slow: 1
+      mscale: 1
+      mscale_all_dim: 0
+
+logger:
+  log_dir: "logs/grpo-cuda-agentic-solswarm-longctx"
