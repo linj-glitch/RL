@@ -510,6 +510,26 @@ def test_verify_health_payload_table():
     # silicon mismatch is silent for Triton (it JITs on whatever GPU answers).
     ok, detail = verify_health_payload({}, "B200")
     assert ok is None and detail.startswith("unverifiable")
+    # The per-GPU list wins over the top-level fields. A server's
+    # CUDAGYM_GPU_MODEL setting replaces the top-level gpu_model but leaves the
+    # per-GPU entries reporting what nvidia-smi saw, so the check must not be
+    # satisfiable with a label.
+    ok, detail = verify_health_payload(
+        {
+            "gpu_model": "B200",
+            "sm_version": "sm_100",
+            "gpus": [{"gpu_model": "NVIDIA GB200", "compute_capability": "10.0"}],
+        },
+        "B200",
+    )
+    assert not ok and "GB200" in detail
+    # Servers that report only the per-GPU list still resolve: sm_version
+    # duplicates compute_capability ("9.0" -> "sm_90").
+    ok, _ = verify_health_payload(
+        {"gpus": [{"gpu_model": "NVIDIA H100 80GB HBM3", "compute_capability": "9.0"}]},
+        "H100",
+    )
+    assert ok
     # A real SupportedHardware value IS checkable, even a rarely used one --
     # expectations are derived from the SDK, not from a table we maintain.
     ok, _ = verify_health_payload(

@@ -20,8 +20,10 @@ term both paths reward on.
 """
 
 import pytest
+from pydantic import ValidationError
 
 from nemo_rl.environments.atlas.cuda_kernel_utils import (
+    CudaGymEvalConfig,
     aggregate_kernel_metrics,
     canonical_sku,
     sol_score,
@@ -223,3 +225,34 @@ def test_canonical_sku_names_the_value_to_write_for_a_vendor_alias():
         canonical_sku("GB10", "src")
     assert sol_score(0.9, float("nan"), 0.5) == 0.0
     assert sol_score(0.9, 1.0, float("nan")) == 0.0
+
+
+def test_eval_config_accepts_a_whole_recipe_entry():
+    # Every key a shipped env.cudagym entry carries, including the
+    # submit-time-only `hosting` block the actor itself never reads.
+    config = CudaGymEvalConfig(
+        sku="B200",
+        weight=1.0,
+        hosting={"kind": "endpoint", "endpoint": "modal/b200"},
+        compilation_timeout=300,
+        execution_timeout_per_trial=120,
+        reward_weights={"correctness": 1.0, "performance": 1.0},
+        perf_reward_config={
+            "clip_max": 10.0,
+            "clip_min": 0.1,
+            "speedup_ratio": 0.75,
+            "allow_speedup_fallback": True,
+        },
+        benchmark_config={"lock_clocks": True},
+        verify_endpoint_sku=True,
+    )
+    assert config.sku == "B200"
+    assert config.benchmark_config == {"lock_clocks": True}
+    assert config.perf_reward_config["allow_speedup_fallback"]
+
+
+def test_eval_config_rejects_a_misspelled_key():
+    # A dropped `reward_weight:` would leave the run training on the default
+    # weights with nothing in the logs to say so.
+    with pytest.raises(ValidationError, match="reward_weight"):
+        CudaGymEvalConfig(sku="B200", reward_weight={"correctness": 1.0})

@@ -16,7 +16,7 @@
 
 The evaluator builds typed ``Solution``/``Definition``/``Workload`` objects and
 calls ``cudagym.sdk.workflows.evaluate`` — see ``cudagym_client.py``. The
-dataclasses in this module deliberately import nothing from ``cudagym`` so the
+classes in this module deliberately import nothing from ``cudagym`` so the
 data layer (DataLoader worker subprocesses, see ``examples/run_grpo_cuda.py``)
 can use the config type and the language table without the heavy dependency.
 """
@@ -26,13 +26,17 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from pydantic import BaseModel, Field
 
-@dataclass
-class CudaGymEvalConfig:
-    """Per-environment evaluation settings. One instance per registered GPU SKU.
+
+class CudaGymEvalConfig(BaseModel, extra="forbid"):
+    """One ``env.cudagym.<name>`` recipe entry: the settings for one GPU SKU.
 
     The defaults mirror the shipped recipes; the single-turn and agentic paths
-    consume the same fields so reward magnitudes stay comparable.
+    consume the same fields so reward magnitudes stay comparable. ``extra`` is
+    ``forbid`` because this is populated straight from user YAML: a misspelled
+    ``reward_weight:`` would otherwise be dropped and the run would silently
+    train against the defaults.
     """
 
     # GPU SKU the kernel is evaluated on. Must be a cudagym
@@ -50,7 +54,7 @@ class CudaGymEvalConfig:
     # carries anchors). Progress stages (format/compiled/executed) are metrics
     # only and never rewarded: JIT-compiled languages have no compile stage
     # that can fail, so paying for "compiled" would reward placeholder files.
-    reward_weights: dict[str, float] = field(
+    reward_weights: dict[str, float] = Field(
         default_factory=lambda: {
             "correctness": 1.0,
             "performance": 1.0,
@@ -60,8 +64,12 @@ class CudaGymEvalConfig:
     # whether a correct kernel may earn the perf term from log-normalized
     # speedup-over-reference (clip_* and speedup_ratio parameterize that
     # mapping, see ``reward.normalize_performance_reward``); false -> the perf
-    # term is 0 without anchors.
-    perf_reward_config: dict[str, float] = field(
+    # term is 0 without anchors. Typed ``Any`` because the mapping is genuinely
+    # mixed: the clip/ratio entries are floats and allow_speedup_fallback is a
+    # bool. Declaring it ``float`` would coerce a configured ``false`` to 0.0
+    # while leaving the default a real ``True``, so the value's type would
+    # depend on whether the recipe spelled it out.
+    perf_reward_config: dict[str, Any] = Field(
         default_factory=lambda: {
             "clip_max": 10.0,
             "clip_min": 0.1,
@@ -71,7 +79,7 @@ class CudaGymEvalConfig:
     )
     # Optional cudagym ``EvalConfig`` overrides (warmup, iterations, tolerances,
     # clock locking). Empty dict -> server defaults.
-    benchmark_config: dict[str, Any] = field(default_factory=dict)
+    benchmark_config: dict[str, Any] = Field(default_factory=dict)
 
     # CudaGym service location. ``server_url`` is the unified ``/compile``+``/gpu``
     # endpoint. When None, the env falls back to CUDAGYM_UNIFIED_SERVER_URL /
@@ -84,6 +92,10 @@ class CudaGymEvalConfig:
     # than ``sku`` — a mismatch is otherwise SILENT for Triton (kernels JIT on
     # whatever GPU serves the request and return that GPU's timings).
     verify_endpoint_sku: bool = True
+    # Where the eval servers for this SKU come from. Read at submit time only
+    # (``slurm/cudagym_hosting.py``, which validates it); declared here so the
+    # recipe entry that carries it still validates against this model.
+    hosting: Optional[dict[str, Any]] = None
 
 
 @dataclass
@@ -167,7 +179,9 @@ def _assert_languages_track_the_sdk() -> None:
             "add them (filename, entry point, fence) instead of letting rows fail as format errors"
         )
     if ours - sdk:
-        raise RuntimeError(f"LANGUAGE_DEFAULTS has languages CudaGym does not support: {sorted(ours - sdk)}")
+        raise RuntimeError(
+            f"LANGUAGE_DEFAULTS has languages CudaGym does not support: {sorted(ours - sdk)}"
+        )
 
 
 def _assert_sku_hooks_track_the_sdk() -> None:
@@ -231,7 +245,9 @@ def canonical_sku(sku: Any, source: str) -> str:
     catches lower case and hyphens.
     """
     if not isinstance(sku, str) or not sku or sku != sku.strip():
-        raise ValueError(f"{source}: GPU sku must be a non-empty CudaGym SupportedHardware value, got {sku!r}")
+        raise ValueError(
+            f"{source}: GPU sku must be a non-empty CudaGym SupportedHardware value, got {sku!r}"
+        )
     if not re.fullmatch(r"[A-Z0-9_]+", sku):
         raise ValueError(
             f"{source}: GPU sku {sku!r} is not spelled the way CudaGym spells it. "
@@ -240,7 +256,9 @@ def canonical_sku(sku: Any, source: str) -> str:
     try:
         from cudagym.config.device import _hardware_match_keys
         from cudagym.contracts.solution import SupportedHardware
-    except ImportError:  # pragma: no cover - no-op without cudagym (data layer, submit hosts)
+    except (
+        ImportError
+    ):  # pragma: no cover - no-op without cudagym (data layer, submit hosts)
         return sku
     if sku in {hardware.value for hardware in SupportedHardware}:
         return sku
@@ -248,7 +266,10 @@ def canonical_sku(sku: Any, source: str) -> str:
     # "GB10", for example, names DGX_SPARK. Point at the value to write instead.
     normalized = sku.replace("_", "")
     for hardware in SupportedHardware:
-        if any(key.replace("_", "").upper() == normalized for key in _hardware_match_keys(hardware)):
+        if any(
+            key.replace("_", "").upper() == normalized
+            for key in _hardware_match_keys(hardware)
+        ):
             raise ValueError(
                 f"{source}: GPU sku {sku!r} is a vendor alias, not a CudaGym SupportedHardware "
                 f"value; declare {hardware.value!r} instead."
@@ -291,7 +312,10 @@ def sku_expectations(sku: str) -> Optional[tuple[Any, str]]:
         if candidate.value.upper().replace("-", "_") == normalized:
             hardware = candidate
             break
-        if any(k.upper().replace("-", "_").replace(" ", "_") == normalized for k in _hardware_match_keys(candidate)):
+        if any(
+            k.upper().replace("-", "_").replace(" ", "_") == normalized
+            for k in _hardware_match_keys(candidate)
+        ):
             hardware = candidate
             break
     if hardware is None:
@@ -303,7 +327,9 @@ def sku_expectations(sku: str) -> Optional[tuple[Any, str]]:
     return hardware, f"sm_{spec.sm_version}"
 
 
-def _resolve_reported_gpu(gpu_model: str, sm_version: str, expected: Any) -> Optional[Any]:
+def _resolve_reported_gpu(
+    gpu_model: str, sm_version: str, expected: Any
+) -> Optional[Any]:
     """Resolve a ``/health`` gpu_model string to a SupportedHardware member.
 
     ``_parse_gpu_name`` is the SDK's own longest-match name resolver, and it
@@ -322,7 +348,9 @@ def _resolve_reported_gpu(gpu_model: str, sm_version: str, expected: Any) -> Opt
 
     digits = "".join(ch for ch in sm_version if ch.isdigit())
     preferred = ([int(digits)] if digits else []) + [GPU_SPECS[expected].sm_version]
-    sm_classes = list(dict.fromkeys(preferred + sorted(s.sm_version for s in GPU_SPECS.values())))
+    sm_classes = list(
+        dict.fromkeys(preferred + sorted(s.sm_version for s in GPU_SPECS.values()))
+    )
     for sm in sm_classes:
         try:
             return _parse_gpu_name(gpu_model, sm)
@@ -331,7 +359,9 @@ def _resolve_reported_gpu(gpu_model: str, sm_version: str, expected: Any) -> Opt
     return None
 
 
-def verify_health_payload(payload: dict[str, Any], sku: str) -> tuple[Optional[bool], str]:
+def verify_health_payload(
+    payload: dict[str, Any], sku: str
+) -> tuple[Optional[bool], str]:
     """Compare a cudagym ``/health`` payload against a declared GPU SKU.
 
     Returns ``(ok, detail)``. "Unverifiable" is not a pass: it is returned as
@@ -348,8 +378,21 @@ def verify_health_payload(payload: dict[str, Any], sku: str) -> tuple[Optional[b
     equality would wrongly reject the decorated names real endpoints report
     ("NVIDIA H100 80GB HBM3").
     """
-    gpu_model = payload.get("gpu_model") or ""
+    # Prefer the per-GPU list over the top-level fields. The top-level
+    # gpu_model is GPU 0's, and the server's CUDAGYM_GPU_MODEL setting replaces
+    # it while leaving the per-GPU entries reporting what nvidia-smi saw, so a
+    # check against the top-level value can be answered with a label rather
+    # than with the hardware.
+    gpus = payload.get("gpus") or []
+    first_gpu = (
+        gpus[0] if isinstance(gpus, list) and gpus and isinstance(gpus[0], dict) else {}
+    )
+    gpu_model = first_gpu.get("gpu_model") or payload.get("gpu_model") or ""
     sm_version = str(payload.get("sm_version") or "")
+    if not sm_version and first_gpu.get("compute_capability"):
+        # sm_version duplicates compute_capability ("9.0" -> "sm_90") and the
+        # per-GPU entries carry only the latter.
+        sm_version = "sm_" + str(first_gpu["compute_capability"]).replace(".", "")
     if not gpu_model and not sm_version:
         return None, "unverifiable: /health reports no gpu_model/sm_version"
     expected = sku_expectations(sku)
@@ -359,7 +402,10 @@ def verify_health_payload(payload: dict[str, Any], sku: str) -> tuple[Optional[b
     if gpu_model:
         reported = _resolve_reported_gpu(gpu_model, sm_version, hardware)
         if reported is None:
-            return None, f"unverifiable: the SDK cannot identify gpu_model={gpu_model!r}"
+            return (
+                None,
+                f"unverifiable: the SDK cannot identify gpu_model={gpu_model!r}",
+            )
         if reported is not hardware:
             return (
                 False,

@@ -16,32 +16,25 @@
 #     new data/model pairing, with scripts/verify_sft.py (sft-solswarm-traces
 #     repo).
 #
+# Everything not listed below is inherited from examples/configs/sft.yaml,
+# including the megatron_cfg block: this recipe trains on DTensor
+# (policy.megatron_cfg.enabled is false there), so those values are unused.
+#
 # Launch: uv run ./examples/run_sft.py --config examples/configs/recipes/atlas/sft_cuda_qwen3-8b.yaml
+defaults: "../../sft.yaml"
 
 sft:
   max_num_epochs: 4          # multiple epochs suit a small dataset; re-tune as it grows
   max_num_steps: 1000000
 
-  val_period: 10
   val_batches: 0             # 0 = validate on ALL val batches. Do not set >0 with
                              # multiple/merged val sets: the val loader is unshuffled
                              # concatenation, so a positive count only sees the head set.
   val_global_batch_size: 8
-  val_micro_batch_size: 1
-  val_at_start: true
   val_at_end: true
-  seed: 42
-  only_unmask_final: false   # train ALL assistant turns (multi-turn agentic SFT)
 
 checkpointing:
-  enabled: true
   checkpoint_dir: "results/sft_cuda_agentic_qwen3_8b"
-  metric_name: "val:val_loss"
-  higher_is_better: false
-  keep_top_k: 3
-  save_period: 10
-  checkpoint_must_save_by: null
-  save_optimizer: true
 
 policy:
   model_name: "Qwen/Qwen3-8B"   # or a local path; DeepSeek-R1-0528-Qwen3-8B also works
@@ -49,155 +42,28 @@ policy:
                                 # verify_sft.py (sft-solswarm-traces repo) whenever
                                 # this changes.
   tokenizer:
-    name: ${policy.model_name}
     # THE pinned template — shared with the GRPO CUDA recipe and carried into the
     # checkpoint for agentic vLLM serving. See header comment.
     chat_template: "examples/prompts/atlas_preserving_chat_template.jinja"
-    chat_template_kwargs: null
   train_global_batch_size: 8    # scale up with dataset size
-  train_micro_batch_size: 1
   max_total_sequence_length: 131072
-  precision: "bfloat16"
-
-  offload_optimizer_for_logprob: false
 
   dtensor_cfg:
-    _v2: true
-    enabled: true
-    env_vars: {}
-    cpu_offload: False
     sequence_parallel: true
     activation_checkpointing: true
     tensor_parallel_size: 2
     context_parallel_size: 8    # 131k tokens / CP8 = 16k per rank
-    dp_replicate_size: 1
-    custom_parallel_plan: null
-    automodel_kwargs: {}
-    lora_cfg:
-      enabled: False
-      target_modules: []
-      exclude_modules: []
-      match_all_linear: true
-      dim: 8
-      alpha: 32
-      dropout: 0.0
-      dropout_position: "post"
-      lora_A_init: "xavier"
-      use_triton: true
-
-  dynamic_batching:
-    enabled: false
-    train_mb_tokens: ${mul:${policy.max_total_sequence_length}, ${policy.train_micro_batch_size}}
-    sequence_length_round: 64
-
-  sequence_packing:
-    enabled: False              # enable for throughput once the run is validated
-    train_mb_tokens: ${mul:${policy.max_total_sequence_length}, ${policy.train_micro_batch_size}}
-    algorithm: "modified_first_fit_decreasing"
-    sequence_length_round: 64
-
-  make_sequence_length_divisible_by: ${policy.dtensor_cfg.tensor_parallel_size}
-  max_grad_norm: 1.0
 
   optimizer:
-    name: "torch.optim.AdamW"
     kwargs:
       lr: 5.0e-5
-      weight_decay: 0.1
-      betas: [0.9, 0.98]
       eps: 1e-8
-      foreach: False
-      fused: False
-
-  # Ignored (enabled: false below); present so the config schema stays complete.
-  megatron_cfg:
-    enabled: false
-    use_linear_ce_fusion_loss: false
-    linear_ce_fusion_chunk_size: 256
-    force_reconvert_from_hf: False
-    env_vars: {}
-    empty_unused_memory_level: 1
-    activation_checkpointing: false
-    recompute_granularity: "full"
-    recompute_modules: null
-    tensor_model_parallel_size: 4
-    expert_tensor_parallel_size: 1
-    expert_model_parallel_size: 1
-    pipeline_model_parallel_size: 1
-    context_parallel_size: 4
-    pipeline_dtype: ${policy.precision}
-    num_layers_in_first_pipeline_stage: null
-    num_layers_in_last_pipeline_stage: null
-    sequence_parallel: false
-    freeze_moe_router: false
-    moe_router_dtype: null
-    moe_router_load_balancing_type: "aux_loss"
-    moe_router_bias_update_rate: 1e-3
-    moe_permute_fusion: true
-    apply_rope_fusion: True
-    bias_activation_fusion: True
-    defer_fp32_logits: False
-    moe_per_layer_logging: False
-    moe_enable_deepep: false
-    moe_token_dispatcher_type: "alltoall"
-    moe_shared_expert_overlap: false
-    gradient_accumulation_fusion: false
-    use_fused_weighted_squared_relu: false
-
-    peft:
-      enabled: false
-      target_modules: []
-      exclude_modules: []
-      dim: 8
-      alpha: 32
-      dropout: 0.0
-      dropout_position: "post"
-      lora_A_init_method: "xavier"
-      lora_B_init_method: "zero"
-      a2a_experimental: false
-      lora_dtype: None
-
-    optimizer:
-      optimizer: "adam"
-      lr: 5.0e-5
-      min_lr: 0.0
-      weight_decay: 0.1
-      bf16: true
-      fp16: false
-      params_dtype: "float32"
-      adam_beta1: 0.9
-      adam_beta2: 0.98
-      adam_eps: 1e-8
-      sgd_momentum: 0.9
-      use_distributed_optimizer: true
-      use_precision_aware_optimizer: true
-      clip_grad: ${policy.max_grad_norm}
-      optimizer_cpu_offload: false
-      optimizer_offload_fraction: 0.0
-
-    scheduler:
-      start_weight_decay: ${policy.megatron_cfg.optimizer.weight_decay}
-      end_weight_decay: ${policy.megatron_cfg.optimizer.weight_decay}
-      weight_decay_incr_style: "constant"
-      lr_decay_style: "cosine"
-      lr_decay_iters: 400
-      lr_warmup_iters: 10
-      lr_warmup_init: 5.0e-6
-
-    distributed_data_parallel_config:
-      grad_reduce_in_fp32: false
-      overlap_grad_reduce: true
-      overlap_param_gather: true
-      data_parallel_sharding_strategy: "optim_grads_params"
-      use_custom_fsdp: false
-
-    fp8_cfg:
-      enabled: false
-      fp8: "e4m3"
-      fp8_recipe: "blockwise"
-      fp8_param: false
 
 data:
+  # Replaces the inherited section instead of merging with it: `train` and
+  # `validation` are lists here and mappings in examples/configs/sft.yaml, and
+  # OmegaConf refuses to merge a list over a mapping.
+  _override_: true
   max_input_seq_length: ${policy.max_total_sequence_length}
   add_bos: true                # Qwen3 has no BOS token — harmless warning, kept
                                # true so the recipe stays correct for BOS models.
@@ -232,12 +98,6 @@ data:
                                 # which does not understand {messages, tools} rows.
 
 logger:
-  log_dir: "logs"
-  wandb_enabled: true
-  tensorboard_enabled: true
-  mlflow_enabled: false
-  swanlab_enabled: false
-  monitor_gpus: true
   wandb:
     project: "atlas-cuda-sft"
     name: "sft-cuda-agentic-qwen3-8b"   # literal name: data.train here is a list,
@@ -251,12 +111,7 @@ logger:
   mlflow:
     experiment_name: "atlas-cuda-sft"
     run_name: "sft-cuda-agentic-qwen3-8b"
-    tracking_uri: "http://localhost:5000"
-  gpu_monitoring:
-    collection_interval: 10
-    flush_interval: 10
 
 cluster:
   gpus_per_node: 8
   num_nodes: 2                  # TP2 x CP8 = 16 GPUs for the 131k context
-  segment_size: null

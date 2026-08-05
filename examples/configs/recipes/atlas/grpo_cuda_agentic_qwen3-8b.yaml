@@ -155,6 +155,10 @@ env:
     # port layout reserves for them (the GB200 ephemeral range starts at 9000,
     # so an override up there risks intermittent binds).
     is_trajectory_collection: false           # true = dump rollouts instead of training (read + popped by NeMo-RL, not Gym)
+    # The agent harness plans its context against the window the model server
+    # actually accepts, so the two cannot drift (cudagym_cuda_agent.yaml reads
+    # this as limit.context).
+    policy_max_model_len: ${policy.generation.vllm_cfg.max_model_len}
     config_paths:
     - responses_api_models/vllm_model/configs/vllm_model_for_training.yaml  # required, *_for_training
     - resources_servers/cudagym/configs/cudagym_cuda_agent.yaml
@@ -177,6 +181,11 @@ logger:
   wandb_enabled: false
   tensorboard_enabled: true
   monitor_gpus: true
+  # Per-step conversation tables (W&B sink; grpo.sh forces wandb on at submit
+  # time even though the local default above is false). On this path a message
+  # carries only token ids, so the table is rendered by decoding them with the
+  # tokenizer; an agentic episode is many turns, so the tables are large.
+  log_conversations: true
 
 cluster:
   gpus_per_node: 8

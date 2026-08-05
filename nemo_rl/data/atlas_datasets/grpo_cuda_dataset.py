@@ -315,7 +315,9 @@ def kfb_problem_to_row(
     # Validated where the row is written, not where it is evaluated: a
     # non-canonical SKU baked into a dataset fails per-sample much later, and
     # is recorded there as the model's formatting error.
-    target_hardware = canonical_sku(target_hardware, "kfb_problem_to_row(target_hardware=...)")
+    target_hardware = canonical_sku(
+        target_hardware, "kfb_problem_to_row(target_hardware=...)"
+    )
     definition = json.loads((pdir / "definition.json").read_text())
     workloads = [
         json.loads(line)
@@ -408,7 +410,9 @@ def kfb_problem_to_gym_seed(
     directly usable without a separate ``ng_prepare_data`` pass.
     """
     pdir = Path(problem_dir)
-    target_hardware = canonical_sku(target_hardware, "kfb_problem_to_gym_seed(target_hardware=...)")
+    target_hardware = canonical_sku(
+        target_hardware, "kfb_problem_to_gym_seed(target_hardware=...)"
+    )
     definition = json.loads((pdir / "definition.json").read_text())
     workloads = [
         json.loads(line)

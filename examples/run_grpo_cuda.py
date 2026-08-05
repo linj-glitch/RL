@@ -103,7 +103,10 @@ def _tensor_lines(specs: dict) -> str:
     """Render one ``#   <name>: shape=..., dtype=...`` line per tensor spec."""
     # Hard-indexed on purpose: a definition missing shape/dtype should fail the
     # row loudly at data time, not render a '?' prompt the model can't solve.
-    return "\n".join(f"#   {name}: shape={spec['shape']}, dtype={spec['dtype']}" for name, spec in specs.items())
+    return "\n".join(
+        f"#   {name}: shape={spec['shape']}, dtype={spec['dtype']}"
+        for name, spec in specs.items()
+    )
 
 
 def _axis_parts(axes: dict) -> list[str]:
@@ -145,7 +148,9 @@ def _annotate_kernelfactory_problem(
         args = ", ".join(input_names)
         output_convention = f"Return: {', '.join(output_names)}"
     return _PROBLEM_TEMPLATE.format(
-        description=f"# {definition['description']}\n\n" if definition.get("description") else "",
+        description=f"# {definition['description']}\n\n"
+        if definition.get("description")
+        else "",
         input_lines=_tensor_lines(definition.get("inputs", {})),
         output_lines=_tensor_lines(definition.get("outputs", {})),
         axes_line=f"# Axes: {', '.join(_axis_parts(axes))}\n" if axes else "",
@@ -207,7 +212,9 @@ def cudagym_data_processor(
     workloads = _parse_json_field(datum_dict, "workloads")
     # Render the definition into the human-readable problem statement.
     entry_function = entry_symbol_for(language)
-    problem_text = _annotate_kernelfactory_problem(definition, destination_passing_style, entry_function)
+    problem_text = _annotate_kernelfactory_problem(
+        definition, destination_passing_style, entry_function
+    )
 
     # Render the prompt template (driver_code = the problem statement; kernel_lang
     # = the fence tag the model writes; entry_function = the symbol it must define;

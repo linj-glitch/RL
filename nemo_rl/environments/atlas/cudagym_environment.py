@@ -38,12 +38,12 @@ prompt and environment-observation tokens are excluded from the loss.
 
 import logging
 import os
-from dataclasses import fields as dataclass_fields
 from typing import TypedDict
 
 import ray
 import torch
 from cudagym.sdk import Client
+from pydantic import ValidationError
 
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 from nemo_rl.environments.interfaces import EnvironmentInterface, EnvironmentReturn
@@ -91,21 +91,17 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
     def __init__(self, config: dict):
         """Validate the raw ``env.cudagym.<name>`` mapping and build the SDK client."""
         # The raw YAML dict (env.cudagym.<sku>) is the only calling convention:
-        # the driver passes the recipe mapping straight through Ray.
-        # Kwargs come from the dataclass itself, and unknown keys are
-        # REJECTED (the same class of typo that validate_benchmark_config
-        # catches one level down): a misspelled `reward_weight:` would
-        # otherwise be silently dropped and the run would train on
-        # defaults. `hosting` is the one submit-time-only key
-        # (slurm/cudagym_hosting.py reads it; the actor never does).
-        known = {f.name for f in dataclass_fields(CudaGymEvalConfig)}
-        unknown = set(config) - known - {"hosting"}
-        if unknown:
+        # the driver passes the recipe mapping straight through Ray. The model
+        # forbids extra keys (the same class of typo that
+        # validate_benchmark_config catches one level down), and pydantic's own
+        # error names only the offending keys, so the valid ones are added here.
+        try:
+            self.eval_config = CudaGymEvalConfig(**config)
+        except ValidationError as exc:
             raise ValueError(
-                f"unknown env.cudagym keys {sorted(unknown)}; "
-                f"valid keys: {sorted(known)} (+ submit-time-only 'hosting')"
-            )
-        self.eval_config = CudaGymEvalConfig(**{k: v for k, v in config.items() if k in known})
+                f"invalid env.cudagym entry: {exc}\n"
+                f"valid keys: {sorted(CudaGymEvalConfig.model_fields)}"
+            ) from exc
 
         if not self.eval_config.sku:
             raise ValueError(
@@ -188,10 +184,14 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
                     f"(set verify_endpoint_sku: false to override deliberately)"
                 )
             if ok is None:
-                LOG.warning("cudagym endpoint SKU check (%s): %s", self.eval_config.sku, detail)
+                LOG.warning(
+                    "cudagym endpoint SKU check (%s): %s", self.eval_config.sku, detail
+                )
             else:
                 confirmed = True
-                LOG.info("cudagym endpoint SKU check (%s): %s", self.eval_config.sku, detail)
+                LOG.info(
+                    "cudagym endpoint SKU check (%s): %s", self.eval_config.sku, detail
+                )
         # An endpoint where nothing could be checked is reported, not passed:
         # silent non-verification is how a silicon mismatch hides.
         if not confirmed:

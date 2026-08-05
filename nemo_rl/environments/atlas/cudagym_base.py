@@ -109,7 +109,11 @@ class BaseCudaEvaluator(ABC):
             try:
                 code = get_code(completions[idx], fence_lang)
                 row_sku = meta.get("target_hardware")
-                if row_sku and self.eval_config.sku and row_sku.upper() != self.eval_config.sku.upper():
+                if (
+                    row_sku
+                    and self.eval_config.sku
+                    and row_sku.upper() != self.eval_config.sku.upper()
+                ):
                     # The endpoint handshake verifies eval_config.sku, but this
                     # value is what reaches Solution.spec.target_hardware. A row
                     # declaring B200 against an H100 endpoint would compile for
