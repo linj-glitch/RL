@@ -40,16 +40,21 @@ from remote_utils import (
     fill_template,
     upload_text_as_file,
 )
-from slurm.cudagym_hosting import (
-    HostingError,
-    check_registry_against_solswarm,
-    ensure_vendored_cudagym,
-    load_endpoints,
-    load_recipe_merged,
-    probe_endpoint,
-    resolve_hosting,
-    verify_health_payload,
-)
+try:
+    # Importing this module makes the CudaGym SDK importable (it supplies both
+    # SKU checks), and raises HostingError naming the fix when it cannot. That
+    # happens before main() runs, so the message is formatted here instead.
+    from slurm.cudagym_hosting import (
+        HostingError,
+        check_registry_against_solswarm,
+        load_endpoints,
+        load_recipe_merged,
+        probe_endpoint,
+        resolve_hosting,
+        verify_health_payload,
+    )
+except ValueError as e:  # HostingError, which is not importable if this failed
+    raise SystemExit(f"❌ {e}") from e
 from slurm.deploy_remote_cudagym import deploy_remote_cudagym
 
 CONFIG_PATH = Path(__file__).parent / "examples" / "configs" / "recipes" / "atlas"
@@ -267,16 +272,10 @@ def main():
 
     # Preflight: ping every remote endpoint's /health and check the reported GPU
     # against the declared SKU. In-allocation servers don't exist yet — they get
-    # the same check at runtime init (verify_endpoint_sku).
-    if hosting.endpoints:
-        # The GPU check needs the cudagym SDK's device table; without it the
-        # verdict would silently degrade to "unverifiable". Hard failure with
-        # the fix spelled out, not skippable: --skip-endpoint-check is for
-        # unreachable endpoints, not missing tooling.
-        try:
-            ensure_vendored_cudagym()
-        except HostingError as e:
-            raise SystemExit(f"❌ {e}") from e
+    # the same check at runtime init (verify_endpoint_sku). The check reads the
+    # cudagym SDK's device table, which importing slurm.cudagym_hosting has
+    # already guaranteed (its ensure_vendored_cudagym bootstrap), so it can
+    # never degrade to "unverifiable" for want of the SDK.
     for entry in hosting.endpoints:
         try:
             payload = probe_endpoint(entry)

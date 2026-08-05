@@ -42,6 +42,7 @@ from typing import TypedDict
 
 import ray
 import torch
+from cudagym.rl import canonical_sku, verify_health_payload
 from cudagym.sdk import Client
 from pydantic import ValidationError
 
@@ -49,12 +50,7 @@ from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 from nemo_rl.environments.interfaces import EnvironmentInterface, EnvironmentReturn
 
 from . import cudagym_client
-from .cuda_kernel_utils import (
-    CudaGymEvalConfig,
-    aggregate_kernel_metrics,
-    canonical_sku,
-    verify_health_payload,
-)
+from .cuda_kernel_utils import CudaGymEvalConfig, aggregate_kernel_metrics
 from .cudagym_base import BaseCudaEvaluator
 
 LOG = logging.getLogger(__name__)

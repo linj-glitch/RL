@@ -19,7 +19,7 @@ single fenced code block holding the kernel (one file). ``check_inline_format``
 validates that structure and ``get_code`` extracts the block. ``fence_lang`` is the
 markdown fence tag the model writes (e.g. ``python``, ``cpp``), which is *not*
 the cudagym ``SupportedLanguages`` value (e.g. ``triton``, ``cuda_cpp``) — the
-mapping from a cudagym language to its fence tag lives in ``cuda_kernel_utils``.
+mapping from a cudagym language to its fence tag is ``cudagym.rl.fence_lang_for``.
 
 Multi-file C++/CUDA solutions (kernel.cu + main.cpp pybind wrapper) are not
 expressible in one fenced block; those are produced by the agentic path,

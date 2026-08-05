@@ -64,9 +64,8 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Optional
 
+from cudagym.rl import canonical_sku
 from datasets import Dataset, DatasetDict, concatenate_datasets
-
-from nemo_rl.environments.atlas.cuda_kernel_utils import canonical_sku
 
 
 def _sample_task(
@@ -197,8 +196,7 @@ def load_sol_anchors(
     A workload without a positive human-best latency is dropped, because the
     score cannot be anchored without one; ``sol_latency_ms`` may be 0, in which
     case the SOL score computed from it degrades to a bounded
-    speedup-over-human-best (see ``sol_score`` in
-    ``nemo_rl/environments/atlas/cuda_kernel_utils.py``). A nonexistent CSV
+    speedup-over-human-best (see ``cudagym.rl.sol_score``). A nonexistent CSV
     path raises ``FileNotFoundError`` — it is always caller-provided.
 
     Anchors are loaded once at dataset-build time and stored on the row, so
@@ -253,8 +251,7 @@ def load_sol_anchors_from_problem_dir(problem_dir: str) -> dict[str, dict[str, f
     ``T_k = T_b`` makes the score a constant that carries no information about
     ``T_sol``, so no speed-of-light latency can be recovered from it. 0.0 is
     the documented "no SOL anchor" value: the reward's SOL score then degrades
-    to a bounded speedup-over-human-best (see ``sol_score`` in
-    ``nemo_rl/environments/atlas/cuda_kernel_utils.py``).
+    to a bounded speedup-over-human-best (see ``cudagym.rl.sol_score``).
 
     Returns ``{}`` when the file is absent, when the official solution is not
     marked correct, or when no per-workload entry matches.

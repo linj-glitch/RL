@@ -17,14 +17,13 @@
 Responsibilities:
 
   * ``parse_problem``   — KernelFactory-schema metadata dict -> typed ``Definition`` + ``Workload``s.
-  * ``build_solution``  — one extracted code block -> typed single-file ``Solution``.
   * ``evaluate_solution`` — run the two-phase evaluation via ``cudagym.sdk.workflows.evaluate``
                             (it compiles solution & reference, executes, and parses) -> ``Trace``.
   * ``update_result_from_trace`` — ``Trace`` -> ``KernelEvalResult`` (the reward inputs).
 
-The language -> (filename, entry point, fence tag) table lives in
-``cuda_kernel_utils`` (cudagym-free) so the data layer can read it; this module
-owns all the actual ``cudagym`` imports. The owning Ray actor passes in a live
+The per-workload score itself (``sol_score``) and the geometric mean used to
+aggregate it come from ``cudagym.rl``, so this path and the NeMo-Gym resources
+server compute the same number. The owning Ray actor passes in a live
 ``Client``. Hard compile/execution failures are raised as
 ``CudaGym{Compilation,Execution}Error`` (caught by ``cudagym_base``), while
 per-workload correctness/runtime outcomes are returned inside the ``Trace``.
@@ -32,26 +31,19 @@ per-workload correctness/runtime outcomes are returned inside the ``Trace``.
 
 from __future__ import annotations
 
-import hashlib
 import math
 from typing import Any
 
-from cudagym.contracts.common.files import SourceFile, SupportedLanguages
 from cudagym.contracts.definition import Definition
 from cudagym.contracts.eval_config import EvalConfig
 from cudagym.contracts.evaluation import EvaluationStatus
-from cudagym.contracts.solution import BuildSpec, Solution, SupportedHardware
+from cudagym.contracts.solution import Solution
 from cudagym.contracts.trace import Trace
 from cudagym.contracts.workload import Workload
+from cudagym.rl import geomean, sol_score
 from cudagym.sdk import Client, workflows
 
-from .cuda_kernel_utils import (
-    LANGUAGE_DEFAULTS,
-    CudaGymEvalConfig,
-    KernelEvalResult,
-    geomean,
-    sol_score,
-)
+from .cuda_kernel_utils import CudaGymEvalConfig, KernelEvalResult
 
 # Per-workload statuses that deny a stage. ``compiled``/``executed`` flags are
 # granted up to the first failed stage; they feed the metrics and the env
@@ -78,57 +70,6 @@ def parse_problem(metadata: dict[str, Any]) -> tuple[Definition, list[Workload]]
     definition = Definition.model_validate(metadata["definition"])
     workloads = [Workload.model_validate(w) for w in metadata["workloads"]]
     return definition, workloads
-
-
-def build_solution(
-    code: str,
-    language: str,
-    definition_name: str,
-    target_hardware: str,
-    destination_passing_style: bool,
-) -> Solution:
-    """Wrap one extracted code block in a typed, single-file ``Solution``.
-
-    Args:
-        code: the kernel source (one file's content).
-        language: cudagym ``SupportedLanguages`` value (e.g. "triton", "cuda_cpp").
-        definition_name: ``Definition.name`` this solves (links solution<->problem).
-        target_hardware: GPU SKU (cudagym ``SupportedHardware`` value, e.g. "B200").
-        destination_passing_style: True if ``run`` writes outputs in-place into
-            trailing args, False if it returns them; must match the Definition.
-
-    Returns:
-        A frozen ``Solution`` ready for ``evaluate_solution``.
-
-    Raises:
-        ValueError / pydantic.ValidationError: unsupported language, missing
-            hardware, or code that fails Solution/BuildSpec validation. The
-            caller records this as a format error (reward stops at 0).
-    """
-    if language not in LANGUAGE_DEFAULTS:
-        raise ValueError(
-            f"Unsupported language {language!r}; expected one of {list(LANGUAGE_DEFAULTS)}"
-        )
-    if not target_hardware:
-        raise ValueError(
-            "target_hardware is required to build a Solution (set env sku)"
-        )
-    filename, entry_point, _ = LANGUAGE_DEFAULTS[language]
-    # Content hash keeps the solution name (and cudagym's build cache key) stable
-    # across identical completions and distinct across edits.
-    code_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()[:12]
-    return Solution(
-        name=f"rl_{language}_{code_hash}",
-        definition=definition_name,
-        author="nemorl",
-        spec=BuildSpec(
-            languages=[SupportedLanguages(language)],
-            target_hardware=[SupportedHardware(target_hardware)],
-            entry_point=entry_point,
-            destination_passing_style=destination_passing_style,
-        ),
-        sources=[SourceFile(path=filename, content=code)],
-    )
 
 
 def validate_benchmark_config(benchmark_config: dict) -> None:

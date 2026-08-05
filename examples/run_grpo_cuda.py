@@ -40,6 +40,7 @@ import pprint
 from typing import Any, Optional
 
 import ray
+from cudagym.rl import entry_symbol_for, fence_lang_for
 from omegaconf import OmegaConf
 from transformers import PreTrainedTokenizerBase
 
@@ -50,10 +51,6 @@ from nemo_rl.data.datasets.processed_dataset import AllTaskProcessedDataset
 from nemo_rl.data.interfaces import DatumSpec, LLMMessageLogType, TaskDataSpec
 from nemo_rl.distributed.ray_actor_environment_registry import get_actor_python_env
 from nemo_rl.distributed.virtual_cluster import init_ray
-from nemo_rl.environments.atlas.cuda_kernel_utils import (
-    entry_symbol_for,
-    fence_lang_for,
-)
 from nemo_rl.environments.atlas.cudagym_environment import CudaGymEnvironment
 from nemo_rl.environments.interfaces import EnvironmentInterface
 from nemo_rl.models.generation import configure_generation_config
@@ -133,8 +130,8 @@ def _annotate_kernelfactory_problem(
 
     ``entry_function`` comes from the same ``entry_symbol_for`` lookup the outer
     prompt template uses, so the signature line can never contradict the header.
-    Operates on the raw dict (no ``cudagym`` import) since it runs in DataLoader
-    workers.
+    Reads the raw dict rather than a typed ``Definition``: the row stores the
+    definition as JSON, and rendering it needs no validation.
     """
     input_names = list(definition.get("inputs", {}).keys())
     output_names = list(definition.get("outputs", {}).keys())

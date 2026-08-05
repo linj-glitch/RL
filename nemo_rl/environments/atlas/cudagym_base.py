@@ -35,11 +35,12 @@ from __future__ import annotations
 import asyncio
 from abc import ABC
 
+from cudagym.rl import build_solution, fence_lang_for
 from cudagym.sdk import Client
 from cudagym.sdk.errors import CudaGymCompilationError, CudaGymExecutionError
 
 from . import cudagym_client, reward
-from .cuda_kernel_utils import CudaGymEvalConfig, KernelEvalResult, fence_lang_for
+from .cuda_kernel_utils import CudaGymEvalConfig, KernelEvalResult
 from .llm_response_parsing import check_inline_format, get_code
 
 
@@ -124,12 +125,13 @@ class BaseCudaEvaluator(ABC):
                         "the endpoint is verified against the env sku, so this row would build for other silicon"
                     )
                     return
-                solution = cudagym_client.build_solution(
+                solution = build_solution(
                     code=code,
                     language=language,
                     definition_name=definition.name,
                     target_hardware=row_sku or self.eval_config.sku,
                     destination_passing_style=destination_passing_style,
+                    author="nemorl",
                 )
             except Exception as e:  # noqa: BLE001 - any parse/validation error is a format error
                 result.metadata["format_error"] = f"failed to build solution: {e}"

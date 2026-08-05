@@ -23,7 +23,7 @@ weight plus the performance weight scaled by the anchored SOL score (see
 but never rewarded.
 """
 
-import math
+from cudagym.rl import normalize_performance_reward
 
 from .cuda_kernel_utils import KernelEvalResult
 
@@ -78,37 +78,3 @@ def get_reward(
     # correctness weight stands alone.
 
     return reward
-
-
-def normalize_performance_reward(
-    speedup: float,
-    clip_max: float,
-    clip_min: float,
-    scale: float,
-    speedup_ratio: float,
-) -> float:
-    """Map a speedup factor onto ``[0, scale]`` with an asymmetric log scale.
-
-    All parameters come from the recipe (``perf_reward_config`` + the
-    performance weight as ``scale``) — no defaults, so this cannot silently
-    disagree with the config. ``speedup_ratio`` is the fraction of the range
-    given to speedups (>=1.0x); the remainder covers slowdowns. With the
-    shipped ``speedup_ratio=0.75, scale=1.0``:
-      - 0.1x -> 0.0 (minimum)       - 2.0x  -> 0.48
-      - 1.0x -> 0.25 (25% of range) - 10.0x -> 1.0 (maximum)
-    """
-    s = max(clip_min, min(speedup, clip_max))
-
-    if s < 1.0:
-        # Slowdown: map [clip_min, 1.0] -> [0, scale * (1 - speedup_ratio)].
-        slowdown_scale = scale * (1 - speedup_ratio)
-        val = math.log2(s) - math.log2(clip_min)
-        max_val = math.log2(1.0) - math.log2(clip_min)
-        return slowdown_scale * val / max_val
-    else:
-        # Speedup: map [1.0, clip_max] -> [scale * (1 - speedup_ratio), scale].
-        offset = scale * (1 - speedup_ratio)
-        speedup_scale = scale * speedup_ratio
-        val = math.log2(s)
-        max_val = math.log2(clip_max)
-        return offset + speedup_scale * val / max_val

@@ -43,13 +43,16 @@ refuse this kind because the deployed URL is not plumbed to the Gym servers.
 from ``CUDAGYM_UNIFIED_SERVER_URL`` / ``CUDAGYM_URL`` (the environment-variable
 escape hatch).
 
-Kept dependency-light on purpose (omegaconf + stdlib; ``requests`` imported
-lazily in ``probe_endpoint``): the recipe loader is the hydra-free
-``nemo_rl.utils.config_inheritance``, shared with the training-side loader.
-The one exception is the GPU-identity preflight, which needs the cudagym SDK's
-device table: ``ensure_vendored_cudagym`` imports it from the repo's own
-``3rdparty/cudagym`` checkout (adding only ``loguru`` + ``pydantic`` to the
-requirements) and fails with instructions rather than skipping the check.
+Kept clear of the training stack on purpose (omegaconf, the CudaGym SDK, and
+the standard library; ``requests`` is imported lazily in ``probe_endpoint``):
+the recipe loader is the hydra-free ``nemo_rl.utils.config_inheritance``,
+shared with the training-side loader. The SDK supplies both SKU checks
+(``cudagym.rl``) and reads its own device table for them, so it has to be
+importable; submit hosts usually have no training venv, and
+``ensure_vendored_cudagym`` therefore runs at import and points the interpreter
+at the repo's own ``3rdparty/cudagym`` checkout, which adds only ``loguru`` and
+``pydantic`` to the requirements. It fails with instructions rather than
+letting either check be skipped.
 """
 
 import os
@@ -60,10 +63,6 @@ from typing import Any, Optional, Union
 
 from omegaconf import DictConfig, OmegaConf
 
-from nemo_rl.environments.atlas.cuda_kernel_utils import (  # noqa: F401  (re-exported for submit-time callers)
-    canonical_sku,
-    verify_health_payload,
-)
 from nemo_rl.utils.config_inheritance import load_config_with_inheritance
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -80,8 +79,9 @@ PROVIDER_REQUIRED_ENV: dict[str, tuple[str, ...]] = {
 
 
 # cluster yaml `sku:` (lowercase) -> the kernel-target SKU that silicon serves.
-# A small hand-maintained table so this check works on machines without the
-# cudagym SDK installed; add a row per new cluster silicon. Each silicon maps
+# The cluster files spell their `sku:` in lower case, which is this repo's own
+# convention rather than anything CudaGym defines, so the translation is a
+# hand-maintained table; add a row per new cluster silicon. Each silicon maps
 # to itself: CudaGym models B200 and GB200 as different hardware because it
 # locks B200 clocks to 1500 MHz and leaves GB200 unlocked, so the same kernel
 # times differently on the two. Mapping one onto the other here would also
@@ -103,6 +103,74 @@ EXAMPLE_HOSTING_BLOCK = (
 
 class HostingError(ValueError):
     """A hosting declaration failed validation (message is user-facing)."""
+
+
+# --------------------------------------------------------------------------
+# CudaGym SDK bootstrap. Both SKU checks below come from the SDK, so it has to
+# be importable before ``from cudagym.rl import ...`` runs — hence the call at
+# module scope rather than at the first use.
+# --------------------------------------------------------------------------
+
+
+def _cudagym_import_error() -> Optional[str]:
+    """Try to import ``cudagym.rl``; return the ImportError message, or None on success.
+
+    Imports the helper package rather than the bare ``cudagym`` namespace,
+    because that is what this module goes on to import: it pulls in the SDK's
+    device table and contract models, so a checkout that imports but cannot
+    reach those is caught here.
+    """
+    try:
+        import cudagym.rl  # noqa: F401
+    except ImportError as e:
+        return str(e)
+    return None
+
+
+def ensure_vendored_cudagym(repo_root: Union[str, Path] = REPO_ROOT) -> None:
+    """Make the cudagym SDK importable, falling back to the vendored checkout.
+
+    Both the spelling check on every declared SKU (``canonical_sku``) and the
+    GPU-identity preflight (``verify_health_payload``) are the SDK's own
+    ``cudagym.rl`` helpers, and they read the SDK's device table; without the
+    import there is no check at all. The SDK ships in this repo at
+    ``3rdparty/cudagym`` — the same checkout the job's ``uv sync`` installs, so
+    a submit without it would fail at job start anyway — and its import chain
+    needs only ``loguru`` and ``pydantic`` beyond the stdlib. Machines without
+    the training venv therefore import it straight from the checkout; when even
+    that is impossible, this raises ``HostingError`` naming the fix instead of
+    letting the check degrade.
+    """
+    # Already importable (e.g. the training venv) — nothing to do.
+    if _cudagym_import_error() is None:
+        return
+    # Fall back to the vendored submodule checkout, which must be initialized.
+    src = Path(repo_root) / "3rdparty" / "cudagym" / "src"
+    if not (src / "cudagym" / "__init__.py").is_file():
+        raise HostingError(
+            "the cudagym SDK is not importable and the vendored checkout is missing "
+            f"({src}); initialize it with `git submodule update --init 3rdparty/cudagym`"
+        )
+    # Put the checkout on sys.path and try the import again.
+    sys.path.insert(0, str(src))
+    error = _cudagym_import_error()
+    if error is not None:
+        # Still failing (the SDK's own deps are missing): undo the path edit so
+        # a failed preflight leaves sys.path untouched, then name the fix.
+        sys.path.remove(str(src))
+        raise HostingError(
+            f"the cudagym SDK is not importable even from the vendored checkout ({src}): "
+            f"{error}. The SKU checks need the SDK's device table; install the import "
+            "chain's two non-stdlib dependencies: `pip install loguru pydantic`"
+        )
+
+
+ensure_vendored_cudagym()
+
+# Deliberately below the bootstrap call, which is what makes this import work on
+# a host without the SDK installed. verify_health_payload is re-exported for
+# submit-time callers.
+from cudagym.rl import canonical_sku, verify_health_payload  # noqa: E402, F401
 
 
 def load_recipe_merged(
@@ -472,55 +540,9 @@ def resolve_hosting(
 
 
 # --------------------------------------------------------------------------
-# Submit-time /health preflight + SKU verification.
+# Submit-time /health preflight. The payload it fetches is judged by the SDK's
+# ``verify_health_payload``, imported above.
 # --------------------------------------------------------------------------
-
-
-def _cudagym_import_error() -> Optional[str]:
-    """Try to import the cudagym SDK; return the ImportError message, or None on success."""
-    try:
-        import cudagym  # noqa: F401
-    except ImportError as e:
-        return str(e)
-    return None
-
-
-def ensure_vendored_cudagym(repo_root: Union[str, Path] = REPO_ROOT) -> None:
-    """Make the cudagym SDK importable, falling back to the vendored checkout.
-
-    The SKU preflight derives its expectations from the SDK's device table
-    (``sku_expectations`` in ``cuda_kernel_utils``); without the import it
-    could only report "unverifiable", and an unverified GPU identity is how a
-    silicon mismatch stays silent. The SDK ships in this repo at
-    ``3rdparty/cudagym`` — the same checkout the job's ``uv sync`` installs, so
-    a submit without it would fail at job start anyway — and its import chain
-    needs only ``loguru`` and ``pydantic`` beyond the stdlib. Machines without
-    the training venv therefore import it straight from the checkout; when even
-    that is impossible, this raises ``HostingError`` naming the fix instead of
-    letting the check degrade.
-    """
-    # Already importable (e.g. the training venv) — nothing to do.
-    if _cudagym_import_error() is None:
-        return
-    # Fall back to the vendored submodule checkout, which must be initialized.
-    src = Path(repo_root) / "3rdparty" / "cudagym" / "src"
-    if not (src / "cudagym" / "__init__.py").is_file():
-        raise HostingError(
-            "the cudagym SDK is not importable and the vendored checkout is missing "
-            f"({src}); initialize it with `git submodule update --init 3rdparty/cudagym`"
-        )
-    # Put the checkout on sys.path and try the import again.
-    sys.path.insert(0, str(src))
-    error = _cudagym_import_error()
-    if error is not None:
-        # Still failing (the SDK's own deps are missing): undo the path edit so
-        # a failed preflight leaves sys.path untouched, then name the fix.
-        sys.path.remove(str(src))
-        raise HostingError(
-            f"the cudagym SDK is not importable even from the vendored checkout ({src}): "
-            f"{error}. The GPU-identity preflight needs the SDK's device table; install "
-            "the import chain's two non-stdlib dependencies: `pip install loguru pydantic`"
-        )
 
 
 def _probe_headers(entry: ResolvedEntry) -> dict[str, str]:

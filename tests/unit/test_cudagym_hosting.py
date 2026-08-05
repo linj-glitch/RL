@@ -483,70 +483,20 @@ def test_multiple_endpoints_no_unified_url(tmp_path, modal_env):
 # --------------------------------------------------------------------------
 
 
-def test_verify_health_payload_table():
-    ok, _ = verify_health_payload(
-        {"gpu_model": "NVIDIA B200", "sm_version": "sm_100"}, "B200"
-    )
-    assert ok
-    # Same SM class, different hardware: CudaGym locks B200 clocks to 1500 MHz
-    # and leaves GB200 unlocked, so timings are not comparable and the endpoint
-    # must not pass as B200.
-    ok, detail = verify_health_payload(
-        {"gpu_model": "NVIDIA GB200", "sm_version": "sm_100a"}, "B200"
-    )
-    assert not ok and "GB200" in detail
-    # The decorated names real endpoints report still resolve to their SKU.
-    ok, _ = verify_health_payload(
-        {"gpu_model": "NVIDIA H100 80GB HBM3", "sm_version": "sm_90"}, "H100"
-    )
-    assert ok
-    ok, detail = verify_health_payload({"gpu_model": "NVIDIA H100 80GB HBM3"}, "B200")
-    assert not ok and "gpu_model" in detail
-    ok, detail = verify_health_payload(
-        {"gpu_model": "NVIDIA B200", "sm_version": "sm_90"}, "B200"
-    )
-    assert not ok and "sm_version" in detail
-    # "Unverifiable" must NOT read as a pass: nothing was measured, and a
-    # silicon mismatch is silent for Triton (it JITs on whatever GPU answers).
-    ok, detail = verify_health_payload({}, "B200")
-    assert ok is None and detail.startswith("unverifiable")
-    # The per-GPU list wins over the top-level fields. A server's
-    # CUDAGYM_GPU_MODEL setting replaces the top-level gpu_model but leaves the
-    # per-GPU entries reporting what nvidia-smi saw, so the check must not be
-    # satisfiable with a label.
-    ok, detail = verify_health_payload(
-        {
-            "gpu_model": "B200",
-            "sm_version": "sm_100",
-            "gpus": [{"gpu_model": "NVIDIA GB200", "compute_capability": "10.0"}],
-        },
-        "B200",
-    )
-    assert not ok and "GB200" in detail
-    # Servers that report only the per-GPU list still resolve: sm_version
-    # duplicates compute_capability ("9.0" -> "sm_90").
-    ok, _ = verify_health_payload(
-        {"gpus": [{"gpu_model": "NVIDIA H100 80GB HBM3", "compute_capability": "9.0"}]},
-        "H100",
-    )
-    assert ok
-    # A real SupportedHardware value IS checkable, even a rarely used one --
-    # expectations are derived from the SDK, not from a table we maintain.
-    ok, _ = verify_health_payload(
-        {"gpu_model": "NVIDIA GeForce RTX 5090", "sm_version": "sm_120"}, "RTX_5090"
-    )
-    assert ok is True
-    # A name that is not SupportedHardware at all is unverifiable, not a pass.
-    ok, detail = verify_health_payload({"gpu_model": "Whatever"}, "not-a-gpu")
-    assert ok is None and "SupportedHardware" in detail
-    # GB10 is an alias of DGX_SPARK, not a SupportedHardware member of its own;
-    # the SDK-derived expectations must resolve the alias to the real SKU.
-    assert (
-        verify_health_payload(
-            {"gpu_model": "NVIDIA GB10", "sm_version": "sm_121"}, "GB10"
-        )[0]
-        is True
-    )
+def test_verify_health_payload_is_the_sdk_helper_and_stays_three_valued():
+    # The name this module exports is the SDK's function, not a copy of it: the
+    # payload table it is checked against lives with the implementation, in
+    # cudagym's own tests. What submit_grpo depends on is the three-valued
+    # verdict -- it fails the submit on False, and prints "NOT VERIFIED" on
+    # None rather than treating an unchecked endpoint as a pass.
+    import cudagym.rl
+
+    assert verify_health_payload is cudagym.rl.verify_health_payload
+    match = {"gpu_model": "NVIDIA B200", "sm_version": "sm_100"}
+    mismatch = {"gpu_model": "NVIDIA GB200", "sm_version": "sm_100a"}
+    assert verify_health_payload(match, "B200")[0] is True
+    assert verify_health_payload(mismatch, "B200")[0] is False
+    assert verify_health_payload({}, "B200")[0] is None
 
 
 class _FakeResponse:
