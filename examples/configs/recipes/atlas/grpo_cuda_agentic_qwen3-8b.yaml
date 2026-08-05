@@ -83,7 +83,12 @@ policy:
     tensor_parallel_size: 2
     activation_checkpointing: true
     sequence_parallel: true
-    context_parallel_size: 4        # long agentic trajectories at train time
+    # The DTensor worker refuses context parallelism together with sequence
+    # parallelism (NVIDIA-NeMo/RL issue 659), so this stays 1 while
+    # sequence_parallel is on. Agentic trajectories are long enough to want
+    # context parallelism; to use it, set sequence_parallel false and raise
+    # this together, and re-measure — one of the two has to give.
+    context_parallel_size: 1
   # Packing loads the policy with flash_attention_2 (the packed path's required
   # backend; nemo_rl/models/automodel/setup.py), and flash-attn's varlen kernel
   # intermittently fails with "CUDA error: invalid argument" on packed long
