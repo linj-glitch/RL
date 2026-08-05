@@ -1,0 +1,41 @@
+# The Megatron counterpart of grpo_cuda_agentic_solswarm_longctx_qwen3-8b.yaml.
+# Same 131072-token window, same dataset, same agent stack; the only difference
+# is which backend trains the policy, so the two runs are directly comparable.
+#
+# Megatron is the backend the long-context Gym recipes in this repo use
+# (grpo-qwen3-1.7b-1n8g-megatron-super-swe1.yaml is the single-node example),
+# and it is the one that supports YaRN rope scaling if this model ever needs it.
+# The training backend does not reach NeMo-Gym either way: the agent talks to
+# the policy over HTTP through the vLLM server, which serves generation
+# identically under both.
+#
+# The parallelism mirrors the DTensor variant -- the whole node splits the
+# sequence (context parallel 8, tensor parallel 1), because a 131072-token
+# trajectory is what needs splitting and the 8B weights fit one GPU.
+#
+# Launch (single B200 endpoint, needs MODAL_PROXY_TOKEN_ID/SECRET):
+#   uv run --extra atlas python submit_grpo.py -e agsol_longctx_mcore \
+#     --config grpo_cuda_agentic_solswarm_longctx_megatron_qwen3-8b.yaml \
+#     --cluster cw-dfw-cs-001 --num-nodes 1 --time 3:00:00 \
+#     --enroot-agent-image $W/containers/solswarm-agent-amd64.sqsh
+defaults: "grpo_cuda_agentic_solswarm_longctx_qwen3-8b.yaml"
+
+checkpointing:
+  checkpoint_dir: "results/grpo-cuda-agentic-solswarm-longctx-megatron"
+
+policy:
+  dtensor_cfg:
+    enabled: false
+  megatron_cfg:
+    enabled: true
+    # The sequence is split across the node; the weights are not.
+    tensor_model_parallel_size: 1
+    pipeline_model_parallel_size: 1
+    context_parallel_size: 8
+    sequence_parallel: false
+    # A 131072-token sequence is split 8 ways, so each rank holds 16384 tokens
+    # of activations; recomputation is not needed at that size.
+    activation_checkpointing: false
+
+logger:
+  log_dir: "logs/grpo-cuda-agentic-solswarm-longctx-megatron"
