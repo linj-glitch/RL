@@ -61,6 +61,7 @@ from typing import Any, Optional, Union
 from omegaconf import DictConfig, OmegaConf
 
 from nemo_rl.environments.atlas.cuda_kernel_utils import (  # noqa: F401  (re-exported for submit-time callers)
+    canonical_sku,
     verify_health_payload,
 )
 from nemo_rl.utils.config_inheritance import load_config_with_inheritance
@@ -143,10 +144,14 @@ def load_endpoints(endpoints_dir: Path = ENDPOINTS_DIR) -> dict[str, EndpointEnt
                     f"{path}: entry '{key}' must be a mapping with at least 'sku' and 'url'"
                 )
             name = f"{provider}/{key}"
+            try:
+                sku = canonical_sku(val["sku"], f"{path}: entry '{key}' sku")
+            except ValueError as e:
+                raise HostingError(str(e)) from e
             entries[name] = EndpointEntry(
                 name=name,
                 provider=provider,
-                sku=str(val["sku"]),
+                sku=sku,
                 url=str(val["url"]).rstrip("/"),
                 disabled_reason=val.get("disabled_reason"),
                 auth_token_env=val.get("auth_token_env"),
@@ -351,8 +356,12 @@ def resolve_hosting(
     for name, entry in raw.items():
         if not isinstance(entry, dict):
             raise HostingError(f"env.cudagym.{name} must be a mapping")
-        # The SKU defaults to the entry name (env.cudagym.b200 -> B200).
-        sku = str(entry.get("sku") or name).upper()
+        # Declared, never inferred from the entry name, and spelled exactly as
+        # CudaGym spells it: this string becomes Solution.spec.target_hardware.
+        try:
+            sku = canonical_sku(entry.get("sku"), f"env.cudagym.{name}.sku")
+        except ValueError as e:
+            raise HostingError(str(e)) from e
 
         hosting = entry.get("hosting")
         if hosting is None:

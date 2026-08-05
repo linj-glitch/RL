@@ -22,6 +22,7 @@ can use the config type and the language table without the heavy dependency.
 """
 
 import math
+import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -205,6 +206,57 @@ def fence_lang_for(language: str) -> str:
 def entry_symbol_for(language: str) -> str:
     """Entry function name the kernel must define (the part after ``::``)."""
     return LANGUAGE_DEFAULTS[language][1].split("::")[-1]
+
+
+# ---------------------------------------------------------------------------
+# Declared-SKU validation (every place a GPU SKU enters the system).
+# ---------------------------------------------------------------------------
+def canonical_sku(sku: Any, source: str) -> str:
+    """Return ``sku`` unchanged when it is exactly how CudaGym spells that GPU.
+
+    Every declared SKU -- a recipe's ``env.cudagym.<name>.sku``, a dataset row's
+    ``target_hardware``, an ``endpoints/*.yaml`` entry, and the resources
+    server's own config -- must carry the exact ``SupportedHardware`` value,
+    because that string becomes ``Solution.spec.target_hardware`` and the enum
+    is case-sensitive. A near-miss such as "b200" or "rtx-pro-6000" satisfies
+    every case-insensitive check on the way in and then fails inside
+    ``build_solution``, where it is recorded as the model's formatting error
+    rather than the configuration error it is.
+
+    ``source`` names where the value came from, so the message points at the
+    file to edit. Raises ``ValueError`` on anything that is not canonical.
+
+    Without the cudagym package installed -- dataset workers and submit hosts
+    both run without it -- only the spelling rule is enforced, which still
+    catches lower case and hyphens.
+    """
+    if not isinstance(sku, str) or not sku or sku != sku.strip():
+        raise ValueError(f"{source}: GPU sku must be a non-empty CudaGym SupportedHardware value, got {sku!r}")
+    if not re.fullmatch(r"[A-Z0-9_]+", sku):
+        raise ValueError(
+            f"{source}: GPU sku {sku!r} is not spelled the way CudaGym spells it. "
+            "Use the upper-case SupportedHardware value, for example 'B200' or 'RTX_PRO_6000'."
+        )
+    try:
+        from cudagym.config.device import _hardware_match_keys
+        from cudagym.contracts.solution import SupportedHardware
+    except ImportError:  # pragma: no cover - no-op without cudagym (data layer, submit hosts)
+        return sku
+    if sku in {hardware.value for hardware in SupportedHardware}:
+        return sku
+    # A vendor alias resolves inside the SDK but is not the canonical spelling;
+    # "GB10", for example, names DGX_SPARK. Point at the value to write instead.
+    normalized = sku.replace("_", "")
+    for hardware in SupportedHardware:
+        if any(key.replace("_", "").upper() == normalized for key in _hardware_match_keys(hardware)):
+            raise ValueError(
+                f"{source}: GPU sku {sku!r} is a vendor alias, not a CudaGym SupportedHardware "
+                f"value; declare {hardware.value!r} instead."
+            )
+    raise ValueError(
+        f"{source}: GPU sku {sku!r} is not a CudaGym SupportedHardware value "
+        f"(valid: {sorted(h.value for h in SupportedHardware)})"
+    )
 
 
 # ---------------------------------------------------------------------------

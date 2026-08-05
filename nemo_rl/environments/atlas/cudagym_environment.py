@@ -43,7 +43,6 @@ from typing import TypedDict
 
 import ray
 import torch
-from cudagym.contracts.solution import SupportedHardware
 from cudagym.sdk import Client
 
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
@@ -53,6 +52,7 @@ from . import cudagym_client
 from .cuda_kernel_utils import (
     CudaGymEvalConfig,
     aggregate_kernel_metrics,
+    canonical_sku,
     verify_health_payload,
 )
 from .cudagym_base import BaseCudaEvaluator
@@ -115,17 +115,10 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
         # drop it: a silently ignored `lock_clocks` leaves clocks unlocked while
         # timings are scored against locked-clock anchors.
         cudagym_client.validate_benchmark_config(self.eval_config.benchmark_config)
-        # And on a sku the SDK's Solution schema would refuse: SupportedHardware
-        # is a case-sensitive enum, so "b200" would pass every /health preflight
-        # and then fail per-sample inside build_solution, recorded as the
-        # model's format error.
-        try:
-            SupportedHardware(self.eval_config.sku)
-        except ValueError as e:
-            raise ValueError(
-                f"env sku {self.eval_config.sku!r} is not a cudagym SupportedHardware value "
-                f"(valid: {[h.value for h in SupportedHardware]})"
-            ) from e
+        # And on a sku the SDK's Solution schema would refuse (see canonical_sku:
+        # the enum is case-sensitive, so a near-miss survives every check up to
+        # build_solution and is then blamed on the model).
+        canonical_sku(self.eval_config.sku, "env.cudagym.<name>.sku")
 
         # One transport client + one event loop per actor. cudagym >= 2.x
         # speaks split compile/GPU URLs; our launch plumbing carries ONE

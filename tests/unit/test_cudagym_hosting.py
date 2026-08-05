@@ -43,8 +43,10 @@ def _endpoints_dir(tmp_path):
         "b200:\n  sku: B200\n  url: https://b200.modal.run\n"
         "h100:\n  sku: H100\n  url: https://h100.modal.run\n"
     )
+    # The entry key is a familiar shorthand; `sku:` carries the canonical
+    # SupportedHardware value, which for a DGX Spark is not "GB10".
     (d / "astra.yaml").write_text(
-        "gb10:\n  sku: GB10\n  url: https://titan/dgx-spark\n  disabled_reason: pod outage\n"
+        "gb10:\n  sku: DGX_SPARK\n  url: https://titan/dgx-spark\n  disabled_reason: pod outage\n"
     )
     return d
 
@@ -93,6 +95,14 @@ def test_load_endpoints_names_and_fields(tmp_path):
     assert entries["modal/b200"].provider == "modal"
     assert entries["modal/b200"].url == "https://b200.modal.run"
     assert entries["astra/gb10"].disabled_reason == "pod outage"
+    assert entries["astra/gb10"].sku == "DGX_SPARK"
+
+
+def test_load_endpoints_rejects_a_non_canonical_sku(tmp_path):
+    d = _endpoints_dir(tmp_path)
+    (d / "static.yaml").write_text("local:\n  sku: b200\n  url: http://srv:8000\n")
+    with pytest.raises(HostingError, match="not spelled the way CudaGym spells it"):
+        load_endpoints(d)
 
 
 def test_load_endpoints_rejects_incomplete_entry(tmp_path):
@@ -170,7 +180,7 @@ def test_unknown_and_disabled_registry_refs(tmp_path, modal_env):
         _resolve(
             {
                 "gb10": {
-                    "sku": "GB10",
+                    "sku": "DGX_SPARK",
                     "hosting": {"kind": "endpoint", "endpoint": "astra/gb10"},
                 }
             },

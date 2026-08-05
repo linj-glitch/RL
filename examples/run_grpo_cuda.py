@@ -348,12 +348,8 @@ def setup_environments(
 
     if "cudagym" in env_configs:
         for env_name, cfg in env_configs["cudagym"].items():
-            # Copy so the setdefault below cannot mutate the caller's config dict.
-            cfg = dict(cfg)
-            # Default sku = env name; upper-cased because SupportedHardware is a
-            # case-sensitive enum ("b200" would pass every preflight and then
-            # fail per-sample inside build_solution, blamed on the model).
-            cfg.setdefault("sku", env_name.upper())
+            # Every entry declares its own `sku:`; the actor rejects a missing
+            # or non-canonical one rather than guessing from the entry name.
             env = CudaGymEnvironment.options(  # type: ignore[attr-defined]
                 num_gpus=0,  # HTTP client only; GPU work runs on the CudaGym server
                 runtime_env={"py_executable": get_actor_python_env(_CUDAGYM_ENV_FQN)},

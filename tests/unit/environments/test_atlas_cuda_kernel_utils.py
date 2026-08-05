@@ -19,8 +19,11 @@ the two log identical W&B keys. ``sol_score`` is the per-workload performance
 term both paths reward on.
 """
 
+import pytest
+
 from nemo_rl.environments.atlas.cuda_kernel_utils import (
     aggregate_kernel_metrics,
+    canonical_sku,
     sol_score,
 )
 
@@ -198,5 +201,25 @@ def test_sol_score_non_finite_inputs_score_zero():
     assert sol_score(float("nan"), 1.0, 0.5) == 0.0
     assert sol_score(float("inf"), 1.0, 0.5) == 0.0
     assert sol_score(float("-inf"), 1.0, 0.5) == 0.0
+
+
+def test_canonical_sku_accepts_only_the_sdk_spelling():
+    assert canonical_sku("B200", "src") == "B200"
+    assert canonical_sku("RTX_PRO_6000", "src") == "RTX_PRO_6000"
+
+
+@pytest.mark.parametrize("bad", ["b200", "rtx-pro-6000", " B200", "", None, 200])
+def test_canonical_sku_rejects_near_misses(bad):
+    # Each of these satisfies some case-insensitive check upstream and would
+    # only fail inside build_solution, where it reads as a model error.
+    with pytest.raises(ValueError, match="src"):
+        canonical_sku(bad, "src")
+
+
+def test_canonical_sku_names_the_value_to_write_for_a_vendor_alias():
+    # GB10 is an alias the SDK resolves, but DGX_SPARK is the enum value that
+    # Solution.spec.target_hardware requires.
+    with pytest.raises(ValueError, match="DGX_SPARK"):
+        canonical_sku("GB10", "src")
     assert sol_score(0.9, float("nan"), 0.5) == 0.0
     assert sol_score(0.9, 1.0, float("nan")) == 0.0
