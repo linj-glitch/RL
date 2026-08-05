@@ -49,10 +49,12 @@ def main():
     # exp-name deliberately has no default: a forgotten flag should fail fast
     # rather than silently submit into a shared "debug" experiment directory.
     parser.add_argument("--exp-name", "-e", required=True, type=str)
+    # Required: no atlas SFT recipe ships right now, so there is nothing
+    # sensible to default to. `choices` lists whatever is present.
     parser.add_argument(
         "--config",
         type=str,
-        default="sft_cuda_qwen3-8b.yaml",
+        required=True,
         choices=get_available_configs(CONFIG_PATH, "sft*.yaml"),
     )
     parser.add_argument(

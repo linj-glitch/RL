@@ -45,9 +45,9 @@ policy:
   max_total_sequence_length: 16384  # generous for <think> + a kernel; raise for big problems
   tokenizer:
     name: ${policy.model_name}
-    # The shared atlas chat template (think+tools-preserving, prefix-stable) —
-    # the SAME file the SFT recipe (sft_cuda_qwen3-8b.yaml) pins, so RL rollouts
-    # render prompts byte-identically to SFT training. The SFT checkpoint's
+    # The shared atlas chat template (think+tools-preserving, prefix-stable).
+    # SFT must pin this same file so RL rollouts render prompts byte-identically
+    # to SFT training. The SFT checkpoint's
     # tokenizer also embeds it, which is what the agentic path's NeMo-Gym vLLM
     # server picks up. This single-turn recipe uses the template's no-tools path.
     chat_template: "examples/prompts/atlas_preserving_chat_template.jinja"

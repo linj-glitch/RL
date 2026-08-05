@@ -68,8 +68,8 @@ policy:
   max_total_sequence_length: 40960
   tokenizer:
     name: ${policy.model_name}
-    # "default" = the model's own template; an SFT checkpoint from
-    # sft_cuda_qwen3-8b.yaml embeds the atlas preserving template, so keep
+    # "default" = the model's own template; an SFT checkpoint trained with the
+    # atlas preserving template embeds it, so keep
     # "default" (overriding would make serving diverge from SFT). Base-model
     # caveat: stock Qwen3 templates strip <think> from earlier turns, so
     # multi-turn token capture degrades to the final model call — acceptable
@@ -159,6 +159,10 @@ env:
     # actually accepts, so the two cannot drift (cudagym_cuda_agent.yaml reads
     # this as limit.context).
     policy_max_model_len: ${policy.generation.vllm_cfg.max_model_len}
+    # The resources server evaluates on one endpoint; this names its GPU, so
+    # the recipe entry below is the single source of truth for the SKU and the
+    # server cannot disagree with it (cudagym_cuda_agent.yaml reads it as `sku`).
+    cudagym_sku: ${env.cudagym.b200.sku}
     config_paths:
     - responses_api_models/vllm_model/configs/vllm_model_for_training.yaml  # required, *_for_training
     - resources_servers/cudagym/configs/cudagym_cuda_agent.yaml
