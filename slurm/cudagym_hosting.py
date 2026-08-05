@@ -80,13 +80,16 @@ PROVIDER_REQUIRED_ENV: dict[str, tuple[str, ...]] = {
 
 # cluster yaml `sku:` (lowercase) -> the kernel-target SKU that silicon serves.
 # A small hand-maintained table so this check works on machines without the
-# cudagym SDK installed (the SDK's _hardware_match_keys encodes the same
-# aliasing). The one fact worth restating is that GB200 superchips serve B200
-# kernels; add a row per new cluster silicon.
+# cudagym SDK installed; add a row per new cluster silicon. Each silicon maps
+# to itself: CudaGym models B200 and GB200 as different hardware because it
+# locks B200 clocks to 1500 MHz and leaves GB200 unlocked, so the same kernel
+# times differently on the two. Mapping one onto the other here would also
+# contradict the runtime check against the server's reported GPU, which would
+# accept the job at submit and then refuse it at environment init.
 CLUSTER_SILICON: dict[str, str] = {
     "h100": "H100",
     "h200": "H200",
-    "gb200": "B200",
+    "gb200": "GB200",
     "b200": "B200",
 }
 
@@ -396,7 +399,7 @@ def resolve_hosting(
             f"at most one env.cudagym entry may be hosted in-allocation per job; got: {names}"
         )
     # In-allocation servers run on the cluster's own GPUs, so the declared SKU
-    # must match the cluster silicon (per CLUSTER_SILICON; GB200 serves B200).
+    # must match the cluster silicon (per CLUSTER_SILICON).
     if in_alloc:
         cluster_sku = str(cluster_cfg.get("sku") or "").lower()
         silicon = CLUSTER_SILICON.get(cluster_sku, cluster_sku.upper())

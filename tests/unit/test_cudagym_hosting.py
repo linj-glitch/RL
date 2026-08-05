@@ -255,9 +255,18 @@ def test_in_allocation_sku_must_match_cluster_silicon(tmp_path):
             cluster=CLUSTER_H100,
             ep_dir=_endpoints_dir(tmp_path),
         )
-    # GB200-silicon clusters serve B200 kernels.
+    # Each silicon serves only its own kernels. B200 and GB200 share an SM
+    # class but not their clock locking, so a B200 entry on GB200 silicon is
+    # refused here rather than passing submit and failing the runtime check
+    # against the server's reported GPU.
+    with pytest.raises(HostingError, match="gb200 silicon"):
+        _resolve(
+            {"b200": {"sku": "B200", "hosting": {"kind": "colocated"}}},
+            cluster=CLUSTER_GB200,
+            ep_dir=_endpoints_dir(tmp_path),
+        )
     res = _resolve(
-        {"b200": {"sku": "B200", "hosting": {"kind": "colocated"}}},
+        {"gb200": {"sku": "GB200", "hosting": {"kind": "colocated"}}},
         cluster=CLUSTER_GB200,
         ep_dir=_endpoints_dir(tmp_path),
     )
