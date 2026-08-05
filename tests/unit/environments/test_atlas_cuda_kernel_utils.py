@@ -11,14 +11,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Tests for the shared cudagym metric aggregation.
+"""Tests for the shared cudagym metric aggregation and the anchored SOL score.
 
 ``aggregate_kernel_metrics`` is the single source of truth for the metric names
 and semantics of both the single-turn env and the agentic (NeMo-Gym) path, so
-the two log identical W&B keys.
+the two log identical W&B keys. ``sol_score`` is the per-workload performance
+term both paths reward on.
 """
 
-from nemo_rl.environments.atlas.cuda_kernel_utils import aggregate_kernel_metrics
+from nemo_rl.environments.atlas.cuda_kernel_utils import (
+    aggregate_kernel_metrics,
+    sol_score,
+)
 
 
 def test_empty_records_returns_empty():
@@ -179,3 +183,20 @@ def test_submission_metrics_are_omitted_for_single_turn_records():
     )
     assert "submission_rate" not in metrics
     assert "eval_error_rate" not in metrics
+
+
+def test_sol_score_anchor_points():
+    assert sol_score(1.0, 1.0, 0.5) == 0.5  # matches human-best
+    assert sol_score(0.5, 1.0, 0.5) == 1.0  # reaches speed-of-light
+    assert sol_score(100.0, 1.0, 0.5) < 0.01  # far slower than human-best
+
+
+def test_sol_score_non_finite_inputs_score_zero():
+    # min/max keep their first argument when a comparison against NaN is
+    # false, so without the input guard ``max(0.0, min(1.0, nan))`` returns
+    # 1.0 and a NaN latency earns the maximum performance score.
+    assert sol_score(float("nan"), 1.0, 0.5) == 0.0
+    assert sol_score(float("inf"), 1.0, 0.5) == 0.0
+    assert sol_score(float("-inf"), 1.0, 0.5) == 0.0
+    assert sol_score(0.9, float("nan"), 0.5) == 0.0
+    assert sol_score(0.9, 1.0, float("nan")) == 0.0

@@ -33,8 +33,8 @@ BASE_AGENT_CONFIG = "resources_servers/cudagym/configs/cudagym_cuda_agent.yaml"
 
 
 def test_parse_extra_config_opts_honors_shell_quoting():
-    """A quoted value containing spaces must stay one override; before shlex the
-    whitespace split silently dropped everything after the first space."""
+    """A quoted value containing spaces must stay one override rather than being
+    split at whitespace; items without ``=`` carry no override and are skipped."""
     opts = parse_extra_config_opts('++policy.notes="two words" ++env.x=1 loose-flag')
     assert opts == ["policy.notes=two words", "env.x=1"]
     assert parse_extra_config_opts("") == []
@@ -139,7 +139,7 @@ def test_fill_template_value_with_spaces_stays_one_assignment():
 )
 def test_fill_template_round_trips_literally_through_bash(secret):
     """The filled run.sh line must hand the job shell the value byte-for-byte:
-    no expansion of $, backticks, or quotes (double quotes used to let bash
+    no expansion of $, backticks, or quotes (double-quoting would let bash
     expand and corrupt e.g. secrets)."""
     line = "export HF_TOKEN=${HF_TOKEN:-DEFAULT_HF_TOKEN}\n"
     filled = fill_template(line, "HF_TOKEN", secret)

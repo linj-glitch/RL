@@ -23,7 +23,7 @@ Usage:
 
 import argparse
 import os
-import re
+import shlex
 from pathlib import Path
 
 from remote_utils import (
@@ -31,6 +31,7 @@ from remote_utils import (
     package_code,
     get_available_clusters,
     get_available_configs,
+    launch_jobs,
     load_cluster_config,
     validate_cluster_paths,
     upload_text_as_file,
@@ -42,46 +43,12 @@ CLUSTER_CONFIG_PATH = Path(__file__).parent / "slurm" / "clusters"
 SBATCH_TEMPLATE_PATH = Path(__file__).parent / "slurm" / "sft" / "sft.sh"
 
 
-def launch_jobs(
-    ssh_tunnel,
-    code_upload_path,
-    convert: int | None = None,
-    interactive: bool = False,
-    num_jobs: int = 1,
-):
-    """Run the uploaded ``run.sh`` sbatch wrapper on the cluster, once per job.
-
-    When ``convert`` is set, the wrapper is invoked with ``CONVERT_STEP`` so it
-    submits a checkpoint-conversion job instead of a training job.
-    """
-    for i in range(num_jobs):
-        launch_cmd = f"cd {code_upload_path} && "
-        if convert is not None:
-            launch_cmd += f"CONVERT_STEP={convert} "
-        launch_cmd += "bash ../run.sh"
-        if interactive:
-            launch_cmd += " -i"
-
-        print(f"🚀 Running sbatch script ({i + 1}/{num_jobs}): {launch_cmd}")
-        rc, stdout, stderr = ssh_tunnel.run_command(launch_cmd)
-        print(stdout)
-        if stderr:
-            # Submit-plugin advisories (e.g. the stale-data quota notice on
-            # cw-dfw) arrive on stderr even when sbatch succeeds, so stderr
-            # alone is not a failure signal.
-            print(f"⚠️  sbatch stderr: {stderr.strip()}")
-        # sft.sh ends with `Submitted batch job <id>`; an empty id means
-        # sbatch itself failed even if the wrapper exited 0.
-        if rc != 0 or not re.search(r"Submitted batch job \d+", stdout):
-            raise RuntimeError(
-                f"Error running sbatch script (rc={rc}): {stderr.strip() or stdout.strip()}"
-            )
-
-
 def main():
     """Upload the code and sbatch script, then submit the SFT (or conversion) job."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--exp-name", "-e", default="debug", type=str)
+    # exp-name deliberately has no default: a forgotten flag should fail fast
+    # rather than silently submit into a shared "debug" experiment directory.
+    parser.add_argument("--exp-name", "-e", required=True, type=str)
     parser.add_argument(
         "--config",
         type=str,
@@ -100,6 +67,12 @@ def main():
         type=int,
         default=None,
         help="Launch a conversion job to convert the checkpoint to HF. Please specify the step number to convert.",
+    )
+    parser.add_argument(
+        "--convert-hf-model",
+        type=str,
+        default=None,
+        help="HF base model the checkpoint was trained from (e.g. Qwen/Qwen3-8B). Required with --convert.",
     )
     parser.add_argument(
         "--interactive",
@@ -135,12 +108,18 @@ def main():
     args = parser.parse_args()
 
     # Conversion jobs are short single jobs: force a 30-minute limit, no chaining.
-    if args.convert:
+    if args.convert is not None:
         if args.num_jobs > 1:
             parser.error("Cannot specify --num-jobs when --convert is specified")
         if args.time != "04:00:00":
             parser.error("Cannot specify --time when --convert is specified")
+        if not args.convert_hf_model:
+            # sft.sh's conversion command requires CONVERT_HF_MODEL (the HF base
+            # the checkpoint was trained from); without it the job dies on the node.
+            parser.error("--convert requires --convert-hf-model")
         args.time = "00:30:00"
+    elif args.convert_hf_model:
+        parser.error("--convert-hf-model is only meaningful with --convert")
 
     # Load cluster config with env overrides applied and resolved
     cluster_config = load_cluster_config(CLUSTER_CONFIG_PATH, args.cluster)
@@ -186,13 +165,12 @@ def main():
         "TIME": args.time,
         "NUM_NODES": args.num_nodes,
         **secrets,
-        "OUTPUT_DIR": output_dir,
         "GPUS_PER_NODE": cluster_config["gpus_per_node"],
-        "SKIP_GRES_ARG": "1" if cluster_config.get("skip_gres") else "",
+        "SKIP_GRES_ARG": "1" if cluster_config["skip_gres"] else "",
         "SLURM_ACCOUNT": cluster_config["account"],
         "SLURM_PARTITION": cluster_config["partition"],
-        "SLURM_QOS": cluster_config.get("qos", ""),
-    } | {**cluster_config["paths"]}  # every paths.* key fills its DEFAULT_<KEY> token
+        "SLURM_QOS": cluster_config["qos"],  # empty = no --qos flag
+    } | cluster_config["paths"]  # every paths.* key fills its DEFAULT_<KEY> token
 
     for k, v in sbatch_vars.items():
         sbatch_script = fill_template(
@@ -206,9 +184,21 @@ def main():
         print("✅ Skipping launch")
         return
 
-    # Submit the sbatch script
+    # Submit the sbatch script. With --convert, run.sh sees CONVERT_STEP (and
+    # the CONVERT_HF_MODEL its conversion command requires) and submits the
+    # checkpoint-conversion job instead of a training job.
+    env_prefix = ""
+    if args.convert is not None:
+        env_prefix = (
+            f"CONVERT_STEP={args.convert} "
+            f"CONVERT_HF_MODEL={shlex.quote(args.convert_hf_model)} "
+        )
     launch_jobs(
-        ssh_tunnel, code_upload_path, args.convert, args.interactive, args.num_jobs
+        ssh_tunnel,
+        code_upload_path,
+        interactive=args.interactive,
+        num_jobs=args.num_jobs,
+        env_prefix=env_prefix,
     )
 
 

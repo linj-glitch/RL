@@ -199,7 +199,6 @@ def start_ssh_tunnel(
     # Wait for listener to appear
     wait_tunnel_ready(ssh, tunnel_port, timeout)
     print(f"✅ SSH tunnel is ready. Point the proxy at http://127.0.0.1:{tunnel_port}")
-    return
 
 
 def wait_tunnel_ready(ssh: SSHTunnel, port: int, timeout: float = 30.0) -> None:

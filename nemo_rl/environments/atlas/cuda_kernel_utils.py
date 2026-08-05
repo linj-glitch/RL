@@ -21,6 +21,7 @@ data layer (DataLoader worker subprocesses, see ``examples/run_grpo_cuda.py``)
 can use the config type and the language table without the heavy dependency.
 """
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -178,7 +179,7 @@ def _assert_sku_hooks_track_the_sdk() -> None:
         import cudagym.config.device as device
     except ImportError:  # pragma: no cover - no-op without cudagym (data layer)
         return
-    for name in ("GPU_SPECS", "_hardware_match_keys", "_normalize_gpu_name"):
+    for name in ("GPU_SPECS", "_hardware_match_keys", "_parse_gpu_name"):
         if not hasattr(device, name):
             raise RuntimeError(
                 f"cudagym.config.device.{name} is gone upstream; "
@@ -215,12 +216,13 @@ def entry_symbol_for(language: str) -> str:
 # hand-written copy would duplicate it and drift silently. The aliases matter:
 # "GB10", for example, is an alias of DGX_SPARK, not a SupportedHardware
 # member of its own.
-def sku_expectations(sku: str) -> Optional[tuple[tuple[str, ...], str]]:
-    """``(accepted /health gpu_model substrings, expected sm prefix)`` for a SKU.
+def sku_expectations(sku: str) -> Optional[tuple[Any, str]]:
+    """``(the SupportedHardware member, expected sm prefix)`` for a declared SKU.
 
     Returns None when the name is not a SupportedHardware value (or alias), so
     callers can treat "we cannot check this" as its own outcome rather than a
-    pass.
+    pass. The member is returned untyped because this module must import
+    nothing from ``cudagym`` at module level.
     """
     try:
         from cudagym.config.device import GPU_SPECS, _hardware_match_keys
@@ -246,11 +248,35 @@ def sku_expectations(sku: str) -> Optional[tuple[tuple[str, ...], str]]:
     spec = GPU_SPECS.get(hardware)
     if spec is None:
         return None
-    # Accept the enum value plus every vendor alias the SDK records (GB200
-    # superchip nodes report "NVIDIA GB200" while running B200 silicon). The
-    # keys come back already normalized by the SDK, which is the form
-    # ``verify_health_payload`` compares against.
-    return tuple(_hardware_match_keys(hardware)), f"sm_{spec.sm_version}"
+    return hardware, f"sm_{spec.sm_version}"
+
+
+def _resolve_reported_gpu(gpu_model: str, sm_version: str, expected: Any) -> Optional[Any]:
+    """Resolve a ``/health`` gpu_model string to a SupportedHardware member.
+
+    ``_parse_gpu_name`` is the SDK's own longest-match name resolver, and it
+    considers only the SKUs of one SM class per call. Every class is therefore
+    tried, most likely first: the payload's own ``sm_version``, then the
+    expected SKU's class, then the rest. Searching past the payload's class
+    matters for a self-contradictory payload (a B200 name reporting sm_90),
+    which must resolve by name so the independent SM-version check below can
+    report the real discrepancy instead of giving up as unverifiable. Returns
+    None when the SDK cannot name the GPU in any class.
+    """
+    try:
+        from cudagym.config.device import GPU_SPECS, _parse_gpu_name
+    except ImportError:  # pragma: no cover - no-op without cudagym (data layer)
+        return None
+
+    digits = "".join(ch for ch in sm_version if ch.isdigit())
+    preferred = ([int(digits)] if digits else []) + [GPU_SPECS[expected].sm_version]
+    sm_classes = list(dict.fromkeys(preferred + sorted(s.sm_version for s in GPU_SPECS.values())))
+    for sm in sm_classes:
+        try:
+            return _parse_gpu_name(gpu_model, sm)
+        except Exception:  # noqa: BLE001 - the SDK raises when no SKU of that class matches
+            continue
+    return None
 
 
 def verify_health_payload(payload: dict[str, Any], sku: str) -> tuple[Optional[bool], str]:
@@ -261,29 +287,31 @@ def verify_health_payload(payload: dict[str, Any], sku: str) -> tuple[Optional[b
     "nothing was actually checked". The distinction matters because a silicon
     mismatch produces no error for Triton kernels: they JIT-compile on
     whatever GPU serves the request and report that GPU's timings.
+
+    The reported name is resolved with the SDK's longest-match parser and the
+    two SupportedHardware members are compared. A substring test would accept
+    close relatives -- "b200" is a substring of the normalized "NVIDIA GB200",
+    yet CudaGym locks B200 clocks to 1500 MHz and leaves GB200 unlocked, so the
+    two produce different timings for the same kernel -- while exact string
+    equality would wrongly reject the decorated names real endpoints report
+    ("NVIDIA H100 80GB HBM3").
     """
     gpu_model = payload.get("gpu_model") or ""
-    sm_version = payload.get("sm_version") or ""
+    sm_version = str(payload.get("sm_version") or "")
     if not gpu_model and not sm_version:
         return None, "unverifiable: /health reports no gpu_model/sm_version"
     expected = sku_expectations(sku)
     if expected is None:
         return None, f"unverifiable: {sku!r} is not a CudaGym SupportedHardware value"
-    match_keys, sm_prefix = expected
-    # Compare using the SDK's own name normalization rather than raw
-    # substrings: real /health names carry vendor prefixes and spacing
-    # ("NVIDIA GeForce RTX 5090"), and the normalization rules belong to the
-    # SDK. Substring matching after normalization also handles the GB200 case
-    # ("nvidiagb200" contains "b200", and GB200 superchip nodes do serve B200
-    # kernels) without a special case here.
+    hardware, sm_prefix = expected
     if gpu_model:
-        reported = _normalize_gpu(gpu_model)
+        reported = _resolve_reported_gpu(gpu_model, sm_version, hardware)
         if reported is None:
-            return None, f"unverifiable: cannot normalize gpu_model={gpu_model!r}"
-        if not any(key and key in reported for key in match_keys):
+            return None, f"unverifiable: the SDK cannot identify gpu_model={gpu_model!r}"
+        if reported is not hardware:
             return (
                 False,
-                f"endpoint reports gpu_model={gpu_model!r}, which is not {sku}",
+                f"endpoint reports gpu_model={gpu_model!r} ({reported.value}), which is not {sku}",
             )
     # The SM version is checked independently: a matching name with the wrong
     # SM version still fails.
@@ -293,18 +321,6 @@ def verify_health_payload(payload: dict[str, Any], sku: str) -> tuple[Optional[b
             f"endpoint reports sm_version={sm_version!r}, expected {sm_prefix}* for {sku}",
         )
     return True, f"gpu_model={gpu_model or '?'} sm_version={sm_version or '?'}"
-
-
-def _normalize_gpu(name: str) -> Optional[str]:
-    """A ``/health`` gpu_model normalized the way the CudaGym SDK normalizes names."""
-    try:
-        from cudagym.config.device import _normalize_gpu_name
-    except ImportError:  # pragma: no cover - no-op without cudagym (data layer)
-        return None
-    try:
-        return _normalize_gpu_name(name)
-    except Exception:  # noqa: BLE001
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -323,9 +339,16 @@ def sol_score(latency_ms: float, human_best_ms: float, sol_ms: float) -> float:
       * ``S = 0.5`` when the kernel matches human-best (T_k = T_b),
       * ``S = 1.0`` when it reaches speed-of-light (T_k = T_SOL),
       * ``S -> 0`` as it gets slower than human-best.
-    Mirrors ``kernel-factory-bench/scripts/calculate_sol_scores.py`` (clamped
-    here so the RL reward stays bounded).
+    Any non-finite input scores 0.0. Mirrors
+    ``kernel-factory-bench/scripts/calculate_sol_scores.py`` (clamped here so
+    the RL reward stays bounded).
     """
+    # min/max keep their first argument when a comparison against NaN is
+    # false, so the clamp below turns a NaN score into the MAXIMUM
+    # (``max(0.0, min(1.0, nan))`` evaluates to 1.0). Refuse non-finite
+    # inputs before any arithmetic instead.
+    if not all(math.isfinite(v) for v in (latency_ms, human_best_ms, sol_ms)):
+        return 0.0
     gap = human_best_ms - sol_ms
     if gap <= 0:  # degenerate anchors (human-best already at/under SOL): pass/fail
         s = 1.0 if latency_ms <= sol_ms else 0.0
@@ -336,8 +359,6 @@ def sol_score(latency_ms: float, human_best_ms: float, sol_ms: float) -> float:
 
 def geomean(values: list[float]) -> float:
     """Geometric mean of positive values (0.0 if none are positive)."""
-    import math
-
     positives = [v for v in values if v > 0]
     if not positives:
         return 0.0

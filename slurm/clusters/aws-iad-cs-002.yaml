@@ -22,5 +22,7 @@ paths:
 account: nemotron_reason_code
 partition: pool0
 qos: ""
+# true skips sbatch's --gpus-per-node flag, for clusters whose sbatch rejects it.
+skip_gres: false
 
 extra_config_opts: ""

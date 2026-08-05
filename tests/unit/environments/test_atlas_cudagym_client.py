@@ -74,6 +74,24 @@ def test_zero_latency_workloads_are_skipped_by_the_sol_score():
     assert result.human_best_speedup == 1.0
 
 
+def test_non_finite_latency_workloads_are_skipped_by_the_sol_score():
+    anchors = {
+        f"w{i}": {"human_best_latency_ms": 1.0, "sol_latency_ms": 0.0}
+        for i in range(3)
+    }
+    result = KernelEvalResult()
+    # w0 reports NaN and w1 inf: neither is a measurement, and a NaN that
+    # reached sol_score's clamp would score as the MAXIMUM. Only w2 (exactly
+    # human-best) may contribute, so the mean SOL score is exactly 0.5.
+    cudagym_client.update_result_from_trace(
+        _passed_trace([float("nan"), float("inf"), 1.0]), result, sol_anchors=anchors
+    )
+    assert result.correctness is True
+    assert result.sol_score == 0.5
+    assert result.metadata["sol_scores"] == [0.5]
+    assert result.human_best_speedup == 1.0
+
+
 def test_all_latencies_unmeasured_leaves_the_no_anchor_sentinel():
     anchors = {"w0": {"human_best_latency_ms": 1.0, "sol_latency_ms": 0.0}}
     result = KernelEvalResult()

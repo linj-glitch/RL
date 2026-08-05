@@ -605,8 +605,8 @@ def check_registry_against_solswarm(
 
     # Report every registry entry whose URL disagrees with its upstream row.
     lines = []
-    for name, entry in (endpoints or {}).items():
-        url = (getattr(entry, "url", "") or "").rstrip("/")
+    for name, entry in endpoints.items():
+        url = entry.url.rstrip("/")
         # Registry keys mirror the upstream fleet ids (modal/a100-40gb <-> id
         # "a100-40gb"), so match on the key and fall back to the sku only for
         # custom-named entries. Keying on the sku would miss entries whose SDK
@@ -614,7 +614,7 @@ def check_registry_against_solswarm(
         # and cross-compare entries that share a sku (the three A100 variants).
         key = name.split("/", 1)[-1].lower()
         if key not in upstream_urls:
-            key = str(getattr(entry, "sku", name)).lower()
+            key = entry.sku.lower()
         if key in upstream_urls and url and url != upstream_urls[key]:
             lines.append(f"{name}: ours={url} solswarm={upstream_urls[key]}")
     return lines

@@ -33,6 +33,7 @@ per-workload correctness/runtime outcomes are returned inside the ``Trace``.
 from __future__ import annotations
 
 import hashlib
+import math
 from typing import Any
 
 from cudagym.contracts.common.files import SourceFile, SupportedLanguages
@@ -268,7 +269,7 @@ def update_result_from_trace(
     # SOL score (PREFERRED — what solswarm/KFB reward on): per workload, anchored at
     # human-best (0.5) and speed-of-light (1.0). ``sol_anchors`` maps workload uuid ->
     # {"human_best_latency_ms", "sol_latency_ms"}. Only workloads with a positive
-    # human-best AND a positive measured latency contribute; ``sol_latency_ms`` may
+    # human-best AND a finite positive measured latency contribute; ``sol_latency_ms`` may
     # be 0 (then ``sol_score`` degrades to a bounded speedup-over-human-best). With
     # no usable anchors sol_score stays -1 and the reward falls back to the eager
     # speedup above.
@@ -287,9 +288,11 @@ def update_result_from_trace(
             if not anchor or human_best <= 0.0:
                 continue
             t_k = float(evaluation.performance.latency_ms)
-            # latency_ms 0.0 is the SDK's unmeasured default; scoring it would
-            # award the maximum performance term.
-            if t_k <= 0:
+            # 0.0 is the SDK's unmeasured default, and a NaN latency would
+            # clamp to the MAXIMUM score inside sol_score (max/min keep their
+            # first argument when a comparison against NaN is false); neither
+            # may score, so require a finite positive measurement.
+            if not (math.isfinite(t_k) and t_k > 0):
                 continue
             scores.append(
                 sol_score(t_k, human_best, float(anchor.get("sol_latency_ms") or 0.0))
@@ -300,5 +303,6 @@ def update_result_from_trace(
                 scores
             )  # avg SOL score (KFB convention)
             result.metadata["sol_scores"] = scores
-            if human_best_speedups:
-                result.human_best_speedup = geomean(human_best_speedups)
+            # scores and human_best_speedups are appended in lockstep, so the
+            # speedup list is non-empty here.
+            result.human_best_speedup = geomean(human_best_speedups)

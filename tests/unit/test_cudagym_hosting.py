@@ -469,10 +469,18 @@ def test_verify_health_payload_table():
         {"gpu_model": "NVIDIA B200", "sm_version": "sm_100"}, "B200"
     )
     assert ok
-    ok, _ = verify_health_payload(
+    # Same SM class, different hardware: CudaGym locks B200 clocks to 1500 MHz
+    # and leaves GB200 unlocked, so timings are not comparable and the endpoint
+    # must not pass as B200.
+    ok, detail = verify_health_payload(
         {"gpu_model": "NVIDIA GB200", "sm_version": "sm_100a"}, "B200"
     )
-    assert ok  # GB200 silicon serves B200 kernels
+    assert not ok and "GB200" in detail
+    # The decorated names real endpoints report still resolve to their SKU.
+    ok, _ = verify_health_payload(
+        {"gpu_model": "NVIDIA H100 80GB HBM3", "sm_version": "sm_90"}, "H100"
+    )
+    assert ok
     ok, detail = verify_health_payload({"gpu_model": "NVIDIA H100 80GB HBM3"}, "B200")
     assert not ok and "gpu_model" in detail
     ok, detail = verify_health_payload(

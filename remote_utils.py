@@ -16,8 +16,8 @@
 
 Used by ``submit_grpo.py`` and ``submit_sft.py``: run commands and copy files
 over SSH, rsync the git-tracked tree to the cluster, load
-``slurm/clusters/<name>.yaml``, and fill the ``DEFAULT_<VAR>`` tokens in the
-sbatch template before uploading it.
+``slurm/clusters/<name>.yaml``, fill the ``DEFAULT_<VAR>`` tokens in the
+sbatch template before uploading it, and run the uploaded wrapper.
 """
 
 import os
@@ -27,7 +27,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Union
 
 from omegaconf import OmegaConf
 
@@ -45,7 +45,7 @@ def _run(cmd: Sequence[str], cwd: Optional[str] = None) -> subprocess.CompletedP
     return subprocess.run(cmd, cwd=cwd, check=True, text=True, capture_output=True)
 
 
-def _list_submodule_paths(repo_root: str) -> list:
+def _list_submodule_paths(repo_root: str) -> list[str]:
     """Return a list of submodule relative paths (recursive)."""
     try:
         sub_status = _run(
@@ -96,7 +96,7 @@ class SSHTunnel:
         """Return the ``user@host`` destination string (or bare host)."""
         return f"{self.user}@{self.host}" if self.user else self.host
 
-    def _ssh_base(self) -> list:
+    def _ssh_base(self) -> list[str]:
         """Return the ``ssh`` argv prefix with the shared connection options."""
         cmd = ["ssh", "-p", str(self.port)]
         if self.compress:
@@ -111,7 +111,7 @@ class SSHTunnel:
             )  # accept-new needs OpenSSH >= 7.6
         return cmd
 
-    def _scp_base(self) -> list:
+    def _scp_base(self) -> list[str]:
         """Return the ``scp`` argv prefix with the shared connection options."""
         cmd = ["scp", "-P", str(self.port)]
         if self.compress:
@@ -167,10 +167,10 @@ def check_for_uncommitted_changes():
 
 def package_code(
     ssh_tunnel: SSHTunnel,
-    upload_path: str,
+    upload_path: Union[str, Path],
     delete: bool = True,
     skip_commit_check: bool = False,
-) -> str:
+) -> Union[str, Path]:
     """Rsync the project to the remote host, syncing only git-tracked files.
 
     ``git ls-files --recurse-submodules`` supplies the file list, so submodule
@@ -186,24 +186,12 @@ def package_code(
     if not skip_commit_check:
         check_for_uncommitted_changes()
 
-    # Resolve repo root
+    # Resolve repo root (_run raises if this is not a git work tree).
     repo_root = _run(["git", "rev-parse", "--show-toplevel"]).stdout.strip()
-    if not repo_root:
-        raise RuntimeError("Not inside a git repository; cannot rsync code")
 
-    # Build SSH transport for rsync
-    ssh_cmd: list[str] = ["ssh", "-p", str(ssh_tunnel.port)]
-    if ssh_tunnel.compress:
-        ssh_cmd.append("-C")
-    if ssh_tunnel.identity_file:
-        ssh_cmd.extend(["-i", ssh_tunnel.identity_file])
-    if ssh_tunnel.strict_host_key_checking:
-        ssh_cmd.extend(["-o", "StrictHostKeyChecking=yes"])
-    else:
-        ssh_cmd.extend(
-            ["-o", "StrictHostKeyChecking=accept-new"]
-        )  # accept-new needs OpenSSH >= 7.6
-    rsync_rsh = " ".join(shlex.quote(x) for x in ssh_cmd)
+    # rsync's -e option takes one shell-parsed command string, so the tunnel's
+    # ssh argv is quoted per token and joined.
+    rsync_rsh = " ".join(shlex.quote(x) for x in ssh_tunnel._ssh_base())
 
     # Get all git-tracked files including submodules
     # --recurse-submodules ensures we get files from all submodules
@@ -254,6 +242,41 @@ def package_code(
 
     print("✅ Code uploaded")
     return upload_path
+
+
+def launch_jobs(
+    ssh_tunnel: SSHTunnel,
+    code_upload_path: Path,
+    interactive: bool = False,
+    num_jobs: int = 1,
+    env_prefix: str = "",
+) -> None:
+    """Run the uploaded ``run.sh`` sbatch wrapper on the cluster, once per job.
+
+    ``env_prefix`` is prepended verbatim to the remote command line (for
+    example ``"CONVERT_STEP=100 CONVERT_HF_MODEL=Qwen/Qwen3-8B "``, which
+    makes the SFT wrapper submit a checkpoint-conversion job instead of a
+    training job).
+    """
+    for i in range(num_jobs):
+        launch_cmd = f"cd {code_upload_path} && {env_prefix}bash ../run.sh"
+        if interactive:
+            launch_cmd += " -i"
+
+        print(f"🚀 Running sbatch script ({i + 1}/{num_jobs}): {launch_cmd}")
+        rc, stdout, stderr = ssh_tunnel.run_command(launch_cmd)
+        print(stdout)
+        if stderr:
+            # Submit-plugin advisories (e.g. the stale-data quota notice on
+            # cw-dfw) arrive on stderr even when sbatch succeeds, so stderr
+            # alone is not a failure signal.
+            print(f"⚠️  sbatch stderr: {stderr.strip()}")
+        # The wrapper ends with `Submitted batch job <id>`; an empty id means
+        # sbatch itself failed even if the wrapper exited 0.
+        if rc != 0 or not re.search(r"Submitted batch job \d+", stdout):
+            raise RuntimeError(
+                f"Error running sbatch script (rc={rc}): {stderr.strip() or stdout.strip()}"
+            )
 
 
 def get_available_clusters(cluster_config_dir: Path) -> list[str]:

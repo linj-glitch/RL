@@ -24,6 +24,8 @@ paths:
 account: coreai_nvfm_cupilot
 partition: batch
 qos: normal
+# true skips sbatch's --gpus-per-node flag, for clusters whose sbatch rejects it.
+skip_gres: false
 
 # cw-dfw-cs-001's login node cannot reach other clusters' login nodes directly, so a
 # slurm-service CudaGym deployment bridges them with an SSH tunnel first

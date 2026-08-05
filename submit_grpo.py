@@ -24,7 +24,6 @@ Usage:
 import subprocess
 import argparse
 import os
-import re
 import shlex
 from pathlib import Path
 
@@ -35,6 +34,7 @@ from remote_utils import (
     package_code,
     get_available_clusters,
     get_available_configs,
+    launch_jobs,
     load_cluster_config,
     validate_cluster_paths,
     fill_template,
@@ -92,31 +92,6 @@ def parse_extra_config_opts(extra_config_opts: str) -> list[str]:
     skipped.
     """
     return [opt.lstrip("+") for opt in shlex.split(extra_config_opts) if "=" in opt]
-
-
-def launch_jobs(
-    ssh_tunnel, code_upload_path, interactive: bool = False, num_jobs: int = 1
-):
-    """Run the uploaded ``run.sh`` sbatch wrapper on the cluster, once per job."""
-    for i in range(num_jobs):
-        launch_cmd = f"cd {code_upload_path} && bash ../run.sh"
-        if interactive:
-            launch_cmd += " -i"
-
-        print(f"🚀 Running sbatch script ({i + 1}/{num_jobs}): {launch_cmd}")
-        rc, stdout, stderr = ssh_tunnel.run_command(launch_cmd)
-        print(stdout)
-        if stderr:
-            # Submit-plugin advisories (e.g. the stale-data quota notice on
-            # cw-dfw) arrive on stderr even when sbatch succeeds, so stderr
-            # alone is not a failure signal.
-            print(f"⚠️  sbatch stderr: {stderr.strip()}")
-        # grpo.sh ends with `Submitted batch job <id>`; an empty id means
-        # sbatch itself failed even if the wrapper exited 0.
-        if rc != 0 or not re.search(r"Submitted batch job \d+", stdout):
-            raise RuntimeError(
-                f"Error running sbatch script (rc={rc}): {stderr.strip() or stdout.strip()}"
-            )
 
 
 def main():
@@ -433,10 +408,10 @@ def main():
         **secrets,
         "GPUS_PER_NODE": cluster_config["gpus_per_node"],
         # Cluster facts come from the cluster yaml, not from name-matching here.
-        "SKIP_GRES_ARG": "1" if cluster_config.get("skip_gres") else "",
+        "SKIP_GRES_ARG": "1" if cluster_config["skip_gres"] else "",
         "SLURM_ACCOUNT": cluster_config["account"],
         "SLURM_PARTITION": cluster_config["partition"],
-        "SLURM_QOS": cluster_config.get("qos", ""),  # empty = no --qos flag
+        "SLURM_QOS": cluster_config["qos"],  # empty = no --qos flag
         # Always present so no DEFAULT_* token leaks into the job env when no
         # hosting kind sets them (ray.sub tests CUDAGYM_ENABLED == "1").
         "CUDAGYM_ENABLED": "0",

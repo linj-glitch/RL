@@ -13,9 +13,11 @@
 # limitations under the License.
 """Tests for the KernelFactory problem row normalization.
 
-``language`` and ``destination_passing_style`` are hard-indexed by design: the
-dataset builders always write them, and a silent default would evaluate a row
-as something its builder never declared.
+Row fields the builders always write are hard-indexed by design
+(``definition``, ``workloads``, ``language``, ``destination_passing_style``,
+``sol_anchors``): a silent default would evaluate a row as something its
+builder never declared. ``target_hardware`` alone is deliberately optional —
+it falls back to the environment's SKU.
 """
 
 from types import SimpleNamespace
@@ -59,3 +61,16 @@ def test_missing_destination_passing_style_is_a_dataset_bug():
     del row["destination_passing_style"]
     with pytest.raises(KeyError):
         format_cuda_problem(row, ENVS)
+
+
+def test_missing_sol_anchors_is_a_dataset_bug():
+    row = _row()
+    del row["sol_anchors"]
+    with pytest.raises(KeyError):
+        format_cuda_problem(row, ENVS)
+
+
+def test_missing_target_hardware_falls_back_to_the_env_sku():
+    row = _row()
+    del row["target_hardware"]
+    assert format_cuda_problem(row, ENVS)["target_hardware"] == "B200"

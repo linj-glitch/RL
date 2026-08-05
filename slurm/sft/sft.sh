@@ -49,7 +49,7 @@ export COMMAND="uv run ./examples/run_sft.py \
     logger.wandb.project=${WANDB_PROJECT} \
     logger.wandb.name=${EXP_NAME} \
     logger.wandb_enabled=true \
-    cluster.gpus_per_node=${GPUS_PER_NODE:-8} \
+    cluster.gpus_per_node=${GPUS_PER_NODE} \
     ${EXTRA_CONFIG_OPTS}
 "
 if [ -n "$CONVERT_STEP" ]; then
@@ -105,8 +105,8 @@ if [ -n "$SLURM_QOS" ]; then
         --qos=${SLURM_QOS} \
     )
 fi
+# Clusters whose sbatch rejects --gpus-per-node set skip_gres in their cluster yaml.
 if [ -z "$SKIP_GRES_ARG" ]; then
-    # EOS does not support --gpus-per-node argument
     SBATCH_ARGS+=(
         --gpus-per-node=${GPUS_PER_NODE} \
     )

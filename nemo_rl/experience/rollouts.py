@@ -18,6 +18,7 @@
 import asyncio
 import copy
 import json
+import logging
 import statistics
 import warnings
 from collections import defaultdict
@@ -679,9 +680,10 @@ def _aggregate_env_metrics(
     (math, code, ...) are skipped: their ``global_post_process_and_metrics``
     expects a fully-processed batch (``is_end``, ``generation_lengths``, ...)
     that is not available at rollout time. Aggregation is best-effort per
-    task; failures are printed rather than raised so metric aggregation can
-    never crash a rollout. Shared by the synchronous and asynchronous native
-    rollout paths so both log identical metrics.
+    task; failures are logged at WARNING rather than raised so metric
+    aggregation can never crash a rollout. Called by both native rollout
+    paths (``run_multi_turn_rollout`` and ``run_async_multi_turn_rollout``)
+    so they log identical metrics.
     """
     if metadata_list is None or task_names is None:
         return
@@ -711,7 +713,12 @@ def _aggregate_env_metrics(
             for k, v in env_metrics.items():
                 rollout_metrics[f"{task_name}/{k}"] = v
         except Exception as e:
-            print(f"\n  ⚠️ Error aggregating '{task_name}' env metrics: {e}")
+            # A failure here silently drops the env's metrics for the step
+            # (e.g. a missing {task_name}/correctness_rate), so record the
+            # exception itself, not just the fact of a failure.
+            logging.getLogger(__name__).warning(
+                "Error aggregating '%s' env metrics: %r", task_name, e
+            )
 
 
 def run_multi_turn_rollout(
@@ -1430,6 +1437,9 @@ async def _run_multi_turn_rollout_async(
                 [metrics["truncated"] for metrics in all_sample_metrics],
                 dtype=torch.bool,
             ),
+            # Per-sample environment metadata, as in the synchronous path, so
+            # _aggregate_env_metrics can aggregate env-specific online metrics.
+            "metadata": [state.get("metadata") for state in final_sample_states],
         }
     )
 
@@ -1499,7 +1509,17 @@ def run_async_multi_turn_rollout(
             greedy=greedy,
         )
     )
-    return final_batch, _aggregate_multi_turn_rollout_metrics(sample_metrics)
+    rollout_metrics = _aggregate_multi_turn_rollout_metrics(sample_metrics)
+    # Merge per-env (kernel-eval) online metrics into rollout_metrics. Only envs
+    # whose per-sample metadata carries the kernel-eval fields (cudagym) are
+    # aggregated; others are skipped (see _aggregate_env_metrics).
+    _aggregate_env_metrics(
+        rollout_metrics,
+        final_batch.get("task_name"),
+        final_batch.get("metadata"),
+        task_to_env,
+    )
+    return final_batch, rollout_metrics
 
 
 async def run_async_multi_turn_rollout_groups(

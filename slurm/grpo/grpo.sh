@@ -103,7 +103,7 @@ export COMMAND="uv run ${UV_EXTRAS} ${RUN_SCRIPT} \
     logger.wandb.name=${EXP_NAME} \
     logger.wandb_enabled=true \
     cluster.num_nodes=${TRAIN_NUM_NODES} \
-    cluster.gpus_per_node=${GPUS_PER_NODE:-8} \
+    cluster.gpus_per_node=${GPUS_PER_NODE} \
     ${EXTRA_CONFIG_OPTS}
 "
 
@@ -116,7 +116,10 @@ cwd_parent=$(dirname $cwd)
 # plus the workspace, model, and dataset roots.
 export MOUNTS="$cwd_parent:$cwd_parent,$cwd:/opt/nemo-rl,$WORKSPACE_PATH:$WORKSPACE_PATH,$MODELS_PATH:/models,$DATASETS_PATH:/datasets"
 # Import the vendored cudagym SDK straight from the checkout on every node.
-export PYTHONPATH="$cwd/3rdparty/cudagym/src:${PYTHONPATH}"
+# ${PYTHONPATH:+:$PYTHONPATH} appends the previous value only when one is set;
+# a plain ":${PYTHONPATH}" would leave a trailing colon when it is unset, which
+# Python reads as "also search the process's current directory".
+export PYTHONPATH="$cwd/3rdparty/cudagym/src${PYTHONPATH:+:$PYTHONPATH}"
 # The uploaded 3rdparty/cudagym tree has no .git, so setuptools-scm can't derive
 # its version when the venvs build it editable (uv atlas extra, Gym server
 # venvs). submit_grpo.py derives this from `git describe` on the submodule at

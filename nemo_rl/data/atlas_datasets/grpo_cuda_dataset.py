@@ -85,8 +85,7 @@ def _sample_task(
         tasks = [
             t
             for t in tasks
-            if str(getattr(task_to_env_config[t], "sku", "")).lower()
-            == str(target_hardware).lower()
+            if str(task_to_env_config[t].sku).lower() == str(target_hardware).lower()
         ]
         if not tasks:
             raise ValueError(
@@ -117,18 +116,18 @@ def format_cuda_problem(
     chosen_task = _sample_task(task_to_env_config, data.get("target_hardware"))
     return {
         "task_name": chosen_task,
+        # Everything but target_hardware is hard-indexed: the dataset builders
+        # always write these fields, and a silent default here would evaluate
+        # the row as something the builder never declared.
         "definition": data["definition"],
         "workloads": data["workloads"],
-        # language and destination_passing_style are hard-indexed: the dataset
-        # builders always write them, and a silent default here would evaluate
-        # the row as something the builder never declared.
         "language": data["language"],
         # Fall back to the chosen env's sku when the row doesn't pin hardware.
         "target_hardware": data.get("target_hardware")
-        or getattr(task_to_env_config[chosen_task], "sku", None),
+        or task_to_env_config[chosen_task].sku,
         "destination_passing_style": data["destination_passing_style"],
         # Per-workload SOL/human-best anchors (JSON string) for the SOL-score reward.
-        "sol_anchors": data.get("sol_anchors", "{}"),
+        "sol_anchors": data["sol_anchors"],
     }
 
 

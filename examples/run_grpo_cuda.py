@@ -288,12 +288,8 @@ def setup_data(
 ) -> tuple[AllTaskProcessedDataset, AllTaskProcessedDataset]:
     """Build the processed train/validation datasets for the CudaGym task(s)."""
     print("\n▶ Setting up data...")
-    # Accept either a path list (dataset_paths) or a single path (dataset_path);
-    # likewise for validation.
-    data_paths: list[str] = data_config.get("dataset_paths") or [
-        data_config["dataset_path"]
-    ]
-    val_data_paths: list[str] = data_config.get("val_dataset_paths") or (
+    data_paths: list[str] = [data_config["dataset_path"]]
+    val_data_paths: list[str] = (
         [data_config["val_dataset_path"]] if data_config.get("val_dataset_path") else []
     )
     print(f"Train datasets: {data_paths}\nValidation datasets: {val_data_paths}")
@@ -305,8 +301,8 @@ def setup_data(
         json_file_paths=data_paths,
         val_json_file_paths=val_data_paths,
         task_to_env_config=task_to_env_config,
-        seed=grpo_config.get("seed", 42),
-        test_size=data_config.get("test_size", 0.05),
+        seed=grpo_config["seed"],
+        test_size=data_config["test_size"],
     )
 
     default_task_spec = TaskDataSpec(

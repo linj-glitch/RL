@@ -59,10 +59,10 @@ def get_code(completion: str, fence_lang: str = "python") -> str:
 
     Anchoring matters: a completion may contain DRAFT fenced blocks inside the
     ``<think>`` region; extracting the first fence anywhere would compile and
-    reward the draft instead of the final kernel. This uses the same anchor as
-    ``check_inline_format`` (the first ``\n</think>\n``), so any completion that
-    passes the format check extracts the block the check validated. When no
-    think block is present, falls back to the first fence in the completion.
+    reward the draft instead of the final kernel. The anchor is the first
+    ``\n</think>\n`` in the completion, and the first matching fence after it
+    is extracted. When no think block is present, falls back to the first
+    fence in the completion.
 
     Args:
         completion: the model's raw completion text.

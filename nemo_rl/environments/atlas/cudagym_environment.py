@@ -38,10 +38,13 @@ prompt and environment-observation tokens are excluded from the loss.
 
 import logging
 import os
+from dataclasses import fields as dataclass_fields
 from typing import TypedDict
 
 import ray
 import torch
+from cudagym.contracts.solution import SupportedHardware
+from cudagym.sdk import Client
 
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 from nemo_rl.environments.interfaces import EnvironmentInterface, EnvironmentReturn
@@ -89,8 +92,6 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
         """Validate the raw ``env.cudagym.<name>`` mapping and build the SDK client."""
         # The raw YAML dict (env.cudagym.<sku>) is the only calling convention:
         # the driver passes the recipe mapping straight through Ray.
-        from dataclasses import fields as dataclass_fields
-
         # Kwargs come from the dataclass itself, and unknown keys are
         # REJECTED (the same class of typo that validate_benchmark_config
         # catches one level down): a misspelled `reward_weight:` would
@@ -118,8 +119,6 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
         # is a case-sensitive enum, so "b200" would pass every /health preflight
         # and then fail per-sample inside build_solution, recorded as the
         # model's format error.
-        from cudagym.contracts.solution import SupportedHardware
-
         try:
             SupportedHardware(self.eval_config.sku)
         except ValueError as e:
@@ -128,18 +127,14 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
                 f"(valid: {[h.value for h in SupportedHardware]})"
             ) from e
 
-        # One transport client + one event loop per actor. The client is
-        # imported here (not at module top) so the data layer can import the
-        # config without pulling in cudagym. cudagym >= 2.x speaks split
-        # compile/GPU URLs; our launch plumbing carries ONE unified endpoint
-        # (the in-allocation LB or a managed remote), so it is passed as both.
-        # Resolution order: the recipe-pinned server_url, then
-        # CUDAGYM_UNIFIED_SERVER_URL / CUDAGYM_URL (how colocated mode injects
-        # the LB address), then Client.from_env() (native split
+        # One transport client + one event loop per actor. cudagym >= 2.x
+        # speaks split compile/GPU URLs; our launch plumbing carries ONE
+        # unified endpoint (the in-allocation LB or a managed remote), so it
+        # is passed as both. Resolution order: the recipe-pinned server_url,
+        # then CUDAGYM_UNIFIED_SERVER_URL / CUDAGYM_URL (how colocated mode
+        # injects the LB address), then Client.from_env() (native split
         # CUDAGYM_{COMPILE,GPU}_SERVER_URL; raises with a clear message when
         # nothing is set).
-        from cudagym.sdk import Client
-
         server_url = (
             self.eval_config.server_url
             or os.environ.get("CUDAGYM_UNIFIED_SERVER_URL")
@@ -322,7 +317,7 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
             records = [m for m in batch_metadata if isinstance(m, dict)]
             metrics = aggregate_kernel_metrics(records)
         except Exception as e:  # never let metric aggregation crash a rollout
-            LOG.warning("Error aggregating cudagym metrics: %s", e)
+            LOG.warning("Error aggregating cudagym metrics: %r", e)
         return batch, metrics
 
     async def shutdown(self) -> None:

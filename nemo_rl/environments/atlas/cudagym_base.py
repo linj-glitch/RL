@@ -150,9 +150,15 @@ class BaseCudaEvaluator(ABC):
             except Exception as e:  # noqa: BLE001 - record unexpected SDK/transport errors
                 result.metadata["evaluation_error"] = str(e)
                 return
-            cudagym_client.update_result_from_trace(
-                trace, result, sol_anchors=meta.get("sol_anchors")
-            )
+            # Mapping the Trace onto the result is per-sample work like the
+            # stages above: an unexpected exception here must mark this sample
+            # as an evaluation error, not fail the whole batch.
+            try:
+                cudagym_client.update_result_from_trace(
+                    trace, result, sol_anchors=meta.get("sol_anchors")
+                )
+            except Exception as e:  # noqa: BLE001 - record unexpected mapping errors
+                result.metadata["evaluation_error"] = f"error mapping trace: {e}"
 
         await asyncio.gather(*(_evaluate_one(i) for i in range(len(results))))
         return results
