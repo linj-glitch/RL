@@ -31,6 +31,14 @@ defaults: "grpo_cuda_agentic_solswarm_qwen3-8b.yaml"
 checkpointing:
   checkpoint_dir: "results/grpo-cuda-agentic-solswarm-longctx"
 
+data:
+  # All-B200 seed rows (this recipe declares only the B200 endpoint). The base
+  # agentic recipe ships a placeholder path, so this must be set.
+  train:
+    data_path: "/datasets/cuda_agentic_seeds_b200/train.jsonl"
+  validation:
+    data_path: "/datasets/cuda_agentic_seeds_b200/val.jsonl"
+
 policy:
   max_total_sequence_length: 131072
   # The logprob pass over a 131072-token sequence is chunked so its activations
