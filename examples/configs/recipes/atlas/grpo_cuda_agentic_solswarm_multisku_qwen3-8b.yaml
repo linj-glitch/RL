@@ -9,18 +9,18 @@
 # kernel is always compiled for and timed on the GPU its row declared. A row
 # naming a GPU with no endpoint is refused rather than scored on another one.
 #
-# IMPORTANT, on the reward: KernelFactory-Bench publishes speed-of-light anchors
-# for B200 only, so only B200 rows earn the anchored performance term. Rows for
-# any other GPU carry no anchors, and the speedup fallback that would otherwise
-# cover them CANNOT FIRE as the resources server ships: the fallback needs a
-# timed reference, which requires `benchmark_config: {benchmark_reference: true}`
-# in cudagym_cuda_agent.yaml, and that config is empty by default. Those rows
-# therefore earn the correctness weight and no performance gradient.
+# On the reward: KernelFactory-Bench publishes speed-of-light anchors for B200
+# only, so B200 rows earn the anchored performance term and rows for any other
+# GPU have no anchors to score against. Those rows fall back to speedup over the
+# reference implementation, which only exists if the evaluation times that
+# reference -- hence benchmark_reference below, without which they would earn
+# the correctness weight and no performance gradient at all. It costs one extra
+# timed run per workload and does not change how anchored rows are scored.
 #
-# So as it stands this recipe trains performance on B200 and correctness only on
-# the rest. Either enable benchmark_reference (it costs an extra timed run per
-# submission) or read the per-SKU metrics knowing the two GPUs are optimized for
-# different things -- a pooled performance average is meaningless here.
+# The two terms are both in [0, 1] and both correctness-gated, but they measure
+# different things: distance to the hardware limit for B200, speedup over eager
+# PyTorch elsewhere. Read the per-SKU metrics; a pooled performance average
+# mixes the two.
 #
 # Launch (needs MODAL_PROXY_TOKEN_ID/SECRET for both endpoints):
 #   uv run --extra atlas python submit_grpo.py -e agsol_multisku \
@@ -47,6 +47,11 @@ env:
       hosting:
         kind: endpoint
         endpoint: modal/h100
+  nemo_gym:
+    # Time the reference implementation, so rows without speed-of-light anchors
+    # (everything that is not B200) have a speedup to score. See the header.
+    cudagym_benchmark_config:
+      benchmark_reference: true
 
 data:
   # Rows alternate between the declared SKUs; every row pins its own

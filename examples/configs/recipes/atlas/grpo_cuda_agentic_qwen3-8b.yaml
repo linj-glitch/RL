@@ -171,6 +171,12 @@ env:
     # resources server cannot disagree with them. Declared empty here so the
     # key exists when the recipe is loaded without submit_grpo.
     cudagym_endpoints: {}
+    # CudaGym EvalConfig overrides for the resources server. Empty is right when
+    # every row carries speed-of-light anchors, which is the case for the
+    # KernelFactory-Bench B200 set; a run whose rows lack them needs
+    # {benchmark_reference: true} for the speedup fallback to have a speedup to
+    # score.
+    cudagym_benchmark_config: {}
     config_paths:
     - responses_api_models/vllm_model/configs/vllm_model_for_training.yaml  # required, *_for_training
     - resources_servers/cudagym/configs/cudagym_cuda_agent.yaml
