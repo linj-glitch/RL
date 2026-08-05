@@ -37,6 +37,10 @@ policy:
     enabled: false
   megatron_cfg:
     enabled: true
+    # Required by MCore whenever logprob_chunk_size is set, which the recipe
+    # this inherits does to keep the logprob pass over a 131072-token sequence
+    # from materializing its activations at once.
+    defer_fp32_logits: true
     # The sequence is split across the node; the weights are not.
     tensor_model_parallel_size: 1
     pipeline_model_parallel_size: 1
