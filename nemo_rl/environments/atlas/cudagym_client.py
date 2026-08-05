@@ -63,9 +63,9 @@ _CORRECT_OK = {EvaluationStatus.PASSED, EvaluationStatus.CORRECTNESS_PASSED}
 def parse_problem(metadata: dict[str, Any]) -> tuple[Definition, list[Workload]]:
     """Validate the KernelFactory problem carried in env metadata into typed models.
 
-    Expects ``metadata["definition"]`` (a Definition dict, e.g. a KFB
-    ``definition.json``) and ``metadata["workloads"]`` (a list of Workload dicts,
-    e.g. the lines of a KFB ``workload.jsonl``).
+    Expects ``metadata["definition"]`` (a Definition dict, i.e. a problem's
+    ``definition.json``) and ``metadata["workloads"]`` (a list of Workload
+    dicts, i.e. the lines of its ``workload.jsonl``).
     """
     definition = Definition.model_validate(metadata["definition"])
     workloads = [Workload.model_validate(w) for w in metadata["workloads"]]
@@ -207,7 +207,7 @@ def update_result_from_trace(
     if summary.latency_ms is not None and summary.latency_ms.mean is not None:
         result.runtime = summary.latency_ms.mean
 
-    # SOL score (PREFERRED — what solswarm/KFB reward on): per workload, anchored at
+    # SOL score (PREFERRED — what solswarm rewards on): per workload, anchored at
     # human-best (0.5) and speed-of-light (1.0). ``sol_anchors`` maps workload uuid ->
     # {"human_best_latency_ms", "sol_latency_ms"}. Only workloads with a positive
     # human-best AND a finite positive measured latency contribute; ``sol_latency_ms`` may
@@ -240,9 +240,7 @@ def update_result_from_trace(
             )
             human_best_speedups.append(human_best / t_k)
         if scores:
-            result.sol_score = sum(scores) / len(
-                scores
-            )  # avg SOL score (KFB convention)
+            result.sol_score = sum(scores) / len(scores)  # averaged across workloads
             result.metadata["sol_scores"] = scores
             # scores and human_best_speedups are appended in lockstep, so the
             # speedup list is non-empty here.

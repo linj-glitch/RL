@@ -44,7 +44,7 @@ class CudaGymEvalConfig(BaseModel, extra="forbid"):
 
     # GPU SKU the kernel is evaluated on. Must be a cudagym
     # ``SupportedHardware`` value (e.g. "B200"); becomes ``Solution.spec.target_hardware``
-    # and selects the compile SM version server-side. KernelFactory-Bench problems target B200.
+    # and selects the compile SM version server-side.
     sku: Optional[str] = None
     # Sampling weight when several cudagym envs/SKUs are registered (data mixing).
     weight: float = 1.0

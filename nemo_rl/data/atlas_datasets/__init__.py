@@ -14,26 +14,18 @@
 
 """Datasets for the CUDA kernel-optimization tasks (the ``atlas`` recipe family).
 
-``grpo_cuda_dataset`` builds training rows from KernelFactory-Bench problem
-directories and loads them for the single-turn GRPO recipe
-(``examples/run_grpo_cuda.py``). It also builds NeMo-Gym task-seed rows for the
-agentic recipes (``kfb_problem_to_gym_seed`` / ``write_kfb_gym_seeds``).
+``grpo_cuda_dataset`` loads pre-built KernelFactory-problem row JSONLs for the
+single-turn GRPO recipe (``examples/run_grpo_cuda.py``); its module docstring
+defines the row schema, including the contract that a row's ``sol_anchors``
+were measured on the row's own ``target_hardware``.
 """
 
 from .grpo_cuda_dataset import (
     format_cuda_problem,
-    kfb_problem_to_gym_seed,
-    kfb_problem_to_row,
     prepare_cuda_dataset,
-    write_kfb_dataset,
-    write_kfb_gym_seeds,
 )
 
 __all__ = [
     "format_cuda_problem",
-    "kfb_problem_to_gym_seed",
-    "kfb_problem_to_row",
     "prepare_cuda_dataset",
-    "write_kfb_dataset",
-    "write_kfb_gym_seeds",
 ]

@@ -1,5 +1,4 @@
-# Single-turn GRPO on CudaGym / KernelFactory problems from a
-# KernelFactory-Bench (KFB) problem set, evaluated on B200.
+# Single-turn GRPO on CudaGym / KernelFactory problems, evaluated on B200.
 # Launch: `uv run --extra atlas examples/run_grpo_cuda.py --config <this>`
 # (--extra atlas pulls the cudagym SDK the env client imports).
 #
@@ -7,8 +6,8 @@
 # grpo_math_1B.yaml and overrides only the CudaGym-specific bits. Before running:
 #   * policy.model_name      -> base Qwen3-8B by default; swap in the SFT'd
 #                               kernel checkpoint once one exists
-#   * data.dataset_path      -> a KernelFactory problem JSONL (build from a KFB checkout
-#                               with nemo_rl.data.atlas_datasets.write_kfb_dataset)
+#   * data.dataset_path      -> a KernelFactory problem JSONL (row schema in
+#                               nemo_rl/data/atlas_datasets/grpo_cuda_dataset.py)
 #   * env.cudagym.b200.hosting -> where the B200 CudaGym eval servers live
 #     (submit_grpo.py validates + preflights it; see slurm/cudagym_hosting.py
 #     and endpoints/*.yaml).
@@ -76,11 +75,10 @@ data:
   max_input_seq_length: ${policy.max_total_sequence_length}
   prompt_file: "examples/prompts/cudagym.txt"
   system_prompt_file: null
-  # Built from a KFB checkout with write_kfb_dataset (grpo_cuda_dataset.py; its
-  # docstring has the sol_latency_ms caveat). Preferred set: data/sol_execbench_external
-  # (real SOL anchors; language=triton, destination_passing_style=false; the eval
-  # server must be deployed with the matching problem set — for Modal that is
-  # CUDAGYM_MODAL_PROFILE=sol_execbench_external).
+  # Row schema: grpo_cuda_dataset.py's module docstring, including the contract
+  # that a row's sol_anchors were measured on the row's target_hardware. The
+  # eval server must be deployed with the matching problem set — for Modal that
+  # is selected by CUDAGYM_MODAL_PROFILE at deploy time.
   # The JSONL must hold >= grpo.num_prompts_per_step train rows after the
   # test_size split (the train dataloader drops the last partial batch); raise
   # grpo.max_num_epochs to run more steps than one pass over the data provides.

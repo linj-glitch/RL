@@ -12,26 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Datasets of KernelFactory problems for CUDA-kernel RL training.
+"""Load KernelFactory-problem datasets for CUDA-kernel RL training.
 
 A *KernelFactory problem* is a kernel-optimization task in the schema used by
 the CudaGym evaluation service: a ``Definition`` (tensor inputs/outputs, axes,
 and a Python reference implementation) plus a list of ``Workload``s (concrete
-axis sizes, input specs, and tolerances). The KernelFactory-Bench (KFB) and
-SOL-ExecBench problem sets use this schema; each problem is a directory
-holding ``definition.json`` and ``workload.jsonl``.
+axis sizes, input specs, and tolerances).
 
-This module provides two kinds of helpers:
-
-  * Builders. ``kfb_problem_to_row`` / ``write_kfb_dataset`` turn problem
-    directories into single-turn training rows; ``kfb_problem_to_gym_seed`` /
-    ``write_kfb_gym_seeds`` turn them into NeMo-Gym task-seed rows for the
-    agentic recipes. ``main`` exposes both from the command line.
-  * Loaders. ``prepare_cuda_dataset`` loads row JSONLs and splits them into
-    train/validation; ``format_cuda_problem`` tags each row with the
-    ``task_name`` of the environment (GPU SKU) that will evaluate it.
-
-A single-turn row has the fields::
+This module loads pre-built row JSONLs; it does not build them. Any script may
+produce rows, from any problem source, as long as each single-turn row has the
+fields::
 
     {"definition": <JSON string of a Definition dict>,
      "workloads": <JSON string of [Workload dict, ...]>,
@@ -40,40 +30,37 @@ A single-turn row has the fields::
      "destination_passing_style": bool,
      "sol_anchors": <JSON string>}
 
-``definition`` and ``workloads`` are copied verbatim from the problem
-directory but stored as JSON strings: different problems have structurally
-different nested keys, and a single string column keeps the HuggingFace
-dataset schema identical across rows. The data processor
+``definition`` and ``workloads`` are stored as JSON strings: different
+problems have structurally different nested keys, and a single string column
+keeps the HuggingFace dataset schema identical across rows. The data processor
 (``cudagym_data_processor`` in ``examples/run_grpo_cuda.py``) parses them
 back, renders the prompt, and passes the parsed problem to the environment as
-``extra_env_info``. ``sol_anchors`` holds the per-workload speed-of-light and
-human-best latencies the performance reward is anchored on.
-
-This module needs the ``cudagym`` package for ``canonical_sku`` (GPU SKU
-spelling). Everything here runs in the driver process, which the launch path
-provisions with the ``atlas`` extra (``slurm/grpo/grpo.sh``);
-``prepare_cuda_dataset`` applies ``format_cuda_problem`` eagerly via
-``Dataset.map``, so none of it runs in DataLoader workers. The typed
-``Definition``/``Workload`` objects are built later still, inside the
-environment actor (``parse_problem`` in
+``extra_env_info``. The typed ``Definition``/``Workload`` objects are built
+inside the environment actor (``parse_problem`` in
 ``nemo_rl/environments/atlas/cudagym_client.py``).
+
+``sol_anchors`` holds per-workload latency anchors for the performance reward,
+``{workload_uuid: {"human_best_latency_ms": ..., "sol_latency_ms": ...}}``.
+CONTRACT: those latencies are measurements taken on the row's own
+``target_hardware``. An anchor records no GPU, so nothing at evaluation time
+can verify this — the dataset builder is responsible for attaching only
+anchors measured on the row's GPU. Rows whose anchors were measured elsewhere
+earn a plausible-looking but meaningless performance reward. ``{}`` is valid
+and means "no anchors": a correct kernel then earns the correctness weight,
+plus the speedup-over-reference fallback if the run times the reference
+implementation (``benchmark_reference: true``).
+
+The agentic (NeMo-Gym) seed-row format is documented by
+``resources_servers/cudagym/data/example.jsonl`` in the Gym checkout; its
+``verifier_metadata`` carries the same fields with nested objects left as
+parsed dicts, under the same ``sol_anchors`` contract.
 """
 
-import argparse
-import csv
-import json
 import random
 from functools import partial
-from pathlib import Path
 from typing import Any, Optional
 
-from cudagym.rl import canonical_sku
 from datasets import Dataset, DatasetDict, concatenate_datasets
-
-# The GPU KernelFactory-Bench measured its published solutions on. The
-# per-problem ``kernel_factory_solution.json`` latencies are only valid as
-# anchors for rows evaluated on this silicon.
-KFB_ANCHOR_SKU = "B200"
 
 
 def _sample_task(
@@ -125,8 +112,8 @@ def format_cuda_problem(
     chosen_task = _sample_task(task_to_env_config, data.get("target_hardware"))
     return {
         "task_name": chosen_task,
-        # Everything but target_hardware is hard-indexed: the dataset builders
-        # always write these fields, and a silent default here would evaluate
+        # Everything but target_hardware is hard-indexed: the row schema
+        # requires these fields, and a silent default here would evaluate
         # the row as something the builder never declared.
         "definition": data["definition"],
         "workloads": data["workloads"],
@@ -135,7 +122,7 @@ def format_cuda_problem(
         "target_hardware": data.get("target_hardware")
         or task_to_env_config[chosen_task].sku,
         "destination_passing_style": data["destination_passing_style"],
-        # Per-workload SOL/human-best anchors (JSON string) for the SOL-score reward.
+        # Per-workload latency anchors (JSON string) for the SOL-score reward.
         "sol_anchors": data["sol_anchors"],
     }
 
@@ -186,456 +173,3 @@ def prepare_cuda_dataset(
         train_formatted, val_formatted = formatted_ds, val_formatted_ds
 
     return DatasetDict({"train": train_formatted, "validation": val_formatted})
-
-
-# -- KernelFactory-Bench helpers (build dataset JSONLs from a KFB checkout) --
-
-
-def load_sol_anchors(
-    sol_latencies_csv: str, artifact_id: str
-) -> dict[str, dict[str, float]]:
-    """Load per-workload latency anchors for one problem from a KFB latency CSV.
-
-    Reads a KFB latency CSV (for example ``latencies_b200.csv`` or
-    ``sol_latencies.csv``) and returns ``{workload_uuid:
-    {"human_best_latency_ms": ..., "sol_latency_ms": ...}}`` for every row of
-    ``artifact_id`` whose human-best latency is positive. The human-best column
-    may be named ``human_best_latency_ms`` or ``optimized_baseline_latency_ms``.
-    A workload without a positive human-best latency is dropped, because the
-    score cannot be anchored without one; ``sol_latency_ms`` may be 0, in which
-    case the SOL score computed from it degrades to a bounded
-    speedup-over-human-best (see ``cudagym.rl.sol_score``). A nonexistent CSV
-    path raises ``FileNotFoundError`` — it is always caller-provided.
-
-    Anchors are loaded once at dataset-build time and stored on the row, so
-    evaluation needs no access to the CSV. They are consumed by the reward code
-    in ``nemo_rl/environments/atlas/cudagym_client.py``.
-    """
-    anchors: dict[str, dict[str, float]] = {}
-    path = Path(sol_latencies_csv)
-    if not path.is_file():
-        raise FileNotFoundError(f"SOL latency CSV not found: {path}")
-    with open(path, newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            if row.get("artifact_id") != artifact_id:
-                continue
-            raw_hb = row.get("human_best_latency_ms") or row.get(
-                "optimized_baseline_latency_ms"
-            )
-            try:
-                human_best = float(raw_hb)
-            except (TypeError, ValueError):
-                continue
-            if human_best <= 0.0:
-                continue
-            try:
-                sol = float(row.get("sol_latency_ms") or 0.0)
-            except (TypeError, ValueError):
-                sol = 0.0
-            anchors[row["workload_uuid"]] = {
-                "human_best_latency_ms": human_best,
-                "sol_latency_ms": sol,
-            }
-    return anchors
-
-
-def _anchors_for_hardware(
-    problem_dir: str,
-    target_hardware: str,
-    sol_latencies_csv: Optional[str],
-    sol_latencies_sku: str,
-    name: str,
-) -> dict[str, dict[str, float]]:
-    """Anchors for a row, or ``{}`` when the ones available were measured elsewhere.
-
-    A latency anchor is a measurement on one specific GPU, but nothing in the
-    anchor itself records which. Scoring a kernel timed on one GPU against a
-    human-best timed on another produces a plausible-looking, meaningless
-    reward, so the hardware is checked here rather than trusted:
-
-    * ``kernel_factory_solution.json`` inside a problem dir holds KFB's own
-      published run, measured on ``KFB_ANCHOR_SKU``. It is used only for rows
-      targeting that GPU; other rows get no anchors and fall back to
-      speedup-over-reference.
-    * A ``--sol-latencies-csv`` records no hardware either, so the caller
-      declares it with ``sol_latencies_sku``; a mismatch is refused outright
-      because the caller pointed at that file on purpose.
-    """
-    if sol_latencies_csv:
-        declared = canonical_sku(
-            sol_latencies_sku, "sol_latencies_sku (the GPU the CSV was measured on)"
-        )
-        if declared != target_hardware:
-            raise ValueError(
-                f"{sol_latencies_csv} holds latencies measured on {declared}, but these rows "
-                f"target {target_hardware}; anchors from another GPU would make the performance "
-                "reward meaningless. Pass the CSV for this GPU, or set --sol-latencies-sku."
-            )
-        return load_sol_anchors(sol_latencies_csv, name)
-    if target_hardware != KFB_ANCHOR_SKU:
-        return {}
-    return load_sol_anchors_from_problem_dir(problem_dir)
-
-
-def load_sol_anchors_from_problem_dir(problem_dir: str) -> dict[str, dict[str, float]]:
-    """Load per-workload latency anchors from files inside the problem directory.
-
-    This is the fallback used when no repo-level latency CSV is supplied. A
-    problem directory may carry ``kernel_factory_solution.json``, whose
-    ``kernel_factory_result.per_workload`` entries record the official
-    (human-best) solution's measured ``latency_ms``, keyed by ``axes``. Each
-    entry is joined to a workload uuid by matching its ``axes`` against
-    ``workload.jsonl`` and becomes::
-
-        {"human_best_latency_ms": <latency_ms>, "sol_latency_ms": 0.0}
-
-    ``sol_latency_ms`` is deliberately not derived from the file's ``sol_score``
-    field. That score is KFB's anchored metric,
-    ``S = 1 / (1 + (T_k - T_sol) / (T_b - T_sol))`` (see
-    ``kernel-factory-bench/scripts/calculate_sol_scores.py``), not a
-    ``T_sol / T_k`` ratio — and for the human-best run the file describes,
-    ``T_k = T_b`` makes the score a constant that carries no information about
-    ``T_sol``, so no speed-of-light latency can be recovered from it. 0.0 is
-    the documented "no SOL anchor" value: the reward's SOL score then degrades
-    to a bounded speedup-over-human-best (see ``cudagym.rl.sol_score``).
-
-    Returns ``{}`` when the file is absent, when the official solution is not
-    marked correct, or when no per-workload entry matches.
-    """
-    pdir = Path(problem_dir)
-    sol_path = pdir / "kernel_factory_solution.json"
-    if not sol_path.is_file():
-        return {}
-    result = (json.loads(sol_path.read_text()) or {}).get("kernel_factory_result") or {}
-    if not result.get("is_correct"):
-        return {}
-    # Canonical (sorted-keys) axes JSON is the join key between per_workload
-    # entries and workload.jsonl rows.
-    uuid_by_axes: dict[str, str] = {}
-    for line in (pdir / "workload.jsonl").read_text().splitlines():
-        if line.strip():
-            wl = json.loads(line)
-            uuid_by_axes[json.dumps(wl["axes"], sort_keys=True)] = wl["uuid"]
-    anchors: dict[str, dict[str, float]] = {}
-    for pw in result.get("per_workload") or []:
-        uuid = uuid_by_axes.get(json.dumps(pw.get("axes"), sort_keys=True))
-        latency = float(pw.get("latency_ms") or 0.0)
-        if uuid is None or latency <= 0.0:
-            continue
-        anchors[uuid] = {"human_best_latency_ms": latency, "sol_latency_ms": 0.0}
-    return anchors
-
-
-def kfb_problem_to_row(
-    problem_dir: str,
-    language: str,
-    target_hardware: str = "B200",
-    destination_passing_style: bool = True,
-    sol_latencies_csv: Optional[str] = None,
-    sol_latencies_sku: str = KFB_ANCHOR_SKU,
-) -> dict[str, Any]:
-    """Read one KernelFactory-Bench problem directory into a KernelFactory-schema row.
-
-    Args:
-        problem_dir: a directory containing ``definition.json`` and
-            ``workload.jsonl``.
-        language: the cudagym ``SupportedLanguages`` value the policy must emit
-            (for example "triton" or "cuda_cpp"). KFB defines the *problem*,
-            not the solution language, so the language is chosen here.
-        target_hardware: GPU SKU the kernel is evaluated on (KFB targets
-            "B200").
-        destination_passing_style: whether ``run`` writes outputs in place into
-            trailing arguments (True) or returns them (False).
-        sol_latencies_csv: optional KFB latency CSV (for example
-            ``data/benchmark/latencies_b200.csv``). When given, per-workload
-            SOL/human-best anchors for this problem are baked into the row;
-            otherwise ``load_sol_anchors_from_problem_dir`` is tried.
-
-    ``sol_anchors`` is stored as a JSON string (not a nested dict) so the
-    HuggingFace dataset schema stays uniform across structurally different
-    problems.
-    """
-    pdir = Path(problem_dir)
-    # Validated where the row is written, not where it is evaluated: a
-    # non-canonical SKU baked into a dataset fails per-sample much later, and
-    # is recorded there as the model's formatting error.
-    target_hardware = canonical_sku(
-        target_hardware, "kfb_problem_to_row(target_hardware=...)"
-    )
-    definition = json.loads((pdir / "definition.json").read_text())
-    workloads = [
-        json.loads(line)
-        for line in (pdir / "workload.jsonl").read_text().splitlines()
-        if line.strip()
-    ]
-    anchors = _anchors_for_hardware(
-        problem_dir,
-        target_hardware,
-        sol_latencies_csv,
-        sol_latencies_sku,
-        definition.get("name", pdir.name),
-    )
-    return {
-        # definition/workloads stored as JSON strings (like sol_anchors): disjoint
-        # nested keys across problems would make Dataset.from_json raise or
-        # null-fill the inferred struct. Parsed back in run_grpo_cuda's processor.
-        "definition": json.dumps(definition),
-        "workloads": json.dumps(workloads),
-        "language": language,
-        "target_hardware": target_hardware,
-        "destination_passing_style": destination_passing_style,
-        "sol_anchors": json.dumps(anchors),
-    }
-
-
-def write_kfb_dataset(
-    problem_dirs: list[str],
-    out_path: str,
-    language: str,
-    target_hardware: str = "B200",
-    destination_passing_style: bool = True,
-    sol_latencies_csv: Optional[str] = None,
-    sol_latencies_sku: str = KFB_ANCHOR_SKU,
-) -> int:
-    """Write a KernelFactory problem JSONL (one row per line) from KernelFactory-Bench directories.
-
-    Returns the number of rows written. Point ``data.dataset_path`` at
-    ``out_path``. Pass ``sol_latencies_csv`` (for example
-    ``data/benchmark/latencies_b200.csv``) to bake per-workload SOL/human-best
-    anchors into each row for the SOL-score reward, along with
-    ``sol_latencies_sku`` when those latencies were not measured on
-    ``KFB_ANCHOR_SKU``; the two must name the same GPU as ``target_hardware``.
-
-    Check that the CSV carries non-zero ``sol_latency_ms`` values: in a KFB
-    checkout, ``data/sol_execbench_external`` ships real speed-of-light
-    latencies, while ``data/benchmark``'s are all zero, so its SOL scores
-    degrade to a bounded speedup-over-human-best. The problem set also decides
-    which CudaGym server build must evaluate it: ``data/sol_execbench_external``
-    problems need a server deployed from CudaGym's ``sol_execbench_external``
-    image (selected by ``CUDAGYM_MODAL_PROFILE`` at deploy time), whose pinned
-    software stack differs from the default ``kernel_factory`` image.
-    """
-    rows = [
-        kfb_problem_to_row(
-            d,
-            language,
-            target_hardware,
-            destination_passing_style,
-            sol_latencies_csv,
-            sol_latencies_sku,
-        )
-        for d in problem_dirs
-    ]
-    with open(out_path, "w", encoding="utf-8") as f:
-        for row in rows:
-            f.write(json.dumps(row) + "\n")
-    return len(rows)
-
-
-# Prompt template for agentic task-seed rows. The Gym cuda_agent server stages
-# each rollout's problem files under ./problem/ in the sandbox (see
-# 3rdparty/Gym-workspace/Gym/responses_api_agents/cuda_agent/README.md).
-_GYM_SEED_PROMPT = (
-    "Optimize a fast GPU kernel for the `{name}` problem: {description} "
-    "The full definition, workloads and reference implementation are in ./problem/. "
-    "Iterate with the cudagym CLI and leave your final kernel file in the sandbox."
-)
-
-
-def kfb_problem_to_gym_seed(
-    problem_dir: str,
-    language: str,
-    target_hardware: str = "B200",
-    destination_passing_style: bool = True,
-    sol_latencies_csv: Optional[str] = None,
-    agent_name: str = "cudagym_cuda_agent",
-    sol_latencies_sku: str = KFB_ANCHOR_SKU,
-) -> dict[str, Any]:
-    """Build one NeMo-Gym task-seed row for the agentic ``cuda_agent`` recipes.
-
-    The row matches the format the Gym cudagym resources server expects (see
-    ``3rdparty/Gym-workspace/Gym/resources_servers/cudagym/data/example.jsonl``):
-    ``responses_create_params.input`` is a single user turn describing the task
-    (the sandbox carries the full problem files), and ``verifier_metadata`` is
-    the KernelFactory problem that the agent server stages and the verifier
-    scores. Two differences from ``kfb_problem_to_row``: nested objects stay
-    parsed dicts/lists, because Gym reads plain JSON rows and imposes no
-    HuggingFace schema-uniformity constraint; and ``agent_ref`` (which Gym
-    agent server runs each rollout) is written into the row, so the JSONL is
-    directly usable without a separate ``ng_prepare_data`` pass.
-    """
-    pdir = Path(problem_dir)
-    target_hardware = canonical_sku(
-        target_hardware, "kfb_problem_to_gym_seed(target_hardware=...)"
-    )
-    definition = json.loads((pdir / "definition.json").read_text())
-    workloads = [
-        json.loads(line)
-        for line in (pdir / "workload.jsonl").read_text().splitlines()
-        if line.strip()
-    ]
-    name = definition.get("name", pdir.name)
-    anchors = _anchors_for_hardware(
-        problem_dir, target_hardware, sol_latencies_csv, sol_latencies_sku, name
-    )
-    desc = (
-        " ".join((definition.get("description") or "").split())
-        or "see the problem files"
-    )
-    prompt = _GYM_SEED_PROMPT.format(name=name, description=desc)
-    return {
-        "responses_create_params": {"input": [{"role": "user", "content": prompt}]},
-        "verifier_metadata": {
-            "language": language,
-            "target_hardware": target_hardware,
-            "destination_passing_style": destination_passing_style,
-            "definition": definition,
-            "workloads": workloads,
-            "sol_anchors": anchors,
-        },
-        "agent_ref": {"type": "responses_api_agents", "name": agent_name},
-    }
-
-
-def write_kfb_gym_seeds(
-    problem_dirs: list[str],
-    out_path: str,
-    language: str,
-    target_hardware: str = "B200",
-    destination_passing_style: bool = True,
-    sol_latencies_csv: Optional[str] = None,
-    agent_name: str = "cudagym_cuda_agent",
-    sol_latencies_sku: str = KFB_ANCHOR_SKU,
-) -> int:
-    """Write a NeMo-Gym task-seed JSONL (agentic RL) from KernelFactory-Bench directories.
-
-    Returns the number of rows written. Point the agentic recipe's
-    ``data.train.data_path`` / ``data.validation.data_path`` at the outputs
-    (see ``examples/configs/recipes/atlas/grpo_cuda_agentic_*.yaml``).
-    """
-    rows = [
-        kfb_problem_to_gym_seed(
-            d,
-            language,
-            target_hardware,
-            destination_passing_style,
-            sol_latencies_csv,
-            agent_name,
-            sol_latencies_sku,
-        )
-        for d in problem_dirs
-    ]
-    with open(out_path, "w", encoding="utf-8") as f:
-        for row in rows:
-            f.write(json.dumps(row) + "\n")
-    return len(rows)
-
-
-def main() -> None:
-    r"""Build an RL dataset from any set of KernelFactory-Bench problem dirs, unmodified.
-
-    A problem directory is any directory holding ``definition.json`` and
-    ``workload.jsonl`` (KFB's native layout). Each row copies both files
-    verbatim and adds only the run-level choices KFB does not define (language,
-    target hardware, destination-passing style), plus SOL/human-best anchors
-    taken from a latency CSV when one is given, or otherwise auto-discovered
-    from each problem's ``kernel_factory_solution.json``.
-
-    Examples::
-
-        python -m nemo_rl.data.atlas_datasets.grpo_cuda_dataset \\
-            ~/kfb/data/sol_execbench_external/benchmark/L1/* \\
-            --out train.jsonl --language triton --target-hardware B200
-        # NeMo-Gym seed rows for the agentic recipes:
-        ... --format gym-seeds --out seeds.jsonl
-    """
-    parser = argparse.ArgumentParser(description=main.__doc__.split("\n")[0])
-    parser.add_argument(
-        "problems",
-        nargs="+",
-        help="KernelFactory-Bench problem dirs (shell globs welcome); dirs missing "
-        "definition.json/workload.jsonl are skipped with a note",
-    )
-    parser.add_argument("--out", required=True, help="output JSONL path")
-    parser.add_argument(
-        "--format",
-        choices=("rows", "gym-seeds"),
-        default="rows",
-        help="rows = single-turn KernelFactory problem rows; gym-seeds = agentic NeMo-Gym seeds",
-    )
-    parser.add_argument(
-        "--language", default="triton", help="cudagym SupportedLanguages value"
-    )
-    parser.add_argument("--target-hardware", default="B200")
-    parser.add_argument(
-        "--destination-passing-style",
-        action=argparse.BooleanOptionalAction,
-        # Default matches kfb_problem_to_row (the KFB convention); a CLI default
-        # that disagreed with it would fail every workload as the model's error.
-        # Use --no-destination-passing-style for return-style problem sets.
-        default=True,
-        help="run() writes outputs in-place",
-    )
-    parser.add_argument(
-        "--sol-latencies-csv",
-        default=None,
-        help="optional latency CSV; default = per-problem kernel_factory_solution.json",
-    )
-    parser.add_argument(
-        "--sol-latencies-sku",
-        default=KFB_ANCHOR_SKU,
-        help=(
-            "GPU the --sol-latencies-csv measurements were taken on; must equal "
-            "--target-hardware, since anchors from another GPU make the performance "
-            "reward meaningless"
-        ),
-    )
-    args = parser.parse_args()
-
-    # Keep only directories holding both problem files; note the rest.
-    dirs, skipped = [], []
-    for p in args.problems:
-        path = Path(p)
-        if (path / "definition.json").is_file() and (path / "workload.jsonl").is_file():
-            dirs.append(str(path))
-        else:
-            skipped.append(path.name)
-    if skipped:
-        print(f"skipped {len(skipped)} non-problem dirs: {', '.join(skipped[:8])}")
-    if not dirs:
-        raise SystemExit("no valid problem dirs given")
-
-    writer = write_kfb_gym_seeds if args.format == "gym-seeds" else write_kfb_dataset
-    n = writer(
-        dirs,
-        args.out,
-        language=args.language,
-        target_hardware=args.target_hardware,
-        destination_passing_style=args.destination_passing_style,
-        sol_latencies_csv=args.sol_latencies_csv,
-        sol_latencies_sku=args.sol_latencies_sku,
-    )
-    # Re-read what was written and count rows carrying anchors — rows store
-    # sol_anchors as a JSON string, gym-seeds as a dict under verifier_metadata.
-    anchored = 0
-    with open(args.out, encoding="utf-8") as f:
-        for line in f:
-            row = json.loads(line)
-            raw = row.get("sol_anchors") or (row.get("verifier_metadata") or {}).get(
-                "sol_anchors"
-            )
-            if raw and (raw if isinstance(raw, dict) else json.loads(raw)):
-                anchored += 1
-    print(
-        f"wrote {n} problems -> {args.out} ({args.format}); {anchored}/{n} rows carry sol_anchors"
-    )
-    if n and not anchored and not args.sol_latencies_csv:
-        print(
-            "⚠️  no row carries sol_anchors: no problem dir had kernel_factory_solution.json "
-            "and no --sol-latencies-csv was given, so the performance reward degrades to "
-            "speedup-over-reference (or correctness-only) for every row"
-        )
-
-
-if __name__ == "__main__":
-    main()

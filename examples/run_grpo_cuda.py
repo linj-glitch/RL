@@ -161,20 +161,19 @@ def _annotate_kernelfactory_problem(
 def _parse_json_field(datum_dict: dict[str, Any], key: str) -> Any:
     """Parse a dataset field stored as a JSON string.
 
-    The dataset builder (``write_kfb_dataset`` in
-    ``nemo_rl/data/atlas_datasets/grpo_cuda_dataset.py``) stores
-    ``definition``/``workloads``/``sol_anchors`` as JSON strings so the
-    HuggingFace dataset schema stays uniform across structurally-different
-    problems. Any other type means the row came from a different builder, so
-    raise a ``TypeError`` that names the expected format.
+    The row schema (``nemo_rl/data/atlas_datasets/grpo_cuda_dataset.py``
+    module docstring) stores ``definition``/``workloads``/``sol_anchors`` as
+    JSON strings so the HuggingFace dataset schema stays uniform across
+    structurally-different problems. Any other type means the row was built to
+    a different format, so raise a ``TypeError`` that names the expected one.
     """
     value = datum_dict[key]
     if not isinstance(value, str):
         raise TypeError(
             f"dataset field {key!r} must be a JSON string, got "
-            f"{type(value).__name__}; rebuild the dataset with "
-            "nemo_rl.data.atlas_datasets.grpo_cuda_dataset.write_kfb_dataset "
-            "(it stores this field as a JSON string)"
+            f"{type(value).__name__}; the row schema in "
+            "nemo_rl/data/atlas_datasets/grpo_cuda_dataset.py stores this "
+            "field as a JSON string — rebuild the dataset to it"
         )
     return json.loads(value)
 

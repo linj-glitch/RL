@@ -50,7 +50,7 @@ def get_reward(
         weights["correctness"] + weights["performance"] * perf_term
 
     where ``perf_term`` is the anchored SOL score in [0, 1] (0.5 = match
-    human-best, 1.0 = speed-of-light — the metric solswarm/KFB reward on) when
+    human-best, 1.0 = speed-of-light — the metric solswarm rewards on) when
     the problem carries anchors. For anchor-less problems the fallback —
     log-normalized speedup over the eager reference, also mapped into [0, 1]
     before scaling — applies only when

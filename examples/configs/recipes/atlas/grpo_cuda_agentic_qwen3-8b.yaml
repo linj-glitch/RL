@@ -14,9 +14,9 @@
 #   * policy.model_name  -> base Qwen3-8B by default; swap in the SFT'd kernel
 #                           checkpoint once one exists (its tokenizer embeds the
 #                           atlas preserving chat template).
-#   * data.*.data_path   -> Gym seed rows built by
-#                           nemo_rl.data.atlas_datasets.grpo_cuda_dataset.write_kfb_gym_seeds
-#                           (each row: responses_create_params + verifier_metadata + agent_ref).
+#   * data.*.data_path   -> Gym task-seed rows (each row: responses_create_params
+#                           + verifier_metadata + agent_ref; format documented by
+#                           resources_servers/cudagym/data/example.jsonl in Gym).
 #   * CudaGym eval endpoint: declared under env.cudagym.b200.hosting below
 #     (default kind = endpoint via endpoints/modal.yaml; colocated/disjoint
 #     in-allocation also work — submit_grpo resolves + preflights it).
@@ -173,9 +173,8 @@ env:
     # resources server cannot disagree with them. Declared empty here so the
     # key exists when the recipe is loaded without submit_grpo.
     cudagym_endpoints: {}
-    # CudaGym EvalConfig overrides for the resources server. Empty is right when
-    # every row carries speed-of-light anchors, which is the case for the
-    # KernelFactory-Bench B200 set; a run whose rows lack them needs
+    # CudaGym EvalConfig overrides for the resources server. Empty is right
+    # when every row carries sol_anchors; a run whose rows lack them needs
     # {benchmark_reference: true} for the speedup fallback to have a speedup to
     # score.
     cudagym_benchmark_config: {}

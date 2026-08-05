@@ -67,8 +67,8 @@ class CudaGymEnvironmentMetadata(TypedDict, total=False):
     """
 
     language: str  # cudagym SupportedLanguages value (e.g. "triton", "cuda_cpp")
-    definition: dict  # a Definition dict (e.g. a KFB definition.json)
-    workloads: list  # list of Workload dicts (e.g. KFB workload.jsonl lines)
+    definition: dict  # a Definition dict (a problem's definition.json)
+    workloads: list  # list of Workload dicts (its workload.jsonl lines)
     target_hardware: (
         str  # cudagym SupportedHardware (e.g. "B200"); falls back to env sku
     )
