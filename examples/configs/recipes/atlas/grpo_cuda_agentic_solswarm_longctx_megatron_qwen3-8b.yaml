@@ -24,6 +24,15 @@ checkpointing:
   checkpoint_dir: "results/grpo-cuda-agentic-solswarm-longctx-megatron"
 
 policy:
+  # Megatron refuses context parallelism without packing ("Sequence Packing
+  # must be enabled to use Context Parallelism with MCore"). The base recipe
+  # turns packing off for a reason that does not apply here: it describes the
+  # automodel path, where packing forces flash-attention-2 and its varlen
+  # kernel intermittently fails on long agentic trajectories. Megatron packs
+  # through Transformer Engine instead, so that instability is not inherited --
+  # but it is the thing to suspect first if this run dies in the logprob pass.
+  sequence_packing:
+    enabled: true
   dtensor_cfg:
     enabled: false
   megatron_cfg:
