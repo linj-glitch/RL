@@ -16,8 +16,12 @@
 Usage:
     python submit_sft.py --exp-name <exp-name> --config <config-path> --cluster <cluster-name>
 
-    # atlas c1 32b
-    python submit_sft.py --exp-name atlas_c1_32b --config sft_cuda_qwen3-32b.yaml --cluster cw-dfw-cs-001 --num-nodes 16
+    # Convert a checkpoint an earlier run wrote (no recipe needed):
+    python submit_sft.py --exp-name <exp-name> --cluster cw-dfw-cs-001 --convert <step> \
+        --convert-hf-model <hf-model>
+
+No SFT recipe currently ships in examples/configs/recipes/atlas, so --config
+accepts anything you add there; conversion runs need no --config.
 
 """
 
@@ -49,13 +53,16 @@ def main():
     # exp-name deliberately has no default: a forgotten flag should fail fast
     # rather than silently submit into a shared "debug" experiment directory.
     parser.add_argument("--exp-name", "-e", required=True, type=str)
-    # Required: no atlas SFT recipe ships right now, so there is nothing
-    # sensible to default to. `choices` lists whatever is present.
+    # No atlas SFT recipe ships right now, so `choices` would be an empty list
+    # that rejects every value — including for --convert, which needs no recipe
+    # at all (it reuses a tree an earlier training submit uploaded, and sft.sh
+    # builds its conversion command without reading CONFIG_NAME). The
+    # training-only requirement is enforced after parsing instead.
+    available_configs = get_available_configs(CONFIG_PATH, "sft*.yaml")
     parser.add_argument(
         "--config",
         type=str,
-        required=True,
-        choices=get_available_configs(CONFIG_PATH, "sft*.yaml"),
+        choices=available_configs or None,
     )
     parser.add_argument(
         "--cluster",
@@ -122,6 +129,17 @@ def main():
         args.time = "00:30:00"
     elif args.convert_hf_model:
         parser.error("--convert-hf-model is only meaningful with --convert")
+    elif not args.config:
+        # Training needs a recipe; conversion above does not.
+        parser.error(
+            "--config is required for training jobs"
+            + (
+                f" (available: {', '.join(available_configs)})"
+                if available_configs
+                else "; no sft*.yaml recipe currently ships in "
+                f"{CONFIG_PATH.relative_to(Path(__file__).parent)}"
+            )
+        )
 
     # Load cluster config with env overrides applied and resolved
     cluster_config = load_cluster_config(CLUSTER_CONFIG_PATH, args.cluster)
@@ -162,7 +180,7 @@ def main():
         "EXP_NAME": args.exp_name,
         # sft.sh prefixes examples/configs/recipes/atlas/ itself, so pass the
         # bare filename regardless of how the config was spelled on the CLI.
-        "CONFIG_NAME": Path(args.config).name,
+        "CONFIG_NAME": Path(args.config).name if args.config else "",
         "EXTRA_CONFIG_OPTS": extra_config_opts,
         "TIME": args.time,
         "NUM_NODES": args.num_nodes,

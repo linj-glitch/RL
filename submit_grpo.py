@@ -53,7 +53,9 @@ try:
         resolve_hosting,
         verify_health_payload,
     )
-except ValueError as e:  # HostingError, which is not importable if this failed
+except (ValueError, ImportError) as e:
+    # HostingError (a ValueError) is not importable if this failed; ImportError
+    # covers an installed cudagym.rl that is missing one of the two symbols.
     raise SystemExit(f"❌ {e}") from e
 from slurm.deploy_remote_cudagym import deploy_remote_cudagym
 

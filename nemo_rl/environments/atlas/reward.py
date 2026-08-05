@@ -14,9 +14,13 @@
 
 """Correctness-gated reward for one CudaGym kernel evaluation.
 
-Shared by the single-turn and agentic paths: the Gym cudagym resources server
-(``3rdparty/Gym-workspace/Gym/resources_servers/cudagym/app.py``) vendors a
-copy of this logic — keep the two in sync. A kernel that is not numerically
+The scoring arithmetic itself (``sol_score``, ``geomean``,
+``normalize_performance_reward``) lives in ``cudagym.rl`` and is the same code
+the Gym cudagym resources server calls. What is mirrored rather than shared is
+the correctness-gating ladder below and its counterpart in that server's
+``staged_reward_from_trace``
+(``3rdparty/Gym-workspace/Gym/resources_servers/cudagym/app.py``), so a change
+to the gating belongs in both. A kernel that is not numerically
 correct on EVERY workload earns exactly 0; a correct one earns the correctness
 weight plus the performance weight scaled by the anchored SOL score (see
 ``get_reward``). Format/compile/execute progress is observable in the metrics

@@ -157,17 +157,34 @@ def ensure_vendored_cudagym(repo_root: Union[str, Path] = REPO_ROOT) -> None:
             "the cudagym SDK is not importable and the vendored checkout is missing "
             f"({src}); initialize it with `git submodule update --init 3rdparty/cudagym`"
         )
+    # An installed cudagym that predates the cudagym.rl helpers imports fine as
+    # a parent package, so the probe leaves it bound in sys.modules and the
+    # retry below would resolve `rl` against that same stale package's __path__
+    # and fail again. Drop the cached modules so the vendored checkout is what
+    # the retry actually imports.
+    shadowed = "cudagym" in sys.modules
+    stale = [name for name in sys.modules if name == "cudagym" or name.startswith("cudagym.")]
+    cached = {name: sys.modules.pop(name) for name in stale}
     # Put the checkout on sys.path and try the import again.
     sys.path.insert(0, str(src))
     error = _cudagym_import_error()
     if error is not None:
-        # Still failing (the SDK's own deps are missing): undo the path edit so
-        # a failed preflight leaves sys.path untouched, then name the fix.
+        # Still failing: undo both edits so a failed preflight leaves the
+        # process as it found it, then name the fix.
         sys.path.remove(str(src))
+        sys.modules.update(cached)
+        # Two different causes, two different fixes: an installed cudagym that
+        # shadows the checkout without carrying cudagym.rl, versus a checkout
+        # whose own import chain has nothing to import from.
+        missing_dep = "cudagym" not in str(error)
+        remedy = (
+            "install the import chain's two non-stdlib dependencies: `pip install loguru pydantic`"
+            if missing_dep or not shadowed
+            else "the installed cudagym predates the cudagym.rl helpers; update or remove it"
+        )
         raise HostingError(
             f"the cudagym SDK is not importable even from the vendored checkout ({src}): "
-            f"{error}. The SKU checks need the SDK's device table; install the import "
-            "chain's two non-stdlib dependencies: `pip install loguru pydantic`"
+            f"{error}. The SKU checks need the SDK's device table; {remedy}"
         )
 
 
@@ -200,7 +217,6 @@ class EndpointEntry:
     sku: str
     url: str
     disabled_reason: Optional[str] = None
-    auth_token_env: Optional[str] = None
 
 
 def load_endpoints(endpoints_dir: Path = ENDPOINTS_DIR) -> dict[str, EndpointEntry]:
@@ -228,7 +244,6 @@ def load_endpoints(endpoints_dir: Path = ENDPOINTS_DIR) -> dict[str, EndpointEnt
                 sku=sku,
                 url=str(val["url"]).rstrip("/"),
                 disabled_reason=val.get("disabled_reason"),
-                auth_token_env=val.get("auth_token_env"),
             )
     return entries
 
@@ -519,6 +534,25 @@ def resolve_hosting(
             f"every env.cudagym entry must declare a distinct sku; got {detail}"
         )
 
+    # The mirror rule: distinct SKUs must also resolve to distinct addresses.
+    # One URL serving two SKUs means one of them is wrong, and the consequence
+    # is silent — kernels for the other GPU are compiled and timed on this one,
+    # producing latencies that look ordinary. The /health preflight cannot catch
+    # it either: it probes the shared URL once per SKU, and one of those probes
+    # passes. Entries with no URL are exempt; at most one entry is in-allocation
+    # (rule above), so an empty address cannot collide.
+    names_by_url: dict[str, list[str]] = {}
+    for e in resolved:
+        if e.url:
+            names_by_url.setdefault(e.url, []).append(f"{e.name} ({e.sku})")
+    shared = {u: n for u, n in names_by_url.items() if len(n) > 1}
+    if shared:
+        detail = "; ".join(f"{u} shared by {', '.join(n)}" for u, n in sorted(shared.items()))
+        raise HostingError(
+            f"env.cudagym entries for different GPUs resolve to the same endpoint; got {detail}. "
+            "One address cannot serve two SKUs: rows for one GPU would be timed on the other."
+        )
+
     # Group by kind for the submit-side callers: endpoints get the /health
     # preflight, slurm-service entries get deployed.
     endpoints = [e for e in resolved if e.kind == "endpoint"]
@@ -601,10 +635,11 @@ def resolve_hosting(
 def _probe_headers(entry: ResolvedEntry) -> dict[str, str]:
     """Return auth headers for a /health request, mirroring what the cudagym SDK sends."""
     headers: dict[str, str] = {}
-    token_env = (
-        entry.endpoint.auth_token_env if entry.endpoint else None
-    ) or "CUDAGYM_AUTH_TOKEN"
-    token = os.environ.get(token_env)
+    # CUDAGYM_AUTH_TOKEN is the only bearer-token name in play: it is what
+    # grpo.sh exports into the job, what the sandbox allowlist admits, and what
+    # the in-sandbox cudagym CLI reads. Probing with a different one here would
+    # pass a token the rollouts never get.
+    token = os.environ.get("CUDAGYM_AUTH_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
     # Modal's edge proxy wants its own header pair on top of any bearer token.

@@ -25,7 +25,8 @@ Two rollout modes share one evaluation core:
     iterates across turns, writing the kernel, running ``cudagym evaluate``,
     and reading the feedback; its resources
     server (``3rdparty/Gym-workspace/Gym/resources_servers/cudagym/app.py``)
-    vendors a copy of this package's evaluation and reward logic.
+    drives the evaluation itself and scores it with the same ``cudagym.rl``
+    helpers this package uses.
 
 Both modes build typed CudaGym ``Solution``/``Definition``/``Workload`` objects,
 call ``cudagym.sdk.workflows.evaluate`` (see ``cudagym_client``), and score the

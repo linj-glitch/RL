@@ -6,8 +6,11 @@
 #   <key>:
 #     sku: B200                      # cudagym SupportedHardware value
 #     url: http://host:8000          # unified server or load-balancer URL
-#     auth_token_env: MY_TOKEN_VAR   # optional; Bearer read from this env var
 #     disabled_reason: why           # optional; submit errors on disabled entries
+#
+# Authentication: a server that wants a bearer token reads it from
+# CUDAGYM_AUTH_TOKEN. That is the only token name that reaches a running job,
+# so an endpoint needing a different one cannot be used here.
 #
 # (For one-off URLs, `hosting: {kind: endpoint, url: http://...}` inline in the
 # recipe works without a registry entry.)

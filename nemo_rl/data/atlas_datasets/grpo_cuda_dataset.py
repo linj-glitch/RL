@@ -49,11 +49,14 @@ back, renders the prompt, and passes the parsed problem to the environment as
 ``extra_env_info``. ``sol_anchors`` holds the per-workload speed-of-light and
 human-best latencies the performance reward is anchored on.
 
-This module deliberately imports nothing from the ``cudagym`` package:
-dataset code runs inside DataLoader worker subprocesses, whose Python
-environment is not guaranteed to have ``cudagym`` installed. The typed
-``Definition``/``Workload`` objects are built later, inside the environment
-actor (``parse_problem`` in ``nemo_rl/environments/atlas/cudagym_client.py``).
+This module needs the ``cudagym`` package for ``canonical_sku`` (GPU SKU
+spelling). Everything here runs in the driver process, which the launch path
+provisions with the ``atlas`` extra (``slurm/grpo/grpo.sh``);
+``prepare_cuda_dataset`` applies ``format_cuda_problem`` eagerly via
+``Dataset.map``, so none of it runs in DataLoader workers. The typed
+``Definition``/``Workload`` objects are built later still, inside the
+environment actor (``parse_problem`` in
+``nemo_rl/environments/atlas/cudagym_client.py``).
 """
 
 import argparse
@@ -66,6 +69,11 @@ from typing import Any, Optional
 
 from cudagym.rl import canonical_sku
 from datasets import Dataset, DatasetDict, concatenate_datasets
+
+# The GPU KernelFactory-Bench measured its published solutions on. The
+# per-problem ``kernel_factory_solution.json`` latencies are only valid as
+# anchors for rows evaluated on this silicon.
+KFB_ANCHOR_SKU = "B200"
 
 
 def _sample_task(
@@ -231,6 +239,44 @@ def load_sol_anchors(
     return anchors
 
 
+def _anchors_for_hardware(
+    problem_dir: str,
+    target_hardware: str,
+    sol_latencies_csv: Optional[str],
+    sol_latencies_sku: str,
+    name: str,
+) -> dict[str, dict[str, float]]:
+    """Anchors for a row, or ``{}`` when the ones available were measured elsewhere.
+
+    A latency anchor is a measurement on one specific GPU, but nothing in the
+    anchor itself records which. Scoring a kernel timed on one GPU against a
+    human-best timed on another produces a plausible-looking, meaningless
+    reward, so the hardware is checked here rather than trusted:
+
+    * ``kernel_factory_solution.json`` inside a problem dir holds KFB's own
+      published run, measured on ``KFB_ANCHOR_SKU``. It is used only for rows
+      targeting that GPU; other rows get no anchors and fall back to
+      speedup-over-reference.
+    * A ``--sol-latencies-csv`` records no hardware either, so the caller
+      declares it with ``sol_latencies_sku``; a mismatch is refused outright
+      because the caller pointed at that file on purpose.
+    """
+    if sol_latencies_csv:
+        declared = canonical_sku(
+            sol_latencies_sku, "sol_latencies_sku (the GPU the CSV was measured on)"
+        )
+        if declared != target_hardware:
+            raise ValueError(
+                f"{sol_latencies_csv} holds latencies measured on {declared}, but these rows "
+                f"target {target_hardware}; anchors from another GPU would make the performance "
+                "reward meaningless. Pass the CSV for this GPU, or set --sol-latencies-sku."
+            )
+        return load_sol_anchors(sol_latencies_csv, name)
+    if target_hardware != KFB_ANCHOR_SKU:
+        return {}
+    return load_sol_anchors_from_problem_dir(problem_dir)
+
+
 def load_sol_anchors_from_problem_dir(problem_dir: str) -> dict[str, dict[str, float]]:
     """Load per-workload latency anchors from files inside the problem directory.
 
@@ -286,6 +332,7 @@ def kfb_problem_to_row(
     target_hardware: str = "B200",
     destination_passing_style: bool = True,
     sol_latencies_csv: Optional[str] = None,
+    sol_latencies_sku: str = KFB_ANCHOR_SKU,
 ) -> dict[str, Any]:
     """Read one KernelFactory-Bench problem directory into a KernelFactory-schema row.
 
@@ -321,10 +368,12 @@ def kfb_problem_to_row(
         for line in (pdir / "workload.jsonl").read_text().splitlines()
         if line.strip()
     ]
-    anchors = (
-        load_sol_anchors(sol_latencies_csv, definition.get("name", pdir.name))
-        if sol_latencies_csv
-        else load_sol_anchors_from_problem_dir(problem_dir)
+    anchors = _anchors_for_hardware(
+        problem_dir,
+        target_hardware,
+        sol_latencies_csv,
+        sol_latencies_sku,
+        definition.get("name", pdir.name),
     )
     return {
         # definition/workloads stored as JSON strings (like sol_anchors): disjoint
@@ -346,13 +395,16 @@ def write_kfb_dataset(
     target_hardware: str = "B200",
     destination_passing_style: bool = True,
     sol_latencies_csv: Optional[str] = None,
+    sol_latencies_sku: str = KFB_ANCHOR_SKU,
 ) -> int:
     """Write a KernelFactory problem JSONL (one row per line) from KernelFactory-Bench directories.
 
     Returns the number of rows written. Point ``data.dataset_path`` at
     ``out_path``. Pass ``sol_latencies_csv`` (for example
     ``data/benchmark/latencies_b200.csv``) to bake per-workload SOL/human-best
-    anchors into each row for the SOL-score reward.
+    anchors into each row for the SOL-score reward, along with
+    ``sol_latencies_sku`` when those latencies were not measured on
+    ``KFB_ANCHOR_SKU``; the two must name the same GPU as ``target_hardware``.
 
     Check that the CSV carries non-zero ``sol_latency_ms`` values: in a KFB
     checkout, ``data/sol_execbench_external`` ships real speed-of-light
@@ -365,7 +417,12 @@ def write_kfb_dataset(
     """
     rows = [
         kfb_problem_to_row(
-            d, language, target_hardware, destination_passing_style, sol_latencies_csv
+            d,
+            language,
+            target_hardware,
+            destination_passing_style,
+            sol_latencies_csv,
+            sol_latencies_sku,
         )
         for d in problem_dirs
     ]
@@ -392,6 +449,7 @@ def kfb_problem_to_gym_seed(
     destination_passing_style: bool = True,
     sol_latencies_csv: Optional[str] = None,
     agent_name: str = "cudagym_cuda_agent",
+    sol_latencies_sku: str = KFB_ANCHOR_SKU,
 ) -> dict[str, Any]:
     """Build one NeMo-Gym task-seed row for the agentic ``cuda_agent`` recipes.
 
@@ -417,10 +475,8 @@ def kfb_problem_to_gym_seed(
         if line.strip()
     ]
     name = definition.get("name", pdir.name)
-    anchors = (
-        load_sol_anchors(sol_latencies_csv, name)
-        if sol_latencies_csv
-        else load_sol_anchors_from_problem_dir(problem_dir)
+    anchors = _anchors_for_hardware(
+        problem_dir, target_hardware, sol_latencies_csv, sol_latencies_sku, name
     )
     desc = (
         " ".join((definition.get("description") or "").split())
@@ -449,6 +505,7 @@ def write_kfb_gym_seeds(
     destination_passing_style: bool = True,
     sol_latencies_csv: Optional[str] = None,
     agent_name: str = "cudagym_cuda_agent",
+    sol_latencies_sku: str = KFB_ANCHOR_SKU,
 ) -> int:
     """Write a NeMo-Gym task-seed JSONL (agentic RL) from KernelFactory-Bench directories.
 
@@ -464,6 +521,7 @@ def write_kfb_gym_seeds(
             destination_passing_style,
             sol_latencies_csv,
             agent_name,
+            sol_latencies_sku,
         )
         for d in problem_dirs
     ]
@@ -523,6 +581,15 @@ def main() -> None:
         default=None,
         help="optional latency CSV; default = per-problem kernel_factory_solution.json",
     )
+    parser.add_argument(
+        "--sol-latencies-sku",
+        default=KFB_ANCHOR_SKU,
+        help=(
+            "GPU the --sol-latencies-csv measurements were taken on; must equal "
+            "--target-hardware, since anchors from another GPU make the performance "
+            "reward meaningless"
+        ),
+    )
     args = parser.parse_args()
 
     # Keep only directories holding both problem files; note the rest.
@@ -546,6 +613,7 @@ def main() -> None:
         target_hardware=args.target_hardware,
         destination_passing_style=args.destination_passing_style,
         sol_latencies_csv=args.sol_latencies_csv,
+        sol_latencies_sku=args.sol_latencies_sku,
     )
     # Re-read what was written and count rows carrying anchors — rows store
     # sol_anchors as a JSON string, gym-seeds as a dict under verifier_metadata.

@@ -669,3 +669,66 @@ def test_ensure_vendored_cudagym_bootstraps_sys_path(tmp_path, monkeypatch):
     finally:
         while str(src) in sys.path:
             sys.path.remove(str(src))
+
+
+def test_ensure_vendored_cudagym_displaces_a_stale_installed_package(tmp_path, monkeypatch):
+    """An installed cudagym without cudagym.rl must not shadow the vendored checkout.
+
+    The failed probe leaves the stale parent in sys.modules, so a retry that
+    did not clear it would resolve `rl` against that same package's __path__
+    and fail again — with a message blaming missing dependencies.
+    """
+    import slurm.cudagym_hosting as hosting_mod
+
+    src = tmp_path / "3rdparty" / "cudagym" / "src"
+    (src / "cudagym").mkdir(parents=True)
+    (src / "cudagym" / "__init__.py").write_text("")
+    stale = types.ModuleType("cudagym")
+    monkeypatch.setitem(sys.modules, "cudagym", stale)
+    # Fails while the stale package is cached, succeeds once it is gone.
+    monkeypatch.setattr(
+        hosting_mod,
+        "_cudagym_import_error",
+        lambda: "No module named 'cudagym.rl'" if "cudagym" in sys.modules else None,
+    )
+    ensure_vendored_cudagym(tmp_path)
+    assert str(src) in sys.path
+    sys.path.remove(str(src))
+
+
+def test_ensure_vendored_cudagym_names_the_stale_package_when_that_is_the_cause(
+    tmp_path, monkeypatch
+):
+    """A persistent cudagym.rl failure points at the installed copy, not at pip."""
+    import slurm.cudagym_hosting as hosting_mod
+
+    src = tmp_path / "3rdparty" / "cudagym" / "src"
+    (src / "cudagym").mkdir(parents=True)
+    (src / "cudagym" / "__init__.py").write_text("")
+    monkeypatch.setitem(sys.modules, "cudagym", types.ModuleType("cudagym"))
+    monkeypatch.setattr(
+        hosting_mod, "_cudagym_import_error", lambda: "No module named 'cudagym.rl'"
+    )
+    with pytest.raises(HostingError, match="predates the cudagym.rl helpers"):
+        ensure_vendored_cudagym(tmp_path)
+    # Both edits are undone: the path entry and the module the purge removed.
+    assert str(src) not in sys.path
+    assert "cudagym" in sys.modules
+
+
+def test_two_skus_may_not_share_one_endpoint(tmp_path):
+    """One address cannot serve two GPUs: the rows for one would be timed on the other.
+
+    The /health preflight cannot catch this — it probes the shared URL once per
+    declared SKU, and one of those probes passes.
+    """
+    entries = {
+        "b200": {"sku": "B200", "hosting": {"kind": "endpoint", "url": "http://shared:8000"}},
+        "h100": {"sku": "H100", "hosting": {"kind": "endpoint", "url": "http://shared:8000"}},
+    }
+    with pytest.raises(HostingError, match="same endpoint"):
+        _resolve(entries, agentic=True, ep_dir=tmp_path)
+    # Distinct addresses are the normal multi-SKU case.
+    entries["h100"]["hosting"]["url"] = "http://h100:8000"
+    res = _resolve(entries, agentic=True, ep_dir=tmp_path)
+    assert res.sku_endpoints == {"B200": "http://shared:8000", "H100": "http://h100:8000"}

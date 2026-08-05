@@ -17,10 +17,10 @@
 ``BaseCudaEvaluator`` is a mixin: it turns (prompt, completion, problem-metadata)
 triples into ``KernelEvalResult``s (it parses each completion, builds the typed
 ``Solution``, runs the CudaGym SDK, and maps the ``Trace``) and scores them with
-the correctness-gated reward (``reward.get_reward``). The single-turn env mixes this in. The agentic
-path's resources server vendors a copy of the same client + reward logic
-(``3rdparty/Gym-workspace/Gym/resources_servers/cudagym/app.py``); keep the two
-in sync.
+the correctness-gated reward (``reward.get_reward``). The single-turn env mixes
+this in. The agentic path's resources server
+(``3rdparty/Gym-workspace/Gym/resources_servers/cudagym/app.py``) drives the
+same SDK and the same ``cudagym.rl`` scoring helpers through its own glue.
 
 Evaluation is async because the SDK client is aiohttp-based; the owning Ray
 actor supplies a live ``Client`` as ``self._client`` and drives
