@@ -21,10 +21,12 @@ import pytest
 
 import submit_grpo
 from remote_utils import fill_template
+from slurm.cudagym_hosting import load_endpoints
 from submit_grpo import parse_extra_config_opts
 
 SOLSWARM_OVERLAY = "resources_servers/cudagym/configs/cudagym_cuda_agent_solswarm.yaml"
 BASE_AGENT_CONFIG = "resources_servers/cudagym/configs/cudagym_cuda_agent.yaml"
+AGENTIC_CONFIG = "grpo_cuda_agentic_qwen3-8b.yaml"
 
 
 # --------------------------------------------------------------------------
@@ -114,6 +116,111 @@ def test_container_gate_sees_overlay_removed_by_extra_opts(
                 f"++env.nemo_gym.config_paths=[{BASE_AGENT_CONFIG}]",
             ],
         )
+
+
+# --------------------------------------------------------------------------
+# Per-SKU endpoint overrides for the agentic (NeMo-Gym) path
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def filled_sbatch_vars(monkeypatch):
+    """Stub every part of ``main`` that reaches the network — the SSH tunnel,
+    the code and sbatch uploads, and the endpoint /health preflight — and
+    collect the template variables the submit fills into run.sh instead."""
+    filled: dict[str, object] = {}
+
+    class _FakeTunnel:
+        def __init__(self, hostname):
+            self.hostname = hostname
+
+        def run_command(self, command):
+            return 0, "", ""
+
+    monkeypatch.setattr(submit_grpo, "SSHTunnel", _FakeTunnel)
+    monkeypatch.setattr(submit_grpo, "package_code", lambda *a, **k: None)
+    monkeypatch.setattr(submit_grpo, "upload_text_as_file", lambda *a, **k: None)
+    monkeypatch.setattr(submit_grpo, "probe_endpoint", lambda entry, **k: {})
+    monkeypatch.setattr(
+        submit_grpo, "verify_health_payload", lambda payload, sku: (True, "stubbed")
+    )
+
+    def _record(script, key, value):
+        filled[key] = value
+        return script
+
+    monkeypatch.setattr(submit_grpo, "fill_template", _record)
+    return filled
+
+
+def test_agentic_recipe_emits_one_endpoint_override_per_sku(
+    monkeypatch, hermetic_submit_env, filled_sbatch_vars
+):
+    """A second env.cudagym entry adds a second endpoint to the map NeMo-Gym
+    reads: one ``++env.nemo_gym.cudagym_endpoints.<SKU>`` override per entry, on
+    top of the per-entry ``++env.cudagym.<name>.server_url`` overrides that feed
+    the single-turn environment actors."""
+    monkeypatch.setenv("MODAL_PROXY_TOKEN_ID", "id")
+    monkeypatch.setenv("MODAL_PROXY_TOKEN_SECRET", "secret")
+    registry = load_endpoints()
+    _run_main(
+        monkeypatch,
+        [
+            "--exp-name",
+            "t",
+            "--cluster",
+            "cw-dfw-cs-001",
+            "--config",
+            AGENTIC_CONFIG,
+            "--only-upload",
+            "--extra-config-opts",
+            "++env.cudagym.h100.sku=H100 "
+            "++env.cudagym.h100.hosting.kind=endpoint "
+            "++env.cudagym.h100.hosting.endpoint=modal/h100",
+        ],
+    )
+    # The recipe ships the b200 entry; the override above adds the h100 one.
+    opts = str(filled_sbatch_vars["EXTRA_CONFIG_OPTS"]).split()
+    for entry_name, ref, sku in (
+        ("b200", "modal/b200", "B200"),
+        ("h100", "modal/h100", "H100"),
+    ):
+        url = registry[ref].url
+        assert f"++env.nemo_gym.cudagym_endpoints.{sku}={url}" in opts
+        assert f"++env.cudagym.{entry_name}.server_url={url}" in opts
+
+
+def test_agentic_in_allocation_entry_emits_an_empty_endpoint_url(
+    monkeypatch, hermetic_submit_env, filled_sbatch_vars
+):
+    """An in-allocation entry has no address at submit time, so its SKU is
+    emitted with an empty URL. The Gym resources server then reads the address
+    out of CUDAGYM_UNIFIED_SERVER_URL, which ray.sub points at the load balancer
+    it brings up inside the allocation."""
+    monkeypatch.setenv("MODAL_PROXY_TOKEN_ID", "id")
+    monkeypatch.setenv("MODAL_PROXY_TOKEN_SECRET", "secret")
+    _run_main(
+        monkeypatch,
+        [
+            "--exp-name",
+            "t",
+            # h100 silicon, which is what a colocated H100 entry needs.
+            "--cluster",
+            "cw-dfw-cs-001",
+            "--config",
+            AGENTIC_CONFIG,
+            "--only-upload",
+            "--extra-config-opts",
+            "++env.cudagym.h100.sku=H100 ++env.cudagym.h100.hosting.kind=colocated",
+        ],
+    )
+    opts = str(filled_sbatch_vars["EXTRA_CONFIG_OPTS"]).split()
+    assert "++env.nemo_gym.cudagym_endpoints.H100=" in opts
+    # A colocated entry starts no server at submit time, so it contributes no
+    # ++server_url override for the single-turn actors either.
+    assert not any(o.startswith("++env.cudagym.h100.server_url") for o in opts)
+    # ray.sub gets the in-allocation hosting kind from its own sbatch variable.
+    assert filled_sbatch_vars["CUDAGYM_MODE"] == "colocated"
 
 
 # --------------------------------------------------------------------------

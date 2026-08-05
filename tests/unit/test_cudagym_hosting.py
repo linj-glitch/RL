@@ -132,6 +132,7 @@ def test_endpoint_via_registry_resolves_url_and_opts(tmp_path, modal_env):
     assert res.extra_config_opts == [
         "++env.cudagym.b200.server_url=https://b200.modal.run"
     ]
+    assert res.sku_endpoints == {"B200": "https://b200.modal.run"}
     assert res.unified_server_url == "https://b200.modal.run"
 
 
@@ -256,6 +257,45 @@ def test_single_in_allocation_entry_enforced(tmp_path):
             },
             ep_dir=_endpoints_dir(tmp_path),
         )
+
+
+def test_duplicate_sku_across_entries_is_refused(tmp_path, modal_env):
+    """Every consumer downstream keys on the SKU rather than the entry name, so
+    two entries for the same GPU are refused, and the message names both."""
+    with pytest.raises(HostingError, match="distinct sku") as excinfo:
+        _resolve(
+            {
+                "b200": {
+                    "sku": "B200",
+                    "hosting": {"kind": "endpoint", "endpoint": "modal/b200"},
+                },
+                "b200_spare": {
+                    "sku": "B200",
+                    "hosting": {"kind": "endpoint", "url": "http://spare:8000"},
+                },
+            },
+            ep_dir=_endpoints_dir(tmp_path),
+        )
+    assert "b200" in str(excinfo.value) and "b200_spare" in str(excinfo.value)
+
+
+def test_in_allocation_entry_maps_to_an_empty_endpoint_url(tmp_path, modal_env):
+    """An in-allocation server has no address until ray.sub brings its load
+    balancer up, so its SKU maps to the empty string — the Gym resources
+    server's signal to read CUDAGYM_UNIFIED_SERVER_URL at runtime."""
+    res = _resolve(
+        {
+            "h100": {"sku": "H100", "hosting": {"kind": "colocated"}},
+            "b200": {
+                "sku": "B200",
+                "hosting": {"kind": "endpoint", "endpoint": "modal/b200"},
+            },
+        },
+        cluster=CLUSTER_H100,
+        agentic=True,
+        ep_dir=_endpoints_dir(tmp_path),
+    )
+    assert res.sku_endpoints == {"H100": "", "B200": "https://b200.modal.run"}
 
 
 def test_in_allocation_sku_must_match_cluster_silicon(tmp_path):
@@ -414,9 +454,9 @@ def test_slurm_service_fields_and_warning(tmp_path):
 
 def test_agentic_refuses_slurm_service_hosting(tmp_path):
     """slurm-service hosting delivers its URL only as a ++server_url override,
-    which the NeMo-Gym servers never read (they take CUDAGYM_UNIFIED_SERVER_URL,
-    filled only by kind=endpoint), so an agentic recipe declaring it must be
-    refused with the working alternatives named."""
+    which the NeMo-Gym servers never read (they evaluate against the per-SKU
+    endpoint map, which carries no URL for this kind), so an agentic recipe
+    declaring it must be refused with the working alternatives named."""
     entries = {
         "svc": {
             "sku": "H100",
@@ -435,22 +475,30 @@ def test_agentic_refuses_slurm_service_hosting(tmp_path):
     assert res.slurm_services[0].name == "svc"
 
 
-def test_agentic_requires_exactly_one_entry(tmp_path, modal_env):
-    with pytest.raises(HostingError, match="exactly one"):
-        _resolve(
-            {
-                "a": {
-                    "sku": "B200",
-                    "hosting": {"kind": "endpoint", "endpoint": "modal/b200"},
-                },
-                "b": {
-                    "sku": "H100",
-                    "hosting": {"kind": "endpoint", "endpoint": "modal/h100"},
-                },
+def test_agentic_resolves_multiple_entries(tmp_path, modal_env):
+    """The agentic resources server holds one endpoint per GPU, so a recipe may
+    declare several entries; each lands in the SKU -> URL map. Two endpoints
+    name no single ambient URL, so unified_server_url stays empty."""
+    res = _resolve(
+        {
+            "a": {
+                "sku": "B200",
+                "hosting": {"kind": "endpoint", "endpoint": "modal/b200"},
             },
-            agentic=True,
-            ep_dir=_endpoints_dir(tmp_path),
-        )
+            "b": {
+                "sku": "H100",
+                "hosting": {"kind": "endpoint", "endpoint": "modal/h100"},
+            },
+        },
+        agentic=True,
+        ep_dir=_endpoints_dir(tmp_path),
+    )
+    assert res.sku_endpoints == {
+        "B200": "https://b200.modal.run",
+        "H100": "https://h100.modal.run",
+    }
+    assert res.unified_server_url == ""
+    # In-allocation hosting stays a warning rather than an error.
     res = _resolve(
         {"h100": {"sku": "H100", "hosting": {"kind": "colocated"}}},
         cluster=CLUSTER_H100,
@@ -458,6 +506,9 @@ def test_agentic_requires_exactly_one_entry(tmp_path, modal_env):
         ep_dir=_endpoints_dir(tmp_path),
     )
     assert any("time-shares" in w for w in res.warnings)
+    # Zero entries leaves the resources server with no endpoint to evaluate on.
+    with pytest.raises(HostingError, match="at least one env.cudagym entry"):
+        _resolve({}, agentic=True, ep_dir=_endpoints_dir(tmp_path))
 
 
 def test_multiple_endpoints_no_unified_url(tmp_path, modal_env):

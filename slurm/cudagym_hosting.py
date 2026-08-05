@@ -43,6 +43,12 @@ refuse this kind because the deployed URL is not plumbed to the Gym servers.
 from ``CUDAGYM_UNIFIED_SERVER_URL`` / ``CUDAGYM_URL`` (the environment-variable
 escape hatch).
 
+A recipe may declare several entries, one per GPU it trains against, and every
+entry must name a distinct SKU. ``HostingResolution.sku_endpoints`` collects
+them into a SKU -> URL map, which ``submit_grpo.py`` hands to the agentic
+(NeMo-Gym) path; that path's resources server routes each task row to the
+endpoint serving the row's own target hardware.
+
 Kept clear of the training stack on purpose (omegaconf, the CudaGym SDK, and
 the standard library; ``requests`` is imported lazily in ``probe_endpoint``):
 the recipe loader is the hydra-free ``nemo_rl.utils.config_inheritance``,
@@ -254,7 +260,17 @@ class HostingResolution:
     endpoints: list[ResolvedEntry]
     slurm_services: list[ResolvedEntry]
     extra_config_opts: list[str]
-    unified_server_url: str  # single-endpoint jobs: the URL; else ""
+    # SKU -> evaluation endpoint URL, one key per resolved entry. An entry with
+    # no submit-time URL (in-allocation hosting) maps to the empty string, which
+    # the Gym cudagym resources server reads as "take the URL from
+    # CUDAGYM_UNIFIED_SERVER_URL when the job runs" — ray.sub sets that variable
+    # to the address of the load balancer it brings up in the allocation.
+    sku_endpoints: dict[str, str]
+    # Single-endpoint jobs only: the one resolved URL, exported into the job as
+    # the ambient CUDAGYM_UNIFIED_SERVER_URL; "" for every other job. It feeds
+    # the single-turn environment actor's fallback and the agent sandbox's
+    # CUDAGYM_URL, not the agentic endpoint map above.
+    unified_server_url: str
     warnings: list[str]
 
     @property
@@ -487,34 +503,61 @@ def resolve_hosting(
                 f"{cluster_sku or 'unknown'} silicon (serves {silicon or 'unknown'})."
             )
 
+    # Cross-entry rule: downstream consumers key on the SKU, not on the entry
+    # name — sku_endpoints below is a SKU-keyed map, and the agentic resources
+    # server picks an endpoint by a task row's target hardware. Two entries for
+    # the same GPU therefore have no defined winner, so refuse them by name.
+    names_by_sku: dict[str, list[str]] = {}
+    for e in resolved:
+        names_by_sku.setdefault(e.sku, []).append(e.name)
+    duplicated = {s: n for s, n in names_by_sku.items() if len(n) > 1}
+    if duplicated:
+        detail = "; ".join(
+            f"{s} declared by {', '.join(n)}" for s, n in sorted(duplicated.items())
+        )
+        raise HostingError(
+            f"every env.cudagym entry must declare a distinct sku; got {detail}"
+        )
+
     # Group by kind for the submit-side callers: endpoints get the /health
     # preflight, slurm-service entries get deployed.
     endpoints = [e for e in resolved if e.kind == "endpoint"]
     slurm_services = [e for e in resolved if e.kind == "slurm-service"]
 
-    # Agentic (NeMo-Gym) rules: exactly one entry, slurm-service hosting is
-    # refused (its URL never reaches the Gym servers), and in-allocation
-    # hosting only warns — usable for smoke tests, wrong for timed rewards.
+    # Agentic (NeMo-Gym) rules. Several entries are fine — the resources server
+    # holds one endpoint per SKU — so every entry may be `kind: endpoint`. What
+    # the agentic path cannot use is slurm-service hosting (refused below), and
+    # in-allocation hosting only warns: usable for smoke tests, wrong for timed
+    # rewards. At most one entry may be in-allocation, which the "at most one
+    # env.cudagym entry may be hosted in-allocation" rule above already enforces
+    # for every job; that rule is what keeps the endpoint map resolvable here,
+    # because an in-allocation entry carries no URL of its own and is filled at
+    # runtime from the single CUDAGYM_UNIFIED_SERVER_URL, which can name only
+    # one load balancer.
     if uses_nemo_gym:
-        if len(resolved) != 1:
+        if not resolved:
+            # Without an entry the endpoint map is empty and the resources
+            # server refuses to start, minutes into the job; say so at submit.
             raise HostingError(
-                f"agentic (NeMo-Gym) recipes must declare exactly one env.cudagym entry "
-                f"(the resources server speaks one endpoint); got {len(resolved)}."
+                "an agentic (NeMo-Gym) recipe must declare at least one env.cudagym "
+                "entry: the resources server evaluates kernels on the endpoints those "
+                "entries resolve to, and needs at least one of them."
             )
         if slurm_services:
-            # The deployed service's URL travels only as a
-            # ++env.cudagym.<name>.server_url training-config override, which
-            # only the single-turn env actor reads; the NeMo-Gym servers take
-            # their endpoint from CUDAGYM_UNIFIED_SERVER_URL, which only
-            # kind=endpoint entries fill. Allowing the combination would bring
-            # the job up with a dead evaluation endpoint.
+            # The deployed service's URL is only known after this resolution
+            # returns (submit_grpo.py runs the deployment), and it travels from
+            # there as a ++env.cudagym.<name>.server_url training-config
+            # override, which only the single-turn env actor reads. It never
+            # reaches the per-SKU endpoint map the Gym servers evaluate against,
+            # so allowing the combination would bring the job up with a dead
+            # evaluation endpoint.
             raise HostingError(
                 f"env.cudagym.{slurm_services[0].name}: hosting kind 'slurm-service' cannot "
-                f"serve an agentic (NeMo-Gym) recipe — the deployed service URL is not "
-                f"plumbed to the Gym servers (they read CUDAGYM_UNIFIED_SERVER_URL, which "
-                f"only kind=endpoint fills), so kernel evaluation would silently point at "
-                f"nothing. Use `kind: endpoint` (an already-running eval server) or "
-                f"in-allocation hosting (`kind: colocated` / `kind: disjoint`) instead."
+                f"serve an agentic (NeMo-Gym) recipe — the deployed service URL is resolved "
+                f"after hosting validation and never reaches the Gym servers' per-SKU "
+                f"endpoint map, so kernel evaluation would silently point at nothing. Use "
+                f"`kind: endpoint` (an already-running eval server) or in-allocation hosting "
+                f"(`kind: colocated` / `kind: disjoint`) instead."
             )
         if in_alloc:
             warnings.append(
@@ -523,9 +566,18 @@ def resolve_hosting(
                 "can't be locked. OK for smoke tests; use an endpoint for real runs."
             )
 
-    # Each endpoint URL rides into the training config as a ++server_url override;
-    # only a single-endpoint job also gets the ambient CUDAGYM_UNIFIED_SERVER_URL.
+    # Each endpoint URL rides into the training config as a ++server_url
+    # override, which is what the single-turn environment actors read.
     extra_opts = [f"++env.cudagym.{e.name}.server_url={e.url}" for e in endpoints]
+    # The SKU-keyed map for the agentic path. Kinds other than `endpoint` have no
+    # URL at submit time and map to the empty string; for an in-allocation entry
+    # that is exactly right, because the Gym server then reads the load-balancer
+    # address out of CUDAGYM_UNIFIED_SERVER_URL at runtime. slurm-service entries
+    # also land here empty, which is harmless: they are refused above for the
+    # agentic path, the only consumer of this map.
+    sku_endpoints = {e.sku: e.url for e in resolved}
+    # Only a job with exactly one endpoint has a single URL to name, so only it
+    # fills the ambient CUDAGYM_UNIFIED_SERVER_URL.
     unified = endpoints[0].url if len(endpoints) == 1 else ""
 
     return HostingResolution(
@@ -534,6 +586,7 @@ def resolve_hosting(
         endpoints=endpoints,
         slurm_services=slurm_services,
         extra_config_opts=extra_opts,
+        sku_endpoints=sku_endpoints,
         unified_server_url=unified,
         warnings=warnings,
     )

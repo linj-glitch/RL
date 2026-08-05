@@ -332,6 +332,19 @@ def main():
     # (the env actor's pinned-server_url path takes precedence over ambient env).
     remote_env_extra_opts: list[str] = list(hosting.extra_config_opts)
 
+    # The agentic (NeMo-Gym) resources server evaluates each task row on the
+    # endpoint serving that row's own GPU, so it takes a SKU -> URL map rather
+    # than one URL. env.nemo_gym is handed to NeMo-Gym as its global config, so
+    # one override per SKU under env.nemo_gym.cudagym_endpoints becomes the
+    # `cudagym_endpoints` Gym global that the resources server's config reads.
+    # An in-allocation entry contributes an empty URL, which the server resolves
+    # from CUDAGYM_UNIFIED_SERVER_URL once the job's load balancer is up.
+    if uses_nemo_gym:
+        remote_env_extra_opts += [
+            f"++env.nemo_gym.cudagym_endpoints.{sku}={url}"
+            for sku, url in hosting.sku_endpoints.items()
+        ]
+
     # Experimental slurm-service hosting: stand up a CudaGym service job on another
     # Slurm cluster and chain login-node proxies (+ an SSH tunnel when required).
     for entry in hosting.slurm_services:
@@ -417,11 +430,14 @@ def main():
         "CUDAGYM_CONTAINER": "",
         "ARTIFACTS_DIR": "",
         "CCACHE_DIR": "",
-        # Single-endpoint jobs also carry the resolved URL in the ambient env —
-        # the agentic (NeMo-Gym) path and any entry resolved from the
-        # CUDAGYM_UNIFIED_SERVER_URL escape hatch read it. Per-entry ++server_url
-        # overrides (above) take precedence for the single-turn env actors.
-        # In-allocation runs overwrite it with the load-balancer URL inside ray.sub.
+        # The ambient endpoint URL, filled by single-endpoint jobs (and by the
+        # escape-hatch variable already in this shell). Three consumers read it:
+        # ray.sub overwrites it with the load-balancer address for in-allocation
+        # hosting, the single-turn env actor falls back to it when its entry
+        # pins no server_url (the per-entry ++server_url overrides above take
+        # precedence), and the agent sandbox is handed it as CUDAGYM_URL. The
+        # agentic path's endpoints come from the cudagym_endpoints overrides
+        # above, not from this variable.
         "CUDAGYM_UNIFIED_SERVER_URL": hosting.unified_server_url
         or os.getenv("CUDAGYM_UNIFIED_SERVER_URL")
         or "",

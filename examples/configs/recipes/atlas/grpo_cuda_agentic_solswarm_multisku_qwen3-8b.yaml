@@ -1,0 +1,54 @@
+# Agentic CudaGym GRPO in SolSwarm container mode, training on SEVERAL GPU SKUs
+# in one job. Identical to grpo_cuda_agentic_solswarm_qwen3-8b.yaml except that
+# `env.cudagym` declares one entry per GPU, and the dataset mixes rows for both.
+#
+# How a row reaches the right GPU: each entry resolves to its own evaluation
+# endpoint, and submit_grpo.py passes the pairs to the Gym cudagym resources
+# server as `env.nemo_gym.cudagym_endpoints.<SKU>`. That server keeps one client
+# per SKU and routes each rollout by the row's own `target_hardware`, so a
+# kernel is always compiled for and timed on the GPU its row declared. A row
+# naming a GPU with no endpoint is refused rather than scored on another one.
+#
+# Note on the reward: KernelFactory-Bench publishes speed-of-light anchors for
+# B200 only. B200 rows are therefore scored on the anchored SOL term, while rows
+# for other GPUs carry no anchors and fall back to log-normalized speedup over
+# the timed reference (perf_reward_config.allow_speedup_fallback). The two are
+# both in [0, 1] and both correctness-gated, but they are not the same measure,
+# so read per-SKU metrics rather than one pooled performance number.
+#
+# Launch (needs MODAL_PROXY_TOKEN_ID/SECRET for both endpoints):
+#   uv run --extra atlas python submit_grpo.py -e agsol_multisku \
+#     --config grpo_cuda_agentic_solswarm_multisku_qwen3-8b.yaml \
+#     --cluster cw-dfw-cs-001 --num-nodes 1 --time 3:00:00 \
+#     --enroot-agent-image $W/containers/solswarm-agent-amd64.sqsh
+defaults: "grpo_cuda_agentic_solswarm_qwen3-8b.yaml"
+
+checkpointing:
+  checkpoint_dir: "results/grpo-cuda-agentic-solswarm-multisku"
+
+env:
+  # One entry per GPU this job trains on. Every entry needs its own endpoint:
+  # the entries are what submit-time preflight checks against each endpoint's
+  # reported GPU, and what the resources server routes rows by.
+  cudagym:
+    b200:
+      sku: "B200"
+      hosting:
+        kind: endpoint
+        endpoint: modal/b200
+    h100:
+      sku: "H100"
+      hosting:
+        kind: endpoint
+        endpoint: modal/h100
+
+data:
+  # Rows alternate between the declared SKUs; every row pins its own
+  # target_hardware, which is required once more than one GPU is served.
+  train:
+    data_path: "/datasets/cuda_agentic_seeds_multisku/train.jsonl"
+  validation:
+    data_path: "/datasets/cuda_agentic_seeds_multisku/val.jsonl"
+
+logger:
+  log_dir: "logs/grpo-cuda-agentic-solswarm-multisku"
