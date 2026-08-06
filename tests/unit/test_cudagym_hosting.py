@@ -16,6 +16,7 @@
 
 import sys
 import types
+from pathlib import Path
 
 import pytest
 from omegaconf import OmegaConf
@@ -671,7 +672,9 @@ def test_ensure_vendored_cudagym_bootstraps_sys_path(tmp_path, monkeypatch):
             sys.path.remove(str(src))
 
 
-def test_ensure_vendored_cudagym_displaces_a_stale_installed_package(tmp_path, monkeypatch):
+def test_ensure_vendored_cudagym_displaces_a_stale_installed_package(
+    tmp_path, monkeypatch
+):
     """An installed cudagym without cudagym.rl must not shadow the vendored checkout.
 
     The failed probe leaves the stale parent in sys.modules, so a retry that
@@ -723,12 +726,65 @@ def test_two_skus_may_not_share_one_endpoint(tmp_path):
     declared SKU, and one of those probes passes.
     """
     entries = {
-        "b200": {"sku": "B200", "hosting": {"kind": "endpoint", "url": "http://shared:8000"}},
-        "h100": {"sku": "H100", "hosting": {"kind": "endpoint", "url": "http://shared:8000"}},
+        "b200": {
+            "sku": "B200",
+            "hosting": {"kind": "endpoint", "url": "http://shared:8000"},
+        },
+        "h100": {
+            "sku": "H100",
+            "hosting": {"kind": "endpoint", "url": "http://shared:8000"},
+        },
     }
     with pytest.raises(HostingError, match="same endpoint"):
         _resolve(entries, agentic=True, ep_dir=tmp_path)
     # Distinct addresses are the normal multi-SKU case.
     entries["h100"]["hosting"]["url"] = "http://h100:8000"
     res = _resolve(entries, agentic=True, ep_dir=tmp_path)
-    assert res.sku_endpoints == {"B200": "http://shared:8000", "H100": "http://h100:8000"}
+    assert res.sku_endpoints == {
+        "B200": "http://shared:8000",
+        "H100": "http://h100:8000",
+    }
+
+
+# --- shipped agentic recipes must produce a Gym config the launcher can start --
+
+ATLAS_RECIPES_DIR = (
+    Path(__file__).parents[2] / "examples" / "configs" / "recipes" / "atlas"
+)
+
+
+def test_agentic_recipes_declare_no_empty_gym_mappings():
+    """NeMo-Gym's launcher indexes into every top-level mapping of the global
+    config as a candidate server entry, so an empty mapping (for example a
+    ``cudagym_endpoints: {}`` placeholder) aborts spin-up with an IndexError.
+    A shipped recipe must therefore either fill such a key or omit it."""
+    recipes = sorted(ATLAS_RECIPES_DIR.glob("grpo_cuda_agentic*.yaml"))
+    assert recipes, f"no agentic recipes found under {ATLAS_RECIPES_DIR}"
+    for path in recipes:
+        gym_block = load_recipe_merged(path).env.nemo_gym
+        empty = [
+            key
+            for key in gym_block
+            if OmegaConf.is_dict(gym_block[key]) and len(gym_block[key]) == 0
+        ]
+        assert not empty, (
+            f"{path.name}: env.nemo_gym key(s) {empty} are empty mappings, "
+            "which NeMo-Gym's launcher cannot start as servers"
+        )
+
+
+def test_endpoint_override_creates_the_gym_key_from_scratch():
+    """The base agentic recipe deliberately does not declare
+    ``env.nemo_gym.cudagym_endpoints`` (see the test above), so the submit-time
+    ``++`` override must create the whole path itself. Apply it exactly the way
+    ``examples/nemo_gym/run_grpo_nemo_gym.py`` does."""
+    from nemo_rl.utils.config import parse_hydra_overrides
+
+    recipe = load_recipe_merged(ATLAS_RECIPES_DIR / "grpo_cuda_agentic_qwen3-8b.yaml")
+    assert "cudagym_endpoints" not in recipe.env.nemo_gym
+    merged = parse_hydra_overrides(
+        recipe, ["++env.nemo_gym.cudagym_endpoints.B200=https://b200.test"]
+    )
+    assert OmegaConf.to_container(merged.env.nemo_gym.cudagym_endpoints) == {
+        "B200": "https://b200.test"
+    }
