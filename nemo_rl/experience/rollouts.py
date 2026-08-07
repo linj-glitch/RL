@@ -980,9 +980,7 @@ def run_multi_turn_rollout(
         ),
     }
 
-    # Merge per-env (kernel-eval) online metrics into rollout_metrics. Only envs
-    # whose per-sample metadata carries the kernel-eval fields (cudagym) are
-    # aggregated; others are skipped (see _aggregate_env_metrics).
+    # Merge kernel-eval env metrics (cudagym only; see _aggregate_env_metrics).
     _aggregate_env_metrics(
         rollout_metrics,
         current_batch.get("task_name"),
@@ -1510,9 +1508,7 @@ def run_async_multi_turn_rollout(
         )
     )
     rollout_metrics = _aggregate_multi_turn_rollout_metrics(sample_metrics)
-    # Merge per-env (kernel-eval) online metrics into rollout_metrics. Only envs
-    # whose per-sample metadata carries the kernel-eval fields (cudagym) are
-    # aggregated; others are skipped (see _aggregate_env_metrics).
+    # Merge kernel-eval env metrics (cudagym only; see _aggregate_env_metrics).
     _aggregate_env_metrics(
         rollout_metrics,
         final_batch.get("task_name"),

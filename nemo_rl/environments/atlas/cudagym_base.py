@@ -14,8 +14,8 @@
 
 """Shared CudaGym evaluation + reward for the atlas environments.
 
-``BaseCudaEvaluator`` is a mixin: it turns (prompt, completion, problem-metadata)
-triples into ``KernelEvalResult``s (it parses each completion, builds the typed
+``BaseCudaEvaluator`` is a mixin: it turns (completion, problem-metadata)
+pairs into ``KernelEvalResult``s (it parses each completion, builds the typed
 ``Solution``, runs the CudaGym SDK, and maps the ``Trace``) and scores them with
 the correctness-gated reward (``reward.get_reward``). The single-turn env mixes
 this in. The agentic path's resources server
@@ -34,6 +34,8 @@ from __future__ import annotations
 
 import asyncio
 from abc import ABC
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from cudagym.rl import build_solution, fence_lang_for
 from cudagym.sdk import Client
@@ -56,11 +58,10 @@ class BaseCudaEvaluator(ABC):
 
     async def evaluate_batch(
         self,
-        prompts: list[str],
         completions: list[str],
-        metadata_list: list[dict],
+        metadata_list: Sequence[Mapping[str, Any]],
     ) -> list[KernelEvalResult]:
-        """Evaluate (prompt, completion, metadata) triples concurrently.
+        """Evaluate (completion, metadata) pairs concurrently.
 
         Each ``metadata`` dict carries one KernelFactory problem: ``definition``
         (dict), ``workloads`` (list[dict]), ``language``, ``target_hardware``,
@@ -74,16 +75,13 @@ class BaseCudaEvaluator(ABC):
         ``destination_passing_style``) does raise: that is a dataset bug, not a
         model output, and it should stop the run.
         """
-        assert len(prompts) == len(completions) == len(metadata_list), (
+        assert len(completions) == len(metadata_list), (
             "evaluate_batch inputs must have equal length"
         )
-        results = [
-            KernelEvalResult(original_prompt=p, original_completion=c)
-            for p, c in zip(prompts, completions)
-        ]
+        results = [KernelEvalResult() for _ in completions]
 
         async def _evaluate_one(idx: int) -> None:
-            """Evaluate one (prompt, completion, problem) triple onto ``results[idx]``."""
+            """Evaluate one (completion, problem) pair onto ``results[idx]``."""
             result = results[idx]
             meta = metadata_list[idx]
             # Hard-indexed like language: the data processor always writes the
@@ -115,21 +113,27 @@ class BaseCudaEvaluator(ABC):
                     and self.eval_config.sku
                     and row_sku.upper() != self.eval_config.sku.upper()
                 ):
-                    # The endpoint handshake verifies eval_config.sku, but this
-                    # value is what reaches Solution.spec.target_hardware. A row
-                    # declaring B200 against an H100 endpoint would compile for
-                    # the wrong silicon and score 0 on every sample, which reads
-                    # as a model failure rather than a config error.
+                    # This value becomes Solution.spec.target_hardware, but only
+                    # eval_config.sku is endpoint-verified — a mismatched row
+                    # would silently build for the wrong silicon, so refuse it.
                     result.metadata["config_error"] = (
                         f"row target_hardware={row_sku!r} != env sku={self.eval_config.sku!r}; "
                         "the endpoint is verified against the env sku, so this row would build for other silicon"
+                    )
+                    return
+                target_hardware = row_sku or self.eval_config.sku
+                if not target_hardware:
+                    # The GPU to build for comes from the row or the env
+                    # config; a missing one is a config bug, not a model error.
+                    result.metadata["config_error"] = (
+                        "the row pins no target_hardware and the env config declares no sku"
                     )
                     return
                 solution = build_solution(
                     code=code,
                     language=language,
                     definition_name=definition.name,
-                    target_hardware=row_sku or self.eval_config.sku,
+                    target_hardware=target_hardware,
                     destination_passing_style=destination_passing_style,
                     author="nemorl",
                 )

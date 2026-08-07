@@ -113,8 +113,6 @@ class KernelEvalResult:
     measured (so ``get_reward`` can skip the fallback perf term).
     """
 
-    original_prompt: str = ""
-    original_completion: str = ""
     formatted: bool = False  # completion parsed into a well-formed Solution
     compiled: bool = False  # all workloads compiled (or no compilation needed)
     executed: bool = False  # all workloads ran without runtime errors
@@ -126,7 +124,6 @@ class KernelEvalResult:
         -1.0
     )  # mean SOL score in [0,1] (0.5=human-best, 1.0=speed-of-light); -1 = no anchors
     human_best_speedup: float = -1.0  # geomean speedup over human-best (logging)
-    runtime: float = -1.0  # mean custom-kernel latency in ms
     # Free-form diagnostics (compile/exec errors, per-workload statuses, ...);
     # included in the env observation so the agent can react to them.
     metadata: dict[str, Any] = field(default_factory=dict)

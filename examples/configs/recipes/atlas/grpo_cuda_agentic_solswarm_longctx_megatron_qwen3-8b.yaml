@@ -1,17 +1,9 @@
-# The Megatron counterpart of grpo_cuda_agentic_solswarm_longctx_qwen3-8b.yaml.
-# Same 131072-token window, same dataset, same agent stack; the only difference
-# is which backend trains the policy, so the two runs are directly comparable.
-#
-# Megatron is the backend the long-context Gym recipes in this repo use
-# (grpo-qwen3-1.7b-1n8g-megatron-super-swe1.yaml is the single-node example),
-# and it is the one that supports YaRN rope scaling if this model ever needs it.
-# The training backend does not reach NeMo-Gym either way: the agent talks to
-# the policy over HTTP through the vLLM server, which serves generation
-# identically under both.
-#
-# The parallelism mirrors the DTensor variant -- the whole node splits the
-# sequence (context parallel 8, tensor parallel 1), because a 131072-token
-# trajectory is what needs splitting and the 8B weights fit one GPU.
+# The Megatron counterpart of grpo_cuda_agentic_solswarm_longctx_qwen3-8b.yaml:
+# same 131072-token window, same dataset, same agent stack; only the training
+# backend differs, so the two runs are directly comparable. The backend never
+# reaches NeMo-Gym — the agent talks to the policy through the vLLM server.
+# The parallelism mirrors the DTensor variant: the whole node splits the
+# sequence (context parallel 8, tensor parallel 1).
 #
 # Launch (single B200 endpoint, needs MODAL_PROXY_TOKEN_ID/SECRET):
 #   uv run --extra atlas python submit_grpo.py -e agsol_longctx_mcore \

@@ -32,6 +32,7 @@ per-workload correctness/runtime outcomes are returned inside the ``Trace``.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from typing import Any
 
 from cudagym.contracts.definition import Definition
@@ -60,7 +61,7 @@ _EXEC_FAIL = {
 _CORRECT_OK = {EvaluationStatus.PASSED, EvaluationStatus.CORRECTNESS_PASSED}
 
 
-def parse_problem(metadata: dict[str, Any]) -> tuple[Definition, list[Workload]]:
+def parse_problem(metadata: Mapping[str, Any]) -> tuple[Definition, list[Workload]]:
     """Validate the KernelFactory problem carried in env metadata into typed models.
 
     Expects ``metadata["definition"]`` (a Definition dict, i.e. a problem's
@@ -148,7 +149,7 @@ def update_result_from_trace(
       * ``executed``    — and none hit RUNTIME_ERROR / TIMEOUT / INVALID_REFERENCE.
       * ``correctness`` — and every workload is PASSED / CORRECTNESS_PASSED
                           (REWARD_HACK / INCORRECT_* deny correctness).
-      * ``speedup``/``runtime`` — mean over benchmarked workloads (``trace.summary``).
+      * ``speedup``     — mean over benchmarked workloads (``trace.summary``).
     The first failing log + per-workload statuses are stored in ``metadata`` so
     the agent can read the compiler/runtime error and revise next turn.
     """
@@ -196,16 +197,14 @@ def update_result_from_trace(
         )
         return
 
-    # Eager-reference speedup/latency (cudagym's own metric) — kept for logging
-    # and as the FALLBACK perf signal when SOL anchors are unavailable. The
-    # truthiness check also rejects the SDK's 0.0 default (an UNMEASURED
-    # reference, benchmark_reference: false) — a real measured speedup is never
-    # exactly 0, but 0.0 stored as "measured" drags the speedup metrics down.
+    # Eager-reference speedup (cudagym's own metric) — kept for logging and as
+    # the FALLBACK perf signal when SOL anchors are unavailable. The truthiness
+    # check also rejects the SDK's 0.0 default (an UNMEASURED reference,
+    # benchmark_reference: false) — a real measured speedup is never exactly 0,
+    # but 0.0 stored as "measured" drags the speedup metrics down.
     summary = trace.summary
     if summary.speedup_factor is not None and summary.speedup_factor.mean:
         result.speedup = summary.speedup_factor.mean
-    if summary.latency_ms is not None and summary.latency_ms.mean is not None:
-        result.runtime = summary.latency_ms.mean
 
     # SOL score (PREFERRED — what solswarm rewards on): per workload, anchored at
     # human-best (0.5) and speed-of-light (1.0). ``sol_anchors`` maps workload uuid ->

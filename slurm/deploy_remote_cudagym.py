@@ -121,7 +121,7 @@ def run_proxy(
     print("✅ Service proxy is ready")
 
 
-def wait_proxy_ready(ssh: SSHTunnel, port: int, timeout: float = 1800.0) -> None:
+def wait_proxy_ready(ssh: SSHTunnel, port: int, timeout: float) -> None:
     """Wait until the proxy's /status returns 200, implying the upstream service is ready."""
     start = time.time()
     while time.time() - start < timeout:
@@ -136,16 +136,21 @@ def wait_proxy_ready(ssh: SSHTunnel, port: int, timeout: float = 1800.0) -> None
     raise TimeoutError(f"Proxy on {ssh.host}:{port} not ready within {int(timeout)}s")
 
 
+def _port_listening(ssh: SSHTunnel, port: int) -> bool:
+    """Return whether a TCP listener holds ``port`` on the host's login node."""
+    rc, _, _ = ssh.run_command(
+        f"/bin/bash -lc \"ss -tln 2>/dev/null | grep -q ':{port} ' \""
+    )
+    return rc == 0
+
+
 def _find_next_free_port(
     ssh: SSHTunnel, start_port: int = 8999, max_steps: int = 100
 ) -> int:
     """Return the first TCP port >= ``start_port`` with no listener on the login node."""
     port = start_port
     for _ in range(max_steps):
-        rc, _, _ = ssh.run_command(
-            f"/bin/bash -lc \"ss -tln 2>/dev/null | grep -q ':{port} ' \""
-        )
-        if rc != 0:
+        if not _port_listening(ssh, port):
             return port
         port += 1
     raise RuntimeError(
@@ -170,10 +175,7 @@ def start_ssh_tunnel(
     )
 
     # If already listening, nothing to do
-    rc_chk, _, _ = ssh.run_command(
-        f"/bin/bash -lc \"ss -tln 2>/dev/null | grep -q ':{tunnel_port} ' \""
-    )
-    if rc_chk == 0:
+    if _port_listening(ssh, tunnel_port):
         print(
             f"✅ SSH tunnel already exists. Point the proxy at http://127.0.0.1:{tunnel_port}"
         )
@@ -205,10 +207,7 @@ def wait_tunnel_ready(ssh: SSHTunnel, port: int, timeout: float = 30.0) -> None:
     """Wait for an SSH -L tunnel listener."""
     start = time.time()
     while time.time() - start < timeout:
-        rc2, _, _ = ssh.run_command(
-            f"/bin/bash -lc \"ss -tln 2>/dev/null | grep -q ':{port} ' \""
-        )
-        if rc2 == 0:
+        if _port_listening(ssh, port):
             return
         time.sleep(2)
     raise TimeoutError(

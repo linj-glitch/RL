@@ -53,11 +53,8 @@ def main():
     # exp-name deliberately has no default: a forgotten flag should fail fast
     # rather than silently submit into a shared "debug" experiment directory.
     parser.add_argument("--exp-name", "-e", required=True, type=str)
-    # No atlas SFT recipe ships right now, so `choices` would be an empty list
-    # that rejects every value — including for --convert, which needs no recipe
-    # at all (it reuses a tree an earlier training submit uploaded, and sft.sh
-    # builds its conversion command without reading CONFIG_NAME). The
-    # training-only requirement is enforced after parsing instead.
+    # No atlas SFT recipe ships, so an empty `choices` would reject every value
+    # (--convert needs none); the training-only rule is checked after parsing.
     available_configs = get_available_configs(CONFIG_PATH, "sft*.yaml")
     parser.add_argument(
         "--config",

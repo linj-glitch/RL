@@ -53,11 +53,9 @@ export TIME=${TIME:-DEFAULT_TIME}
 export GPUS_PER_NODE=${GPUS_PER_NODE:-DEFAULT_GPUS_PER_NODE}
 # =======================================================================
 
-# CACHE_PATH holds the HF cache only. The uv cache deliberately stays at
-# ray.sub's default (container-local): pointing UV_CACHE_DIR_OVERRIDE at a
-# SHARED Lustre dir lets concurrent jobs race each other's cold-cache package
-# extraction, which shows up as `ImportError: ... from 'transformers'
-# (unknown location)` in freshly built venvs.
+# CACHE_PATH holds the HF cache only; the uv cache stays container-local. A
+# shared Lustre uv cache lets concurrent jobs race cold-cache extraction
+# (ImportError: ... 'transformers' (unknown location)).
 export HF_HOME=${CACHE_PATH}/huggingface
 export OUTPUT_DIR=${OUTPUT_ROOT}/${EXP_NAME}
 
@@ -81,18 +79,12 @@ fi
 export RUN_SCRIPT=${RUN_SCRIPT:-DEFAULT_RUN_SCRIPT}
 export UV_EXTRAS=${UV_EXTRAS:-DEFAULT_UV_EXTRAS}
 
-# Sync the venv BEFORE ray.sub starts Ray (it runs SETUP_COMMAND on every node
-# first). `ray start` otherwise runs from the container's baked venv while the
-# driver's `uv run` upgrades that same venv underneath it, and ray.init() then
-# refuses the version skew ("Version mismatch: The cluster was started with Ray
-# X ... this process ... Ray Y") whenever the image predates a dependency bump.
+# Sync the venv on every node BEFORE Ray starts, so `ray start` and the
+# driver's `uv run` agree on the Ray version (ray.init refuses a skew).
 export SETUP_COMMAND=${SETUP_COMMAND:-"uv sync ${UV_EXTRAS}"}
 
-# Rebuild the per-worker isolated venvs (/opt/ray_venvs/<worker class>) when the
-# container is older than uv.lock. They are baked at image build time, so after
-# a dependency bump a worker unpickles Ray internals against the stale version
-# and dies with e.g. "Can't get attribute '_get_opentelemetry'". Rebuilding the
-# container removes the need for this (and the per-job rebuild cost).
+# Rebuild the image-baked per-worker venvs (/opt/ray_venvs/*): after a
+# dependency bump a stale venv dies unpickling Ray internals.
 export NRL_FORCE_REBUILD_VENVS=${NRL_FORCE_REBUILD_VENVS:-true}
 
 export COMMAND="uv run ${UV_EXTRAS} ${RUN_SCRIPT} \
@@ -120,30 +112,20 @@ export MOUNTS="$cwd_parent:$cwd_parent,$cwd:/opt/nemo-rl,$WORKSPACE_PATH:$WORKSP
 # a plain ":${PYTHONPATH}" would leave a trailing colon when it is unset, which
 # Python reads as "also search the process's current directory".
 export PYTHONPATH="$cwd/3rdparty/cudagym/src${PYTHONPATH:+:$PYTHONPATH}"
-# The uploaded 3rdparty/cudagym tree has no .git, so setuptools-scm can't derive
-# its version when the venvs build it editable (uv atlas extra, Gym server
-# venvs). submit_grpo.py derives this from `git describe` on the submodule at
-# submit time so it tracks submodule bumps; a hand-typed pin here would go
-# stale silently.
+# The uploaded cudagym tree has no .git; submit_grpo.py derives this version
+# from the submodule at submit time so it tracks bumps.
 export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CUDAGYM=DEFAULT_CUDAGYM_VERSION
-# The SolSwarm checkout. With sandbox_profile: solswarm it supplies the
-# stitched problem extras (submission_rule.md) and keys the reference-sandbox
-# cache; with sandbox_profile: minimal the /submit skill is staged from this
-# tree.
+# The SolSwarm checkout: the stitched problem extras + reference-sandbox cache
+# key (sandbox_profile: solswarm); the /submit skill source (profile: minimal).
 export SOLSWARM_SURFACE_ROOT="$cwd/3rdparty/solswarm"
 # Where the agent writes the job's sandbox diagnostics (the pre-flight manifest
 # and the once-per-job sandbox_tree.json file-tree snapshot/diff) — on shared
 # storage, next to the logs.
 export CUDA_AGENT_MANIFEST_DIR="${OUTPUT_DIR}/sandbox_manifests"
-# Per-rollout agent containers (container-mode recipes; the image path comes
-# from --enroot-agent-image at submit, which requires it for them). Empty
-# (non-container recipes) skips the plumbing entirely. A path enables it: the
-# host's enroot (bash plus small glibc-only C helpers) is bind-mounted into
-# the training container. The /usr/bin/enroot* glob resolves on the login node
-# running this script, and the compute nodes provide the same paths. enroot's
-# gawk and squashfs-tools dependencies are apt-installed at node setup when
-# the training image lacks them, and the Gym agent server reads the image path
-# from CUDA_AGENT_ENROOT_IMAGE.
+# Per-rollout agent containers (container-mode recipes; submit_grpo.py requires
+# the flag for them). Empty skips the enroot plumbing; a path bind-mounts the
+# host's enroot into the training container, and the Gym agent server reads
+# the image path from CUDA_AGENT_ENROOT_IMAGE.
 export CUDA_AGENT_ENROOT_IMAGE=${CUDA_AGENT_ENROOT_IMAGE:-DEFAULT_CUDA_AGENT_ENROOT_IMAGE}
 if [ -n "$CUDA_AGENT_ENROOT_IMAGE" ]; then
     MOUNTS="$MOUNTS,/usr/lib/enroot:/usr/lib/enroot,/usr/share/enroot:/usr/share/enroot,/etc/enroot:/etc/enroot"

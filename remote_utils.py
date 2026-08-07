@@ -68,72 +68,44 @@ def _list_submodule_paths(repo_root: str) -> list[str]:
 class SSHTunnel:
     """Access to one remote host through the ``ssh`` and ``scp`` command-line tools.
 
-    Holds the connection options (port, identity file, host-key policy,
-    compression) and applies them to every remote command and file copy.
+    Holds the connection port and applies the shared connection options
+    (compression, host-key policy) to every remote command and file copy.
     """
 
-    def __init__(
-        self,
-        host: str,
-        *,
-        user: Optional[str] = None,
-        port: int = 22,
-        identity_file: Optional[str] = None,
-        strict_host_key_checking: bool = False,
-        compress: bool = True,
-    ):
+    def __init__(self, host: str, *, port: int = 22):
         self.host = host
-        self.user = user
         self.port = port
-        self.identity_file = identity_file
-        self.strict_host_key_checking = strict_host_key_checking
-        self.compress = compress
 
         _which_or_raise("ssh")
         _which_or_raise("scp")
 
-    def _dest(self) -> str:
-        """Return the ``user@host`` destination string (or bare host)."""
-        return f"{self.user}@{self.host}" if self.user else self.host
+    def _base(self, binary: str, port_flag: str) -> list[str]:
+        """Return the argv prefix with the shared connection options.
 
-    def _ssh_base(self) -> list[str]:
-        """Return the ``ssh`` argv prefix with the shared connection options."""
-        cmd = ["ssh", "-p", str(self.port)]
-        if self.compress:
-            cmd.append("-C")
-        if self.identity_file:
-            cmd.extend(["-i", self.identity_file])
-        if self.strict_host_key_checking:
-            cmd.extend(["-o", "StrictHostKeyChecking=yes"])
-        else:
-            cmd.extend(
-                ["-o", "StrictHostKeyChecking=accept-new"]
-            )  # accept-new needs OpenSSH >= 7.6
-        return cmd
-
-    def _scp_base(self) -> list[str]:
-        """Return the ``scp`` argv prefix with the shared connection options."""
-        cmd = ["scp", "-P", str(self.port)]
-        if self.compress:
-            cmd.append("-C")
-        if self.identity_file:
-            cmd.extend(["-i", self.identity_file])
-        if self.strict_host_key_checking:
-            cmd.extend(["-o", "StrictHostKeyChecking=yes"])
-        else:
-            cmd.extend(["-o", "StrictHostKeyChecking=accept-new"])
-        return cmd
+        ``ssh`` and ``scp`` take the same options apart from the spelling of
+        the port flag (``-p`` vs ``-P``).
+        """
+        return [
+            binary,
+            port_flag,
+            str(self.port),
+            "-C",
+            "-o",
+            "StrictHostKeyChecking=accept-new",  # accept-new needs OpenSSH >= 7.6
+        ]
 
     def run_command(self, command: str):
         """Run a shell command on the remote host; return ``(rc, stdout, stderr)``."""
         proc = subprocess.run(
-            self._ssh_base() + [self._dest(), command], text=True, capture_output=True
+            self._base("ssh", "-p") + [self.host, command],
+            text=True,
+            capture_output=True,
         )
         return proc.returncode, proc.stdout, proc.stderr
 
     def put_file(self, local_path: str, remote_path: str) -> None:
         """Copy a local file to the remote host with ``scp``."""
-        _run(self._scp_base() + [local_path, f"{self._dest()}:{remote_path}"])
+        _run(self._base("scp", "-P") + [local_path, f"{self.host}:{remote_path}"])
 
 
 def check_for_uncommitted_changes():
@@ -168,7 +140,6 @@ def check_for_uncommitted_changes():
 def package_code(
     ssh_tunnel: SSHTunnel,
     upload_path: Union[str, Path],
-    delete: bool = True,
     skip_commit_check: bool = False,
 ) -> Union[str, Path]:
     """Rsync the project to the remote host, syncing only git-tracked files.
@@ -191,7 +162,7 @@ def package_code(
 
     # rsync's -e option takes one shell-parsed command string, so the tunnel's
     # ssh argv is quoted per token and joined.
-    rsync_rsh = " ".join(shlex.quote(x) for x in ssh_tunnel._ssh_base())
+    rsync_rsh = " ".join(shlex.quote(x) for x in ssh_tunnel._base("ssh", "-p"))
 
     # Get all git-tracked files including submodules
     # --recurse-submodules ensures we get files from all submodules
@@ -222,11 +193,10 @@ def package_code(
             "--files-from",
             f.name,
             "--relative",  # preserve relative path structure
+            "--delete",
             "-e",
             rsync_rsh,
         ]
-        if delete:
-            rsync_base.append("--delete")
 
         # Ensure remote destination directory exists
         rc, _, err = ssh_tunnel.run_command(f"mkdir -p {upload_path}")
@@ -235,7 +205,7 @@ def package_code(
 
         # Source is repo root, destination includes the upload path
         src_root = repo_root + "/"  # trailing slash important for rsync
-        dest_root = f"{ssh_tunnel._dest()}:{upload_path}/"
+        dest_root = f"{ssh_tunnel.host}:{upload_path}/"
 
         # Execute rsync with the file list
         _run(rsync_base + [src_root, dest_root])
@@ -320,18 +290,12 @@ def validate_cluster_paths(paths: dict) -> None:
 
 
 def fill_template(sbatch_script: str, var_name: str, value) -> str:
-    r"""Replace every ``DEFAULT_<VAR>`` token in the sbatch script text with a value.
+    """Replace every ``DEFAULT_<VAR>`` token in the sbatch script text with a value.
 
-    Matching is token-exact: a trailing negative lookahead keeps
-    ``DEFAULT_ARTIFACTS`` from also matching the prefix of
-    ``DEFAULT_ARTIFACTS_DIR``. ``None`` renders as an empty quoted string
-    rather than the literal ``None``; ints and floats are inserted bare; every
-    other value (str, Path, ...) is single-quoted, with embedded single quotes
-    escaped as ``'\''``, so the job shell reads the value byte-for-byte — a
-    ``$``, backtick, or ``"`` in e.g. a secret is never expanded. No template
-    slot relies on job-shell expansion: cluster/container paths arrive fully
-    resolved from the cluster YAML, and EXTRA_CONFIG_OPTS was already expanded
-    by the submitting shell.
+    ``None`` renders as an empty quoted string; ints and floats are inserted
+    bare; every other value (str, Path, ...) is single-quoted so the job shell
+    reads it byte-for-byte (a ``$`` or backtick in e.g. a secret is never
+    expanded).
     """
     var = var_name.upper()
     if value is None:
@@ -339,8 +303,11 @@ def fill_template(sbatch_script: str, var_name: str, value) -> str:
     elif isinstance(value, (int, float)) and not isinstance(value, bool):
         value_str = str(value)
     else:
+        # Embedded single quotes become '\'' so the quoting survives them.
         escaped = str(value).replace("'", "'\\''")
         value_str = f"'{escaped}'"
+    # Token-exact match: the negative lookahead keeps DEFAULT_ARTIFACTS from
+    # also matching the prefix of DEFAULT_ARTIFACTS_DIR.
     return re.sub(
         rf"DEFAULT_{re.escape(var)}(?![A-Za-z0-9_])",
         lambda _m: value_str,

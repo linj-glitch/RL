@@ -86,6 +86,22 @@ def test_load_recipe_merged_follows_defaults(tmp_path):
     assert OmegaConf.select(cfg, "grpo.num_prompts_per_step") == 4
 
 
+def test_load_recipe_merged_tolerates_parent_mandatory_values(tmp_path):
+    """A parent may declare top-level ``???`` (mandatory) values; composing the
+    chain must carry them through unresolved rather than raising. The child
+    fills one here; the other stays missing for a later override to provide."""
+    (tmp_path / "parent.yaml").write_text(
+        "cluster: ???\nrun_name: ???\n"
+        "env:\n  cudagym:\n    b200:\n      sku: B200\n      hosting: {kind: colocated}\n"
+    )
+    child = tmp_path / "child.yaml"
+    child.write_text('defaults: "parent.yaml"\ncluster:\n  num_nodes: 2\n')
+    cfg = load_recipe_merged(child)
+    assert OmegaConf.select(cfg, "cluster.num_nodes") == 2
+    assert OmegaConf.is_missing(cfg, "run_name")
+    assert OmegaConf.select(cfg, "env.cudagym.b200.sku") == "B200"
+
+
 # --------------------------------------------------------------------------
 # Registry
 # --------------------------------------------------------------------------

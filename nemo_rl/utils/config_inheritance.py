@@ -64,6 +64,10 @@ def merge_with_override(
         The merged config.
     """
     for key in list(override_config.keys()):
+        # Keep mandatory values (``???``) unresolved while composing configs.
+        # A child config or a CLI override may provide them after inheritance.
+        if OmegaConf.is_missing(override_config, key):
+            continue
         if isinstance(override_config[key], DictConfig):
             if override_config[key].get("_override_", False):
                 # remove the _override_ marker

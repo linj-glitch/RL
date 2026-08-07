@@ -527,10 +527,7 @@ if [[ "${CUDAGYM_ENABLED:-0}" == "1" ]]; then
   COMPILE_MAX_LOAD=50
   GPU_MAX_LOAD=8
 
-  # Select the CudaGym node set and the load-balancer node based on the mode.
-  #   colocated: services on all nodes [0, SLURM_JOB_NUM_NODES), LB on the Ray head node.
-  #   disjoint:  services on the trailing nodes [TRAIN_NUM_NODES, SLURM_JOB_NUM_NODES),
-  #              LB on the first CudaGym node.
+  # Node set + LB node per mode (see the section header).
   if [[ "$CUDAGYM_MODE" == "disjoint" ]]; then
     CUDAGYM_NODE_START=$TRAIN_NUM_NODES
     CUDAGYM_LB_NODE=${nodes_array[$TRAIN_NUM_NODES]}
@@ -564,14 +561,11 @@ if [[ "${CUDAGYM_ENABLED:-0}" == "1" ]]; then
   echo "[INFO] Compile servers: $COMPILE_SERVERS"
   echo "[INFO] GPU servers: $GPU_SERVERS"
 
-  echo "[INFO] Launching CudaGym services on selected nodes..."
   CUDAGYM_CONTAINER_MOUNTS="${MOUNTS},${ARTIFACTS_DIR}:${ARTIFACTS_DIR},${CCACHE_DIR}:${CCACHE_DIR}"
   CUDAGYM_SRUN_COMMON="--no-container-mount-home --mpi=pmix --container-image=${CUDAGYM_CONTAINER} --container-mounts=${CUDAGYM_CONTAINER_MOUNTS} --container-workdir=$SLURM_SUBMIT_DIR --overlap"
-  # Modern cudagym (>=1.9) ships ONE unified server (cudagym.servers.serve) run in
-  # compile-only / gpu-only mode; the vendored source at 3rdparty/cudagym/src rides
-  # PYTHONPATH so the checkout wins over whatever the container baked. The container
-  # must still provide the server runtime deps (fastapi/uvicorn/torch + the compile
-  # toolchain from the matching docker/<profile> image).
+  # cudagym.servers.serve is ONE unified server run in compile-only / gpu-only
+  # mode; the vendored 3rdparty/cudagym/src rides PYTHONPATH (the checkout wins
+  # over the container's copy), and the container provides the runtime deps.
   # In colocated mode the training processes own the GPUs too, so the GPU server
   # must tolerate pre-existing GPU processes.
   ALLOW_PROCS_ARG=""

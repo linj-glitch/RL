@@ -1,15 +1,10 @@
-# Managed CudaGym eval endpoints on Astra (titan-internal).
-#
-# Referenced from recipes as `hosting: {kind: endpoint, endpoint: astra/<key>}`.
-# Bearer auth only (CUDAGYM_AUTH_TOKEN, when the endpoint requires it).
-# URLs seeded from solswarm deployments/files/gpu-skus.toml; the upstream
-# registry currently marks all three disabled — remove `disabled_reason`
-# once connectivity is restored (submit errors on disabled entries).
+# Managed CudaGym eval endpoints on Astra (titan-internal); referenced from
+# recipes as `hosting: {kind: endpoint, endpoint: astra/<key>}`. Bearer auth
+# only (CUDAGYM_AUTH_TOKEN). URLs seeded from solswarm's gpu-skus.toml, which
+# currently marks all three disabled — remove `disabled_reason` once restored.
 
-# The key stays `gb10` (the upstream fleet id; /health reports gpu_model
-# "NVIDIA GB10"), but the sku must be the exact SupportedHardware enum value:
-# in the cudagym SDK "GB10" is only a name alias of DGX_SPARK, and a recipe
-# entry must carry the enum value to pass env init and Solution validation.
+# The key stays `gb10` (the upstream fleet id), but the sku must be the exact
+# SupportedHardware enum value: "GB10" is only a name alias of DGX_SPARK.
 gb10:
   sku: DGX_SPARK
   url: https://api.cudagym.titan.nvidia.com/dgx-spark

@@ -451,12 +451,10 @@ Depending on your data shape, you may want to change these values."""
             "port": self.head_server_port,
         }
 
-        # NeMo-Gym's launcher indexes into every top-level mapping of the
-        # global config as a candidate server entry (nemo_gym/cli.py `start`),
-        # so an empty mapping crashes spin-up with a bare IndexError. Refuse it
-        # here with the key named. A knob that means "use the defaults" must be
-        # omitted entirely; server configs read such knobs through
-        # ${oc.select:...} fallbacks.
+        # NeMo-Gym's launcher (nemo_gym/cli.py `start`) indexes into every
+        # top-level mapping of the global config as a server entry, so an empty
+        # mapping crashes spin-up with a bare IndexError. Refuse it by name;
+        # a "use the defaults" knob must be omitted entirely.
         empty_mappings = sorted(
             key
             for key, value in initial_global_config_dict.items()

@@ -9,19 +9,8 @@
 #   # then squash for pyxis/enroot:  enroot import -o nemorl-atlas.sqsh dockerd://nemo-rl-atlas
 #   # and point slurm/clusters/<cluster>.yaml paths.container at the .sqsh.
 #
-# What this adds and why:
-#   * node + opencode-ai: cuda_agent shells out to the `opencode` CLI
-#     (responses_api_agents/cuda_agent). Pre-baking pins the version and avoids
-#     setup_opencode.py's npm-install-at-server-boot (which needs egress and a
-#     writable global prefix on the compute node).
-#   * cudagym (editable, from 3rdparty/cudagym): the `cudagym` CLI the sandboxed
-#     agent calls + the SDK the Gym cudagym resources server imports. The nemorl
-#     venv itself gets it via `uv run --extra atlas` (pyproject atlas extra).
-#
-# Eval-side CudaGym servers use a SEPARATE image (slurm/clusters/*.yaml
-# paths.cudagym_container) built from the cudagym repo's docker/<profile>
-# (sol_execbench_external or kernel_factory). Images predating
-# cudagym.servers.serve won't work — rebuild from 3rdparty/cudagym.
+# Eval-side CudaGym servers use a SEPARATE image (cluster yaml
+# paths.cudagym_container), built from the cudagym repo's docker/<profile>.
 
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}

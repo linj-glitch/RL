@@ -1,29 +1,10 @@
 # Agentic CudaGym GRPO in SolSwarm container mode with a 131072-token training
 # window, so a rollout's full multi-turn trajectory is trained on rather than
-# truncated. Same stack as grpo_cuda_agentic_solswarm_qwen3-8b.yaml; the three
-# changes are the sequence length, the position limit that lets the model reach
-# it, and the parallelism that lets one node hold it.
-#
-# 1. max_total_sequence_length 131072. This is both the vLLM window (so OpenCode
-#    conversations grow to it instead of failing at 40960) and the trained
-#    sequence length. OpenCode's own limit.context already tracks
-#    max_model_len (cudagym_cuda_agent.yaml reads policy_max_model_len), so
-#    raising this one value moves all three together.
-#
-# 2. A raised max_position_embeddings. Qwen3-8B's config declares 40960
-#    positions, and that declaration is what caps the window; its rope theta is
-#    already 1000000, so the model extrapolates beyond it without rope scaling.
-#    This is how the Gym-based long-context recipes get there
-#    (grpo-qwen3-1.7b-1n8g-megatron-super-swe1.yaml), and it avoids YaRN, which
-#    the DTensor backend rejects outright (automodel/setup.py:312). NeMo-RL
-#    copies policy.hf_config_overrides into vLLM's hf_overrides (grpo.py:1183),
-#    so the training policy and the generation server are raised together.
-#
-# 3. Context parallelism. A 131072-token sequence will not fit one GPU's
-#    activations, so it is split across GPUs. The DTensor worker refuses context
-#    parallelism together with sequence parallelism (NVIDIA-NeMo/RL issue 659),
-#    so sequence_parallel is off here and tensor_parallel_size * context_parallel
-#    _size fills the node's 8 GPUs (2 * 4).
+# truncated. Same stack as grpo_cuda_agentic_solswarm_qwen3-8b.yaml; the
+# overrides below are the window itself, the raised position limit that lets
+# the model reach it, and the context parallelism that lets one node hold it.
+# Raising max_total_sequence_length moves the vLLM window, the trained length,
+# and OpenCode's limit.context together.
 #
 # Launch (single B200 endpoint, needs MODAL_PROXY_TOKEN_ID/SECRET):
 #   uv run --extra atlas python submit_grpo.py -e agsol_longctx \
@@ -60,7 +41,8 @@ policy:
     context_parallel_size: 8
   hf_config_overrides:
     # Raises only the declared position limit; the model's rope theta already
-    # supports the longer context. See the header for why not YaRN.
+    # supports the longer context. Not YaRN: the DTensor backend rejects rope
+    # scaling outright (automodel/setup.py:312).
     max_position_embeddings: 131072
 
 logger:

@@ -23,8 +23,7 @@ and shares the evaluation + reward logic with it via ``BaseCudaEvaluator``
 
 Flow per ``step`` (everything is batched):
 
-  1. Split each sample's message log into the first ``user`` prompt and the
-     last ``assistant`` completion.
+  1. Take each sample's last ``assistant`` message as the completion to evaluate.
   2. ``evaluate_batch`` parses each completion, builds the typed ``Solution``,
      runs the CudaGym evaluation, and maps the ``Trace`` to a ``KernelEvalResult``.
   3. ``get_reward`` scores each result with the correctness-gated reward.
@@ -46,6 +45,7 @@ from cudagym.rl import canonical_sku, verify_health_payload
 from cudagym.sdk import Client
 from pydantic import ValidationError
 
+from nemo_rl.data.interfaces import LLMMessageLogType
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 from nemo_rl.environments.interfaces import EnvironmentInterface, EnvironmentReturn
 
@@ -112,14 +112,9 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
         # build_solution and is then blamed on the model).
         canonical_sku(self.eval_config.sku, "env.cudagym.<name>.sku")
 
-        # One transport client + one event loop per actor. cudagym >= 2.x
-        # speaks split compile/GPU URLs; our launch plumbing carries ONE
-        # unified endpoint (the in-allocation LB or a managed remote), so it
-        # is passed as both. Resolution order: the recipe-pinned server_url,
-        # then CUDAGYM_UNIFIED_SERVER_URL / CUDAGYM_URL (how colocated mode
-        # injects the LB address), then Client.from_env() (native split
-        # CUDAGYM_{COMPILE,GPU}_SERVER_URL; raises with a clear message when
-        # nothing is set).
+        # One transport client per actor. Our plumbing carries ONE unified
+        # endpoint, passed as both split URLs. Resolution order documented on
+        # CudaGymEvalConfig.server_url.
         server_url = (
             self.eval_config.server_url
             or os.environ.get("CUDAGYM_UNIFIED_SERVER_URL")
@@ -200,38 +195,32 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
         """Return this env's evaluation config (read by ``examples/run_grpo_cuda.py`` during data setup)."""
         return self.eval_config
 
-    async def step(
+    async def step(  # pyrefly: ignore[bad-override]  The base is typed sync; Ray awaits async actor methods (this actor runs in asyncio mode, see __init__)
         self,
-        message_log_batch: list[list[dict[str, str]]],
+        message_log_batch: list[LLMMessageLogType],
         metadata: list[CudaGymEnvironmentMetadata],
     ) -> EnvironmentReturn:
         """Evaluate one completion per sample and return a single-turn reward.
 
         Args:
-            message_log_batch: per-sample OpenAI-style message logs. We take the
-                first ``user`` message as the prompt and the last ``assistant``
-                message as the completion to evaluate.
+            message_log_batch: per-sample OpenAI-style message logs. The last
+                ``assistant`` message is the completion to evaluate.
             metadata: per-sample ``CudaGymEnvironmentMetadata`` (the problem).
 
         Returns:
             ``EnvironmentReturn`` with ``terminateds`` all True (single-turn).
         """
-        # Split each conversation into the prompt and the completion to evaluate.
-        user_prompt_batch: list[str] = []
+        # Take each conversation's last assistant message as the completion.
         completion_batch: list[str] = []
         for conversation in message_log_batch:
-            user_prompts = [m["content"] for m in conversation if m["role"] == "user"]
             assistant_msgs = [
-                m["content"] for m in conversation if m["role"] == "assistant"
+                str(m["content"]) for m in conversation if m["role"] == "assistant"
             ]
-            user_prompt_batch.append(user_prompts[0] if user_prompts else "")
             completion_batch.append(assistant_msgs[-1] if assistant_msgs else "")
 
         # Build the typed Solution per sample, compile+execute on CudaGym, and
         # map each Trace -> KernelEvalResult (all concurrent on the actor loop).
-        results = await self.evaluate_batch(
-            user_prompt_batch, completion_batch, metadata
-        )
+        results = await self.evaluate_batch(completion_batch, metadata)
         rewards = [self.get_reward(result) for result in results]
 
         # Observation = human-readable eval feedback (episode terminates after it).

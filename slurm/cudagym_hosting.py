@@ -28,37 +28,15 @@ Every ``env.cudagym.<name>`` recipe entry declares where its eval servers live:
             # service_cluster: ...  # kind=slurm-service (experimental) + num_service_nodes,
             #                       #   endpoint_port, [service_login_port]
 
-``kind`` is topology; the provider (modal/astra/static) is a property of the
-registry entry (``endpoints/<provider>.yaml``). ``submit_grpo.py`` resolves and
-validates every entry at submit time — hosting is declared in the recipe, not
-on the command line. Remote endpoints are pinged at submit time and their
-reported GPU is checked against the declared SKU; in-allocation servers (which
-don't exist yet at submit) get the same check at runtime init
-(``verify_endpoint_sku``). ``slurm-service`` entries stand up a CudaGym service
-job on ANOTHER Slurm cluster at submit time and chain login-node proxies back
-to this one (``slurm.deploy_remote_cudagym``); agentic (NeMo-Gym) recipes
-refuse this kind because the deployed URL is not plumbed to the Gym servers.
+``submit_grpo.py`` calls ``resolve_hosting`` at submit time: every entry is
+validated, registry refs (``endpoints/<provider>.yaml``) resolve to URLs, and
+remote endpoints get a /health GPU preflight. ``hosting: {kind: endpoint}``
+with neither ``endpoint`` nor ``url`` falls back to the
+CUDAGYM_UNIFIED_SERVER_URL / CUDAGYM_URL environment variables.
 
-``hosting: {kind: endpoint}`` with neither ``endpoint`` nor ``url`` resolves
-from ``CUDAGYM_UNIFIED_SERVER_URL`` / ``CUDAGYM_URL`` (the environment-variable
-escape hatch).
-
-A recipe may declare several entries, one per GPU it trains against, and every
-entry must name a distinct SKU. ``HostingResolution.sku_endpoints`` collects
-them into a SKU -> URL map, which ``submit_grpo.py`` hands to the agentic
-(NeMo-Gym) path; that path's resources server routes each task row to the
-endpoint serving the row's own target hardware.
-
-Kept clear of the training stack on purpose (omegaconf, the CudaGym SDK, and
-the standard library; ``requests`` is imported lazily in ``probe_endpoint``):
-the recipe loader is the hydra-free ``nemo_rl.utils.config_inheritance``,
-shared with the training-side loader. The SDK supplies both SKU checks
-(``cudagym.rl``) and reads its own device table for them, so it has to be
-importable; submit hosts usually have no training venv, and
-``ensure_vendored_cudagym`` therefore runs at import and points the interpreter
-at the repo's own ``3rdparty/cudagym`` checkout, which adds only ``loguru`` and
-``pydantic`` to the requirements. It fails with instructions rather than
-letting either check be skipped.
+The module must import without the training venv: it uses omegaconf, the
+stdlib, and the CudaGym SDK, which ``ensure_vendored_cudagym`` bootstraps from
+the ``3rdparty/cudagym`` checkout at import time.
 """
 
 import os
@@ -84,15 +62,10 @@ PROVIDER_REQUIRED_ENV: dict[str, tuple[str, ...]] = {
 }
 
 
-# cluster yaml `sku:` (lowercase) -> the kernel-target SKU that silicon serves.
-# The cluster files spell their `sku:` in lower case, which is this repo's own
-# convention rather than anything CudaGym defines, so the translation is a
-# hand-maintained table; add a row per new cluster silicon. Each silicon maps
-# to itself: CudaGym models B200 and GB200 as different hardware because it
-# locks B200 clocks to 1500 MHz and leaves GB200 unlocked, so the same kernel
-# times differently on the two. Mapping one onto the other here would also
-# contradict the runtime check against the server's reported GPU, which would
-# accept the job at submit and then refuse it at environment init.
+# cluster yaml `sku:` (lowercase, this repo's own spelling) -> the kernel-target
+# SKU that silicon serves; add a row per new cluster silicon. B200 and GB200
+# stay distinct: CudaGym locks B200 clocks and leaves GB200 unlocked, so the
+# same kernel times differently on the two.
 CLUSTER_SILICON: dict[str, str] = {
     "h100": "H100",
     "h200": "H200",
@@ -121,10 +94,7 @@ class HostingError(ValueError):
 def _cudagym_import_error() -> Optional[str]:
     """Try to import ``cudagym.rl``; return the ImportError message, or None on success.
 
-    Imports the helper package rather than the bare ``cudagym`` namespace,
-    because that is what this module goes on to import: it pulls in the SDK's
-    device table and contract models, so a checkout that imports but cannot
-    reach those is caught here.
+    ``cudagym.rl`` (not the bare namespace) is what this module goes on to import.
     """
     try:
         import cudagym.rl  # noqa: F401
@@ -136,16 +106,11 @@ def _cudagym_import_error() -> Optional[str]:
 def ensure_vendored_cudagym(repo_root: Union[str, Path] = REPO_ROOT) -> None:
     """Make the cudagym SDK importable, falling back to the vendored checkout.
 
-    Both the spelling check on every declared SKU (``canonical_sku``) and the
-    GPU-identity preflight (``verify_health_payload``) are the SDK's own
-    ``cudagym.rl`` helpers, and they read the SDK's device table; without the
-    import there is no check at all. The SDK ships in this repo at
-    ``3rdparty/cudagym`` — the same checkout the job's ``uv sync`` installs, so
-    a submit without it would fail at job start anyway — and its import chain
-    needs only ``loguru`` and ``pydantic`` beyond the stdlib. Machines without
-    the training venv therefore import it straight from the checkout; when even
-    that is impossible, this raises ``HostingError`` naming the fix instead of
-    letting the check degrade.
+    The SKU checks (``canonical_sku``, ``verify_health_payload``) are the SDK's
+    own ``cudagym.rl`` helpers, so the SDK must import before this module can
+    validate anything. Submit hosts usually lack the training venv; the
+    ``3rdparty/cudagym`` checkout needs only ``loguru`` and ``pydantic``.
+    Raises ``HostingError`` naming the fix when even that import fails.
     """
     # Already importable (e.g. the training venv) — nothing to do.
     if _cudagym_import_error() is None:
@@ -163,7 +128,9 @@ def ensure_vendored_cudagym(repo_root: Union[str, Path] = REPO_ROOT) -> None:
     # and fail again. Drop the cached modules so the vendored checkout is what
     # the retry actually imports.
     shadowed = "cudagym" in sys.modules
-    stale = [name for name in sys.modules if name == "cudagym" or name.startswith("cudagym.")]
+    stale = [
+        name for name in sys.modules if name == "cudagym" or name.startswith("cudagym.")
+    ]
     cached = {name: sys.modules.pop(name) for name in stale}
     # Put the checkout on sys.path and try the import again.
     sys.path.insert(0, str(src))
@@ -275,16 +242,11 @@ class HostingResolution:
     endpoints: list[ResolvedEntry]
     slurm_services: list[ResolvedEntry]
     extra_config_opts: list[str]
-    # SKU -> evaluation endpoint URL, one key per resolved entry. An entry with
-    # no submit-time URL (in-allocation hosting) maps to the empty string, which
-    # the Gym cudagym resources server reads as "take the URL from
-    # CUDAGYM_UNIFIED_SERVER_URL when the job runs" — ray.sub sets that variable
-    # to the address of the load balancer it brings up in the allocation.
+    # SKU -> endpoint URL, one key per entry; in-allocation entries map to ""
+    # (the Gym server then reads CUDAGYM_UNIFIED_SERVER_URL at runtime).
     sku_endpoints: dict[str, str]
-    # Single-endpoint jobs only: the one resolved URL, exported into the job as
-    # the ambient CUDAGYM_UNIFIED_SERVER_URL; "" for every other job. It feeds
-    # the single-turn environment actor's fallback and the agent sandbox's
-    # CUDAGYM_URL, not the agentic endpoint map above.
+    # The one resolved URL when the job has exactly one endpoint, else "";
+    # exported into the job as the ambient CUDAGYM_UNIFIED_SERVER_URL.
     unified_server_url: str
     warnings: list[str]
 
@@ -297,13 +259,6 @@ class HostingResolution:
     def cudagym_num_nodes(self) -> int:
         """Node count for ray.sub's CUDAGYM_NUM_NODES (0 unless kind is disjoint)."""
         return self.in_allocation.num_nodes if self.in_allocation else 0
-
-
-def _auth_env_names(entry: ResolvedEntry) -> tuple[str, ...]:
-    """Return the env vars the entry's provider requires in the submitting shell."""
-    if entry.endpoint is None:
-        return ()
-    return PROVIDER_REQUIRED_ENV.get(entry.endpoint.provider, ())
 
 
 def _resolve_disjoint(
@@ -381,7 +336,8 @@ def _resolve_endpoint(
     entry = ResolvedEntry(
         name=name, sku=sku, kind="endpoint", url=str(url).rstrip("/"), endpoint=ep
     )
-    missing = [v for v in _auth_env_names(entry) if not os.environ.get(v)]
+    required_env = PROVIDER_REQUIRED_ENV.get(ep.provider, ()) if ep else ()
+    missing = [v for v in required_env if not os.environ.get(v)]
     if missing:
         raise HostingError(
             f"endpoint {ep.name if ep else url} requires env var(s) "
@@ -534,20 +490,18 @@ def resolve_hosting(
             f"every env.cudagym entry must declare a distinct sku; got {detail}"
         )
 
-    # The mirror rule: distinct SKUs must also resolve to distinct addresses.
-    # One URL serving two SKUs means one of them is wrong, and the consequence
-    # is silent — kernels for the other GPU are compiled and timed on this one,
-    # producing latencies that look ordinary. The /health preflight cannot catch
-    # it either: it probes the shared URL once per SKU, and one of those probes
-    # passes. Entries with no URL are exempt; at most one entry is in-allocation
-    # (rule above), so an empty address cannot collide.
+    # Distinct SKUs must also resolve to distinct addresses; the /health
+    # preflight cannot catch a shared URL (each per-SKU probe of it passes).
+    # Entries with no URL are exempt (at most one exists, per the rule above).
     names_by_url: dict[str, list[str]] = {}
     for e in resolved:
         if e.url:
             names_by_url.setdefault(e.url, []).append(f"{e.name} ({e.sku})")
     shared = {u: n for u, n in names_by_url.items() if len(n) > 1}
     if shared:
-        detail = "; ".join(f"{u} shared by {', '.join(n)}" for u, n in sorted(shared.items()))
+        detail = "; ".join(
+            f"{u} shared by {', '.join(n)}" for u, n in sorted(shared.items())
+        )
         raise HostingError(
             f"env.cudagym entries for different GPUs resolve to the same endpoint; got {detail}. "
             "One address cannot serve two SKUs: rows for one GPU would be timed on the other."
@@ -558,33 +512,17 @@ def resolve_hosting(
     endpoints = [e for e in resolved if e.kind == "endpoint"]
     slurm_services = [e for e in resolved if e.kind == "slurm-service"]
 
-    # Agentic (NeMo-Gym) rules. Several entries are fine — the resources server
-    # holds one endpoint per SKU — so every entry may be `kind: endpoint`. What
-    # the agentic path cannot use is slurm-service hosting (refused below), and
-    # in-allocation hosting only warns: usable for smoke tests, wrong for timed
-    # rewards. At most one entry may be in-allocation, which the "at most one
-    # env.cudagym entry may be hosted in-allocation" rule above already enforces
-    # for every job; that rule is what keeps the endpoint map resolvable here,
-    # because an in-allocation entry carries no URL of its own and is filled at
-    # runtime from the single CUDAGYM_UNIFIED_SERVER_URL, which can name only
-    # one load balancer.
+    # Agentic (NeMo-Gym) rules: any number of `endpoint` entries (one per SKU)
+    # is fine; slurm-service is refused (its URL never reaches the Gym servers);
+    # in-allocation hosting only warns (fine for smoke tests, wrong for timing).
     if uses_nemo_gym:
         if not resolved:
-            # Without an entry the endpoint map is empty and the resources
-            # server refuses to start, minutes into the job; say so at submit.
             raise HostingError(
                 "an agentic (NeMo-Gym) recipe must declare at least one env.cudagym "
                 "entry: the resources server evaluates kernels on the endpoints those "
                 "entries resolve to, and needs at least one of them."
             )
         if slurm_services:
-            # The deployed service's URL is only known after this resolution
-            # returns (submit_grpo.py runs the deployment), and it travels from
-            # there as a ++env.cudagym.<name>.server_url training-config
-            # override, which only the single-turn env actor reads. It never
-            # reaches the per-SKU endpoint map the Gym servers evaluate against,
-            # so allowing the combination would bring the job up with a dead
-            # evaluation endpoint.
             raise HostingError(
                 f"env.cudagym.{slurm_services[0].name}: hosting kind 'slurm-service' cannot "
                 f"serve an agentic (NeMo-Gym) recipe — the deployed service URL is resolved "
@@ -600,15 +538,11 @@ def resolve_hosting(
                 "can't be locked. OK for smoke tests; use an endpoint for real runs."
             )
 
-    # Each endpoint URL rides into the training config as a ++server_url
-    # override, which is what the single-turn environment actors read.
+    # Endpoint URLs ride into the training config as ++server_url overrides
+    # (read by the single-turn env actors).
     extra_opts = [f"++env.cudagym.{e.name}.server_url={e.url}" for e in endpoints]
-    # The SKU-keyed map for the agentic path. Kinds other than `endpoint` have no
-    # URL at submit time and map to the empty string; for an in-allocation entry
-    # that is exactly right, because the Gym server then reads the load-balancer
-    # address out of CUDAGYM_UNIFIED_SERVER_URL at runtime. slurm-service entries
-    # also land here empty, which is harmless: they are refused above for the
-    # agentic path, the only consumer of this map.
+    # SKU -> URL map for the agentic path; entries with no submit-time URL
+    # (in-allocation) map to "", resolved from CUDAGYM_UNIFIED_SERVER_URL at runtime.
     sku_endpoints = {e.sku: e.url for e in resolved}
     # Only a job with exactly one endpoint has a single URL to name, so only it
     # fills the ambient CUDAGYM_UNIFIED_SERVER_URL.
@@ -635,10 +569,8 @@ def resolve_hosting(
 def _probe_headers(entry: ResolvedEntry) -> dict[str, str]:
     """Return auth headers for a /health request, mirroring what the cudagym SDK sends."""
     headers: dict[str, str] = {}
-    # CUDAGYM_AUTH_TOKEN is the only bearer-token name in play: it is what
-    # grpo.sh exports into the job, what the sandbox allowlist admits, and what
-    # the in-sandbox cudagym CLI reads. Probing with a different one here would
-    # pass a token the rollouts never get.
+    # CUDAGYM_AUTH_TOKEN is the same bearer token the job itself sends, so the
+    # preflight exercises the same auth the rollouts will.
     token = os.environ.get("CUDAGYM_AUTH_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -730,10 +662,7 @@ def check_registry_against_solswarm(
     for name, entry in endpoints.items():
         url = entry.url.rstrip("/")
         # Registry keys mirror the upstream fleet ids (modal/a100-40gb <-> id
-        # "a100-40gb"), so match on the key and fall back to the sku only for
-        # custom-named entries. Keying on the sku would miss entries whose SDK
-        # enum name differs from the fleet id (astra/gb10 carries DGX_SPARK)
-        # and cross-compare entries that share a sku (the three A100 variants).
+        # "a100-40gb"): match on the key, falling back to the sku for custom names.
         key = name.split("/", 1)[-1].lower()
         if key not in upstream_urls:
             key = entry.sku.lower()

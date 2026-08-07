@@ -1,11 +1,7 @@
 # Agentic GRPO on CudaGym / KernelFactory problems: NeMo-Gym drives the
-# OpenCode-based `cuda_agent` (in the Gym checkout at 3rdparty/Gym-workspace/Gym:
-# responses_api_agents/cuda_agent + resources_servers/cudagym), which
-# writes/iterates a kernel in a seeded sandbox; the cudagym server scores the
-# SUBMITTED kernel with the same correctness-gated reward as the single-turn env.
-# Per-turn token ids are captured by Gym's token-buffering vllm_model server
-# (OpenCode's model calls go through /runs/<run_token>; wiring in
-# resources_servers/cudagym/configs/cudagym_cuda_agent_training.yaml).
+# OpenCode-based `cuda_agent` (Gym checkout: responses_api_agents/cuda_agent +
+# resources_servers/cudagym) in a seeded sandbox; the SUBMITTED kernel earns
+# the single-turn correctness-gated reward (token capture: Gym's vllm_model).
 #
 # Launch: `uv run --extra atlas --extra nemo_gym examples/nemo_gym/run_grpo_nemo_gym.py --config <this>`
 # (submit_grpo.py picks the runner automatically from env.should_use_nemo_gym).
@@ -167,22 +163,12 @@ env:
     # actually accepts, so the two cannot drift (cudagym_cuda_agent.yaml reads
     # this as limit.context).
     policy_max_model_len: ${policy.generation.vllm_cfg.max_model_len}
-    # One evaluation endpoint per GPU, keyed by SKU. submit_grpo.py injects one
-    # `++env.nemo_gym.cudagym_endpoints.<SKU>=<url>` override per env.cudagym
-    # entry in this file, so those entries are the single source of truth and
-    # the resources server cannot disagree with them. The key is deliberately
-    # not declared here: NeMo-Gym's launcher indexes into every top-level
-    # mapping of this block as a server entry and crashes on an empty one, so
-    # a `{}` placeholder cannot ship. A launch that bypasses submit_grpo.py
-    # must pass the same overrides itself.
-    #
-    # CudaGym EvalConfig overrides travel the same way, as a
-    # `cudagym_benchmark_config` mapping. Omitted by default: rows that carry
-    # sol_anchors need nothing, and the server config falls back on its own
-    # (cudagym_cuda_agent.yaml reads ${oc.select:cudagym_benchmark_config,{}}).
-    # A run whose rows lack anchors sets {benchmark_reference: true} so the
-    # speedup fallback has a speedup to score; the multi-SKU recipe is the
-    # example.
+    # cudagym_endpoints (SKU -> URL) is deliberately NOT declared: NeMo-Gym's
+    # launcher crashes on empty top-level mappings, and submit_grpo.py injects
+    # one ++env.nemo_gym.cudagym_endpoints.<SKU> override per env.cudagym entry
+    # above. A launch bypassing submit_grpo.py must pass the same overrides.
+    # cudagym_benchmark_config travels the same way when needed (e.g. the
+    # multi-SKU recipe sets {benchmark_reference: true} for anchorless rows).
     config_paths:
     - responses_api_models/vllm_model/configs/vllm_model_for_training.yaml  # required, *_for_training
     - resources_servers/cudagym/configs/cudagym_cuda_agent.yaml

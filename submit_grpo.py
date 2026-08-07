@@ -18,7 +18,7 @@ Usage:
 
     # atlas cuda 8b (hosting comes from the recipe's env.cudagym.<sku>.hosting blocks;
     # see slurm/cudagym_hosting.py and endpoints/*.yaml)
-    python submit_grpo.py --exp-name cuda_qwen3_8b --config grpo_cuda_qwen3-8b.yaml --cluster aws-iad-cs-002 --num-nodes 1
+    python submit_grpo.py --exp-name cuda_qwen3_8b --config grpo_cuda_qwen3-8b.yaml --cluster cw-dfw-cs-001 --num-nodes 1
 """
 
 import subprocess
@@ -40,6 +40,7 @@ from remote_utils import (
     fill_template,
     upload_text_as_file,
 )
+
 try:
     # Importing this module makes the CudaGym SDK importable (it supplies both
     # SKU checks), and raises HostingError naming the fix when it cannot. That
@@ -74,7 +75,9 @@ def _vendored_cudagym_version() -> str:
     try:
         described = subprocess.run(
             ["git", "-C", str(root), "describe", "--tags", "--dirty"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         raw = described.stdout.strip().lstrip("v") if described.returncode == 0 else ""
     except (OSError, subprocess.SubprocessError):
@@ -157,13 +160,6 @@ def main():
         default=1800,
         help="Seconds to wait for a slurm-service CudaGym deployment's proxies to report ready",
     )
-    # CudaGym hosting is declared per SKU in the recipe (env.cudagym.<name>.hosting;
-    # see slurm/cudagym_hosting.py). These three flags are defunct and exist only
-    # as hidden stubs, so passing one fails fast with a migration hint instead of
-    # argparse's "unrecognized arguments" error.
-    parser.add_argument("--cudagym-mode", default=None, help=argparse.SUPPRESS)
-    parser.add_argument("--cudagym-num-nodes", default=None, help=argparse.SUPPRESS)
-    parser.add_argument("--cudagym-url", default=None, help=argparse.SUPPRESS)
     parser.add_argument(
         "--enroot-agent-image",
         default="",
@@ -187,17 +183,6 @@ def main():
     )
     args = parser.parse_args()
 
-    # A defunct hosting flag was passed: fail with the migration hint.
-    if any(v is not None for v in (args.cudagym_mode, args.cudagym_num_nodes, args.cudagym_url)):
-        parser.error(
-            "--cudagym-mode/--cudagym-url/--cudagym-num-nodes were removed: hosting is now "
-            "declared per SKU in the recipe, e.g.\n"
-            "  env.cudagym.b200.hosting: {kind: endpoint, endpoint: modal/b200}\n"
-            "kinds: colocated | disjoint (num_nodes: N) | endpoint; "
-            "registry: endpoints/*.yaml; escape hatch: export CUDAGYM_UNIFIED_SERVER_URL "
-            "and declare hosting: {kind: endpoint}."
-        )
-
     # Load cluster config with env overrides applied and resolved
     cluster_config = load_cluster_config(CLUSTER_CONFIG_PATH, args.cluster)
 
@@ -215,13 +200,9 @@ def main():
     if cli_overrides:
         recipe_cfg = OmegaConf.merge(recipe_cfg, OmegaConf.from_dotlist(cli_overrides))
 
-    # Container mode needs BOTH sides: the SolSwarm overlay in the recipe and
-    # the image-path flag (the grpo.sh enroot plumbing). A mismatch otherwise
-    # shows up only at agent-server startup, minutes into the job. The overlay
-    # is recognized by its config-path name because the Gym-side YAML is
-    # merged by Gym, not here. This gate runs AFTER the --extra-config-opts
-    # merge above, so an override that adds or removes the overlay faces the
-    # same checks as a recipe that declares it.
+    # Container mode needs BOTH the SolSwarm overlay in the merged config AND
+    # --enroot-agent-image. Checked after the --extra-config-opts merge so an
+    # override that adds or removes the overlay faces the same gate.
     gym_config_paths = [
         str(p)
         for p in (OmegaConf.select(recipe_cfg, "env.nemo_gym.config_paths") or [])
@@ -272,12 +253,9 @@ def main():
     ):
         print(f"⚠️  endpoints registry differs from solswarm gpu-skus.toml: {line}")
 
-    # Preflight: ping every remote endpoint's /health and check the reported GPU
-    # against the declared SKU. In-allocation servers don't exist yet — they get
-    # the same check at runtime init (verify_endpoint_sku). The check reads the
-    # cudagym SDK's device table, which importing slurm.cudagym_hosting has
-    # already guaranteed (its ensure_vendored_cudagym bootstrap), so it can
-    # never degrade to "unverifiable" for want of the SDK.
+    # Preflight every remote endpoint: GET /health and check the reported GPU
+    # against the declared SKU. In-allocation servers don't exist yet; they get
+    # the same check at runtime init (verify_endpoint_sku).
     for entry in hosting.endpoints:
         try:
             payload = probe_endpoint(entry)
@@ -296,7 +274,9 @@ def main():
             raise SystemExit(f"❌ endpoint {entry.name}: {detail}")
         # ok is None means nothing was checked — report that as its own state
         # rather than a pass, so an unverified SKU stays visible in the output.
-        print(f"{'⚠️  NOT VERIFIED' if ok is None else '✅'} endpoint {entry.name}: {detail}")
+        print(
+            f"{'⚠️  NOT VERIFIED' if ok is None else '✅'} endpoint {entry.name}: {detail}"
+        )
 
     # Upload the nemorl codebase to the cluster
     output_dir = Path(cluster_config["paths"]["output"]) / args.exp_name
@@ -318,10 +298,8 @@ def main():
             )
         rc, _, _ = ssh_tunnel.run_command("command -v enroot")
         if rc != 0:
-            # Only a warning: what container mode actually needs is enroot on the
-            # COMPUTE nodes (grpo.sh bind-mounts the login node's /usr/bin/enroot*
-            # into the training container, and the compute nodes provide the same
-            # paths); the login node is a proxy for that requirement.
+            # Warning only: the requirement is enroot on the COMPUTE nodes; the
+            # login node is just a proxy for it.
             print(
                 "⚠️  no `enroot` on the login node's PATH. Container-mode rollouts need "
                 "the enroot binaries on the compute nodes; the login node is only a "
@@ -334,13 +312,9 @@ def main():
     # (the env actor's pinned-server_url path takes precedence over ambient env).
     remote_env_extra_opts: list[str] = list(hosting.extra_config_opts)
 
-    # The agentic (NeMo-Gym) resources server evaluates each task row on the
-    # endpoint serving that row's own GPU, so it takes a SKU -> URL map rather
-    # than one URL. env.nemo_gym is handed to NeMo-Gym as its global config, so
-    # one override per SKU under env.nemo_gym.cudagym_endpoints becomes the
-    # `cudagym_endpoints` Gym global that the resources server's config reads.
-    # An in-allocation entry contributes an empty URL, which the server resolves
-    # from CUDAGYM_UNIFIED_SERVER_URL once the job's load balancer is up.
+    # The agentic path takes a SKU -> URL map: one override per SKU under
+    # env.nemo_gym.cudagym_endpoints (the Gym global the resources server
+    # reads). In-allocation entries contribute "" (resolved at runtime).
     if uses_nemo_gym:
         remote_env_extra_opts += [
             f"++env.nemo_gym.cudagym_endpoints.{sku}={url}"
@@ -432,14 +406,9 @@ def main():
         "CUDAGYM_CONTAINER": "",
         "ARTIFACTS_DIR": "",
         "CCACHE_DIR": "",
-        # The ambient endpoint URL, filled by single-endpoint jobs (and by the
-        # escape-hatch variable already in this shell). Three consumers read it:
-        # ray.sub overwrites it with the load-balancer address for in-allocation
-        # hosting, the single-turn env actor falls back to it when its entry
-        # pins no server_url (the per-entry ++server_url overrides above take
-        # precedence), and the agent sandbox is handed it as CUDAGYM_URL. The
-        # agentic path's endpoints come from the cudagym_endpoints overrides
-        # above, not from this variable.
+        # Ambient endpoint URL for single-endpoint jobs ("" otherwise; the
+        # already-exported escape-hatch variable also counts). ray.sub
+        # overwrites it with the in-allocation load-balancer address.
         "CUDAGYM_UNIFIED_SERVER_URL": hosting.unified_server_url
         or os.getenv("CUDAGYM_UNIFIED_SERVER_URL")
         or "",
