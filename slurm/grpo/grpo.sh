@@ -81,7 +81,12 @@ export UV_EXTRAS=${UV_EXTRAS:-DEFAULT_UV_EXTRAS}
 
 # Sync the venv on every node BEFORE Ray starts, so `ray start` and the
 # driver's `uv run` agree on the Ray version (ray.init refuses a skew).
-export SETUP_COMMAND=${SETUP_COMMAND:-"uv sync ${UV_EXTRAS}"}
+# The interpreter bootstrap runs first when needed: the repo requires the
+# Python patch release pinned in .python-version, and an older training image
+# bakes only an older interpreter (and a uv whose manifest predates the
+# release). `uv python find` honors requires-python, so on a current image the
+# bootstrap short-circuits; drop it once no image in use predates the pin.
+export SETUP_COMMAND=${SETUP_COMMAND:-"(uv python find >/dev/null 2>&1 || (curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh && uv python install)) && uv sync ${UV_EXTRAS}"}
 
 # Rebuild the image-baked per-worker venvs (/opt/ray_venvs/*): after a
 # dependency bump a stale venv dies unpickling Ray internals.
