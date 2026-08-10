@@ -1,0 +1,77 @@
+# Agentic CudaGym GRPO in SolSwarm container mode on Qwen3.5-35B-A3B — the
+# MoE policy (256 experts, 8 active per token). The agent stack is
+# grpo_cuda_agentic_solswarm_qwen3-8b.yaml unchanged; the policy block below
+# is grafted from upstream's convergence-validated recipe for this model
+# (examples/configs/recipes/llm/grpo-qwen3.5-35ba3b-2n8g-megatron-ep16tp2cp2.yaml):
+# Megatron with expert parallel 16, tensor parallel 2, context parallel 2,
+# across two 8-GPU nodes, with vLLM serving generation at tensor parallel 4.
+# The 40960-token window is this stack's usual agentic window, not upstream's
+# 4096; sequence packing and chunked log-probabilities make it fit.
+#
+# The policy is the POST-TRAINED release, not the -Base pretrain: the run's
+# purpose is a policy that can follow the optimizer prompt and produce
+# well-formed cudagym calls. Qwen/Qwen3.5-35B-A3B-Base (for RL-from-base) and
+# Qwen/Qwen3.6-35B-A3B (the newer post-trained release) share this
+# architecture, so either is a policy.model_name swap away.
+#
+# Launch (single B200 endpoint, needs MODAL_PROXY_TOKEN_ID/SECRET):
+#   uv run --extra atlas python submit_grpo.py -e agsol_q35moe \
+#     --config grpo_cuda_agentic_solswarm_qwen3.5-35ba3b.yaml \
+#     --cluster cw-dfw-cs-001 --num-nodes 2 --time 4:00:00 \
+#     --enroot-agent-image $W/containers/solswarm-agent-amd64.sqsh
+defaults: "grpo_cuda_agentic_solswarm_qwen3-8b.yaml"
+
+checkpointing:
+  checkpoint_dir: "results/grpo-cuda-agentic-solswarm-qwen3.5-35ba3b"
+
+data:
+  # All-B200 seed rows (this recipe declares only the B200 endpoint). The base
+  # agentic recipe ships a placeholder path, so this must be set.
+  train:
+    data_path: "/datasets/cuda_agentic_seeds_b200/train.jsonl"
+  validation:
+    data_path: "/datasets/cuda_agentic_seeds_b200/val.jsonl"
+
+policy:
+  model_name: "Qwen/Qwen3.5-35B-A3B"
+  train_micro_batch_size: 1
+  logprob_batch_size: 1
+  # The logprob pass is chunked so a 40960-token sequence's logits (the
+  # vocabulary is ~248k entries) do not materialize at once.
+  logprob_chunk_size: 2048
+  make_sequence_length_divisible_by: 8
+  # Megatron refuses context parallelism without packing. The base recipe
+  # turns packing off for the automodel path's flash-attention instability;
+  # Megatron packs through Transformer Engine instead, so that reason does
+  # not apply here.
+  sequence_packing:
+    enabled: true
+  dtensor_cfg:
+    enabled: false
+  megatron_cfg:
+    enabled: true
+    # Upstream's validated layout for this model: experts sharded across all
+    # 16 GPUs, the dense layers tensor-parallel 2, the sequence split 2 ways.
+    expert_model_parallel_size: 16
+    tensor_model_parallel_size: 2
+    context_parallel_size: 2
+    sequence_parallel: true
+    apply_rope_fusion: false
+    activation_checkpointing: true
+    # Required by MCore whenever logprob_chunk_size is set; also keeps the
+    # fp32 logit conversion out of the peak-memory window.
+    defer_fp32_logits: true
+  generation:
+    vllm_cfg:
+      # 35B of bf16 weights need four GPUs' headroom at the inherited 0.7
+      # memory fraction; enforce_eager mirrors upstream's setting for this
+      # MoE (no CUDA-graph capture).
+      tensor_parallel_size: 4
+      enforce_eager: true
+
+logger:
+  log_dir: "logs/grpo-cuda-agentic-solswarm-qwen3.5-35ba3b"
+
+cluster:
+  gpus_per_node: 8
+  num_nodes: 2
