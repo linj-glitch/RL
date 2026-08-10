@@ -58,8 +58,8 @@ checkpointing:
 policy:
   model_name: "Qwen/Qwen3-8B"  # base-model placeholder; swap in the SFT'd kernel checkpoint
   # Base Qwen3-8B declares max_position_embeddings=40960, and vLLM refuses a
-  # larger max_model_len than the model config allows. The longctx recipes
-  # raise both to 131072 by overriding that field
+  # larger max_model_len than the model config allows. The long-context recipe
+  # raises both to 131072 by overriding that field
   # (policy.hf_config_overrides.max_position_embeddings), which works here
   # because Qwen3-8B's rope_theta is already 1000000 — no rope scaling needed.
   # See the header for how the compaction mitigation interacts with this value.

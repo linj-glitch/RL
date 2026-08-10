@@ -1,21 +1,45 @@
-# The Megatron counterpart of grpo_cuda_agentic_solswarm_longctx_qwen3-8b.yaml:
-# same 131072-token window, same dataset, same agent stack; only the training
-# backend differs, so the two runs are directly comparable. The backend never
-# reaches NeMo-Gym — the agent talks to the policy through the vLLM server.
-# The parallelism mirrors the DTensor variant: the whole node splits the
-# sequence (context parallel 8, tensor parallel 1).
+# Agentic CudaGym GRPO in SolSwarm container mode with a 131072-token training
+# window, so a rollout's full multi-turn trajectory is trained on rather than
+# truncated at 40960. Same stack as grpo_cuda_agentic_solswarm_qwen3-8b.yaml;
+# the overrides below raise the window, split the sequence across the node,
+# and switch training to the Megatron backend. Raising
+# max_total_sequence_length moves the vLLM window, the trained length, and
+# OpenCode's limit.context together.
+#
+# Megatron is the only long-context backend here: the DTensor worker's
+# context-parallel logprob pass disagrees with the sampler at this window
+# (trainer-vs-sampler token probability ratio ~66 where ~1.0 is healthy), so
+# no DTensor variant is shipped.
 #
 # Launch (single B200 endpoint, needs MODAL_PROXY_TOKEN_ID/SECRET):
-#   uv run --extra atlas python submit_grpo.py -e agsol_longctx_mcore \
+#   uv run --extra atlas python submit_grpo.py -e agsol_longctx \
 #     --config grpo_cuda_agentic_solswarm_longctx_megatron_qwen3-8b.yaml \
 #     --cluster cw-dfw-cs-001 --num-nodes 1 --time 3:00:00 \
 #     --enroot-agent-image $W/containers/solswarm-agent-amd64.sqsh
-defaults: "grpo_cuda_agentic_solswarm_longctx_qwen3-8b.yaml"
+defaults: "grpo_cuda_agentic_solswarm_qwen3-8b.yaml"
 
 checkpointing:
-  checkpoint_dir: "results/grpo-cuda-agentic-solswarm-longctx-megatron"
+  checkpoint_dir: "results/grpo-cuda-agentic-solswarm-longctx"
+
+data:
+  # All-B200 seed rows (this recipe declares only the B200 endpoint). The base
+  # agentic recipe ships a placeholder path, so this must be set.
+  train:
+    data_path: "/datasets/cuda_agentic_seeds_b200/train.jsonl"
+  validation:
+    data_path: "/datasets/cuda_agentic_seeds_b200/val.jsonl"
 
 policy:
+  max_total_sequence_length: 131072
+  # The logprob pass over a 131072-token sequence is chunked so its activations
+  # do not have to materialize at once.
+  logprob_chunk_size: 2048
+  # CP splits the sequence, so the length must divide evenly across the 8 ranks.
+  make_sequence_length_divisible_by: 16
+  hf_config_overrides:
+    # Raises only the declared position limit; Qwen3-8B's rope theta already
+    # supports the longer context, so no rope scaling is needed.
+    max_position_embeddings: 131072
   # Megatron refuses context parallelism without packing ("Sequence Packing
   # must be enabled to use Context Parallelism with MCore"). The base recipe
   # turns packing off for a reason that does not apply here: it describes the
@@ -29,11 +53,11 @@ policy:
     enabled: false
   megatron_cfg:
     enabled: true
-    # Required by MCore whenever logprob_chunk_size is set, which the recipe
-    # this inherits does to keep the logprob pass over a 131072-token sequence
-    # from materializing its activations at once.
+    # Required by MCore whenever logprob_chunk_size is set, which this recipe
+    # does to keep the logprob pass over a 131072-token sequence from
+    # materializing its activations at once.
     defer_fp32_logits: true
-    # The sequence is split across the node; the weights are not.
+    # The sequence is split across the node; the 8B weights are not.
     tensor_model_parallel_size: 1
     pipeline_model_parallel_size: 1
     context_parallel_size: 8
@@ -41,8 +65,8 @@ policy:
     # Even split 8 ways (16384 tokens of activations per rank), the training
     # forward OOMs on 80 GiB H100s without recomputation: rank 6 hit 72 GiB
     # allocated with 34 MiB free while the colocated vLLM worker holds its
-    # share (job 15160276). Recompute activations rather than hold them.
+    # share. Recompute activations rather than hold them.
     activation_checkpointing: true
 
 logger:
-  log_dir: "logs/grpo-cuda-agentic-solswarm-longctx-megatron"
+  log_dir: "logs/grpo-cuda-agentic-solswarm-longctx"
