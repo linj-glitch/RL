@@ -1,0 +1,34 @@
+# Long-context variant of grpo_cuda_agentic_solswarm_qwen3.5-35ba3b.yaml: the
+# same Qwen3.5-35B-A3B MoE agent stack with a 131072-token training window
+# instead of 40960. At 40960 nearly half the rollouts truncated at the context
+# wall before they could submit (truncation_rate 0.47, "Prompt length exceeds
+# max_model_len"); Qwen3.5 supports 262144 positions natively, so the window
+# rises with no rope scaling.
+#
+# The sequence is split eight ways instead of two (context parallel 8), so each
+# rank holds 16384 activation tokens -- fewer than the 20480 the 40960/CP2 run
+# held, which is what keeps a 3.2x-longer window inside the same two nodes.
+# TP2 * CP8 fills both nodes' 16 GPUs; the experts stay sharded across all 16
+# (EP16). If Megatron rejects EP16 alongside TP2*CP8 at init, or a rank OOMs,
+# the fallback is four nodes with CP4.
+#
+# Launch (single B200 endpoint, needs MODAL_PROXY_TOKEN_ID/SECRET):
+#   uv run --extra atlas python submit_grpo.py -e agsol_q35moe_longctx \
+#     --config grpo_cuda_agentic_solswarm_qwen3.5-35ba3b-longctx.yaml \
+#     --cluster cw-dfw-cs-001 --num-nodes 2 --time 4:00:00 \
+#     --enroot-agent-image $W/containers/solswarm-agent-amd64.sqsh
+defaults: "grpo_cuda_agentic_solswarm_qwen3.5-35ba3b.yaml"
+
+checkpointing:
+  checkpoint_dir: "results/grpo-cuda-agentic-solswarm-qwen3.5-35ba3b-longctx"
+
+policy:
+  max_total_sequence_length: 131072
+  # CP splits the sequence eight ways, so the length must divide evenly across
+  # the ranks (divisible by 2 * context_parallel_size).
+  make_sequence_length_divisible_by: 16
+  megatron_cfg:
+    context_parallel_size: 8
+
+logger:
+  log_dir: "logs/grpo-cuda-agentic-solswarm-qwen3.5-35ba3b-longctx"
