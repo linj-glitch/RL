@@ -68,6 +68,12 @@ policy:
       # MoE (no CUDA-graph capture).
       tensor_parallel_size: 4
       enforce_eager: true
+      http_server_serving_chat_kwargs:
+        # Qwen3.5's template emits XML-style calls (<function=...> with
+        # <parameter=...> blocks inside <tool_call>), not the hermes JSON the
+        # base recipe assumes; with the hermes parser every call fails to
+        # parse and the agent session ends after one turn.
+        tool_parser: qwen3_xml
 
 logger:
   log_dir: "logs/grpo-cuda-agentic-solswarm-qwen3.5-35ba3b"
