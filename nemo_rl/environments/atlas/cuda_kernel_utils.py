@@ -90,7 +90,6 @@ class CudaGymEvalConfig(BaseModel, extra="forbid"):
     # in-allocation load-balancer address — then to ``Client.from_env()``
     # (the SDK's split CUDAGYM_{COMPILE,GPU}_SERVER_URL variables).
     server_url: Optional[str] = None
-    auth_token: Optional[str] = None
     # Fail fast at env init when the endpoint's /health reports a different GPU
     # than ``sku`` — a mismatch is otherwise SILENT for Triton (kernels JIT on
     # whatever GPU serves the request and return that GPU's timings).

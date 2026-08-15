@@ -121,13 +121,12 @@ class CudaGymEnvironment(EnvironmentInterface, BaseCudaEvaluator):
             or os.environ.get("CUDAGYM_URL")
         )
         if server_url:
+            # The SDK resolves credentials per target from the environment
+            # (MODAL_PROXY_TOKEN_ID/SECRET for Modal hosts, API_TOKEN for the
+            # platform proxy); the constructor takes no auth.
             self._client = Client(
                 compile_server_url=server_url,
                 gpu_server_url=server_url,
-                # A pinned server_url should still honor the ambient token —
-                # e.g. remote/Modal endpoints with a recipe-pinned URL.
-                auth_token=self.eval_config.auth_token
-                or os.environ.get("CUDAGYM_AUTH_TOKEN"),
             )
         else:
             self._client = Client.from_env()
