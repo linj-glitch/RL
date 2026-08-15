@@ -342,7 +342,7 @@ def setup_environments(
 
     Each actor is a thin CudaGym HTTP client (``num_gpus=0``). The CudaGym server
     URL is resolved from ``CUDAGYM_UNIFIED_SERVER_URL`` unless the env block sets
-    ``server_url``; the driver's environment (URL, auth token, Modal proxy pair)
+    ``server_url``; the driver's environment (URL and the Modal proxy pair)
     reaches the actor through the JOB-level runtime env ``init_ray`` sets — no
     per-actor forwarding needed.
     """

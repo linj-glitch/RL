@@ -131,7 +131,8 @@ env:
       # Fail fast at env init if the endpoint's /health reports a different GPU
       # than `sku` (otherwise silent for Triton kernels).
       verify_endpoint_sku: true
-      # null -> resolved from CUDAGYM_UNIFIED_SERVER_URL / CUDAGYM_URL (+ CUDAGYM_AUTH_TOKEN).
+      # null -> resolved from CUDAGYM_UNIFIED_SERVER_URL / CUDAGYM_URL; the SDK
+      # resolves credentials per target from the environment.
       # Set explicitly for a fixed remote/colocated endpoint.
       server_url: null
 

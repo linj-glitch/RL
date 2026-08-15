@@ -86,7 +86,7 @@ class CudaGymEvalConfig(BaseModel, extra="forbid"):
 
     # CudaGym service location. ``server_url`` is the unified ``/compile``+``/gpu``
     # endpoint. When None, the env falls back to CUDAGYM_UNIFIED_SERVER_URL /
-    # CUDAGYM_URL (+ CUDAGYM_AUTH_TOKEN) — how colocated mode injects the
+    # CUDAGYM_URL — how colocated mode injects the
     # in-allocation load-balancer address — then to ``Client.from_env()``
     # (the SDK's split CUDAGYM_{COMPILE,GPU}_SERVER_URL variables).
     server_url: Optional[str] = None
