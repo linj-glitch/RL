@@ -5,6 +5,15 @@
 # MODAL_PROXY_TOKEN_SECRET in the submitting shell (the Modal edge rejects
 # unauthenticated requests); CUDAGYM_AUTH_TOKEN is sent as a Bearer when set.
 # URLs seeded from solswarm deployments/files/gpu-skus.toml (kf-v2-2-2 fleet).
+#
+# The kf-v2-2-2 fleet runs the cudagym 2.2.x server: its images install the
+# 2.2 evaluation runtime, while our 2.4-line SDK renders drivers that import
+# modules the 2.2 images do not ship (cudagym.eval.distributed and newer
+# compile_options helpers). Every evaluation therefore also needs
+# CUDAGYM_LEGACY_RUNTIME_BUNDLE=1 in the submitting shell, which makes the SDK
+# stage its own package sources with each request so the drivers are
+# self-contained (2.4-line servers discard the staged copy, so the flag is
+# harmless if an endpoint here later moves to a kf-v2-4-x app).
 
 b200:
   sku: B200
