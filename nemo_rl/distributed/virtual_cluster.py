@@ -268,7 +268,8 @@ def init_ray(log_dir: Optional[str] = None) -> None:
         # reference-context library (~350 MB of vendored kernel repos) is read
         # off local disk by the agent sandbox on the driver node, never by a Ray
         # worker, and packaging it exceeds Ray's package upload size limit.
-        "excludes": ["**/3rdparty/solswarm/docker/agent/context/**"],
+        "excludes": ["**/3rdparty/solswarm/docker/agent/context/**",
+                    "**/3rdparty/solswarm/cudagym/tests/**"],
     }
 
     cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "ALL")

@@ -36,7 +36,7 @@ CUDAGYM_UNIFIED_SERVER_URL / CUDAGYM_URL environment variables.
 
 The module must import without the training venv: it uses omegaconf, the
 stdlib, and the CudaGym SDK, which ``ensure_vendored_cudagym`` bootstraps from
-the ``3rdparty/cudagym`` checkout at import time.
+the ``3rdparty/solswarm/cudagym`` tree at import time.
 """
 
 import os
@@ -109,18 +109,18 @@ def ensure_vendored_cudagym(repo_root: Union[str, Path] = REPO_ROOT) -> None:
     The SKU checks (``canonical_sku``, ``verify_health_payload``) are the SDK's
     own ``cudagym.rl`` helpers, so the SDK must import before this module can
     validate anything. Submit hosts usually lack the training venv; the
-    ``3rdparty/cudagym`` checkout needs only ``loguru`` and ``pydantic``.
+    ``3rdparty/solswarm/cudagym`` tree needs only ``loguru`` and ``pydantic``.
     Raises ``HostingError`` naming the fix when even that import fails.
     """
     # Already importable (e.g. the training venv) — nothing to do.
     if _cudagym_import_error() is None:
         return
     # Fall back to the vendored submodule checkout, which must be initialized.
-    src = Path(repo_root) / "3rdparty" / "cudagym" / "src"
+    src = Path(repo_root) / "3rdparty" / "solswarm" / "cudagym" / "src"
     if not (src / "cudagym" / "__init__.py").is_file():
         raise HostingError(
             "the cudagym SDK is not importable and the vendored checkout is missing "
-            f"({src}); initialize it with `git submodule update --init 3rdparty/cudagym`"
+            f"({src}); initialize it with `git submodule update --init 3rdparty/solswarm`"
         )
     # An installed cudagym that predates the cudagym.rl helpers imports fine as
     # a parent package, so the probe leaves it bound in sys.modules and the

@@ -71,15 +71,18 @@ def _vendored_cudagym_version() -> str:
     setuptools-scm cannot derive a version from the uploaded tree (no .git), and
     a hand-maintained literal drifts silently on every submodule bump.
     """
-    root = Path(__file__).parent / "3rdparty" / "cudagym"
+    root = Path(__file__).parent / "3rdparty" / "solswarm"
     try:
+        # The monorepo carries many tag families; cudagym versions are the
+        # protected cudagym-vX.Y.Z tags.
         described = subprocess.run(
-            ["git", "-C", str(root), "describe", "--tags", "--dirty"],
+            ["git", "-C", str(root), "describe", "--tags", "--dirty", "--match", "cudagym-v*"],
             capture_output=True,
             text=True,
             timeout=30,
         )
-        raw = described.stdout.strip().lstrip("v") if described.returncode == 0 else ""
+        raw = described.stdout.strip() if described.returncode == 0 else ""
+        raw = raw.removeprefix("cudagym-v").lstrip("v")
     except (OSError, subprocess.SubprocessError):
         raw = ""
     if not raw:

@@ -1054,7 +1054,7 @@ nvtx = [
 
 [[package]]
 name = "cudagym"
-source = { editable = "3rdparty/cudagym" }
+source = { editable = "3rdparty/solswarm/cudagym" }
 dependencies = [
     { name = "aiohttp" },
     { name = "boto3" },
@@ -4264,7 +4264,7 @@ requires-dist = [
     { name = "colored", specifier = "==2.2.3" },
     { name = "cuda-bindings", marker = "sys_platform != 'darwin'" },
     { name = "cuda-python", marker = "extra == 'vllm'" },
-    { name = "cudagym", marker = "extra == 'atlas'", editable = "3rdparty/cudagym" },
+    { name = "cudagym", marker = "extra == 'atlas'", editable = "3rdparty/solswarm/cudagym" },
     { name = "cupy-cuda13x", marker = "extra == 'mcore'" },
     { name = "datasets", specifier = ">=4.0.0" },
     { name = "debugpy" },

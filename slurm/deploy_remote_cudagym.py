@@ -59,7 +59,7 @@ def generate_cudagym_script(
 
     # Run generate_slurm_scripts.py on the remote cluster
     generate_cmd = (
-        f"cd {code_upload_path}/3rdparty/cudagym/deployments/multi_node/slurm && "
+        f"cd {code_upload_path}/3rdparty/solswarm/cudagym/deployments/multi_node/slurm && "
         f"python generate_slurm_scripts.py --clusters {service_cluster} --nodes {num_service_nodes}"
     )
 
@@ -92,7 +92,7 @@ def run_proxy(
     """
     # If using a service script, check that it exists
     if mode == "service":
-        script_remote_path = f"{code_upload_path}/3rdparty/cudagym/deployments/multi_node/slurm/scripts/{service_url_or_script}"
+        script_remote_path = f"{code_upload_path}/3rdparty/solswarm/cudagym/deployments/multi_node/slurm/scripts/{service_url_or_script}"
         rc_chk, _, _ = ssh_tunnel.run_command(f"test -f {script_remote_path}")
         if rc_chk != 0:
             raise ValueError(
@@ -105,7 +105,7 @@ def run_proxy(
         f"🌐 Starting proxy at http://{ssh_tunnel.host}:{port}, forwarding requests to {service_url_or_script} service"
     )
     # --force kills any proxy a previous submit left listening on the port.
-    base_cmd = f"cd {code_upload_path}/3rdparty/cudagym && ./deployments/multi_cluster/proxy.sh start"
+    base_cmd = f"cd {code_upload_path}/3rdparty/solswarm/cudagym && ./deployments/multi_cluster/proxy.sh start"
     if mode == "service-url":
         cmd = f"{base_cmd} --service-url {service_url_or_script} --port {port} --force"
     elif mode == "service":

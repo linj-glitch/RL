@@ -116,7 +116,7 @@ export MOUNTS="$cwd_parent:$cwd_parent,$cwd:/opt/nemo-rl,$WORKSPACE_PATH:$WORKSP
 # ${PYTHONPATH:+:$PYTHONPATH} appends the previous value only when one is set;
 # a plain ":${PYTHONPATH}" would leave a trailing colon when it is unset, which
 # Python reads as "also search the process's current directory".
-export PYTHONPATH="$cwd/3rdparty/cudagym/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$cwd/3rdparty/solswarm/cudagym/src${PYTHONPATH:+:$PYTHONPATH}"
 # The uploaded cudagym tree has no .git; submit_grpo.py derives this version
 # from the submodule at submit time so it tracks bumps.
 export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CUDAGYM=DEFAULT_CUDAGYM_VERSION

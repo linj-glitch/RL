@@ -25,12 +25,12 @@ RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-l
  && opencode --version
 
 # CudaGym SDK + CLI available system-wide (the Gym server venvs also install it
-# editable from 3rdparty/cudagym via their requirements.txt; this system copy is
+# editable from 3rdparty/solswarm/cudagym via their requirements.txt; this system copy is
 # what the agent SANDBOX's PATH sees for `cudagym` / `kf`).
-COPY 3rdparty/cudagym /opt/cudagym
+COPY 3rdparty/solswarm/cudagym /opt/cudagym
 # The copied tree has no .git (submodule .git is a pointer outside the build
 # context), so setuptools-scm can't derive cudagym's version — pin it by hand.
-# Keep the pin in sync with the submodule's tag when bumping 3rdparty/cudagym
-# (check with: git -C 3rdparty/cudagym describe --tags).
-RUN SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CUDAGYM=2.3.2 \
+# Keep the pin in sync with the submodule's tag when bumping 3rdparty/solswarm/cudagym
+# (check with: git -C 3rdparty/solswarm describe --tags --match "cudagym-v*").
+RUN SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CUDAGYM=2.4.8 \
     pip install --no-cache-dir -e /opt/cudagym

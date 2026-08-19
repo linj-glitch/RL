@@ -11,7 +11,7 @@ paths:
   # imported on a dc node: enroot import docker://nvcr.io#0685833318436291/nemorl-atlas:<tag>
   container: ${paths.workspace}/containers/nemorl-atlas.sqsh
   # required only for in-allocation (colocated/disjoint) hosting; import before using those
-  # kinds. Build from 3rdparty/cudagym docker/<profile>; pre-1.9 images lack
+  # kinds. Build from 3rdparty/solswarm/cudagym docker/<profile>; pre-1.9 images lack
   # cudagym.servers.serve.
   cudagym_container: ${paths.workspace}/containers/cudagym-1.9.sqsh
   models: ${paths.workspace}/models

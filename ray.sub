@@ -564,7 +564,7 @@ if [[ "${CUDAGYM_ENABLED:-0}" == "1" ]]; then
   CUDAGYM_CONTAINER_MOUNTS="${MOUNTS},${ARTIFACTS_DIR}:${ARTIFACTS_DIR},${CCACHE_DIR}:${CCACHE_DIR}"
   CUDAGYM_SRUN_COMMON="--no-container-mount-home --mpi=pmix --container-image=${CUDAGYM_CONTAINER} --container-mounts=${CUDAGYM_CONTAINER_MOUNTS} --container-workdir=$SLURM_SUBMIT_DIR --overlap"
   # cudagym.servers.serve is ONE unified server run in compile-only / gpu-only
-  # mode; the vendored 3rdparty/cudagym/src rides PYTHONPATH (the checkout wins
+  # mode; the vendored 3rdparty/solswarm/cudagym/src rides PYTHONPATH (the checkout wins
   # over the container's copy), and the container provides the runtime deps.
   # In colocated mode the training processes own the GPUs too, so the GPU server
   # must tolerate pre-existing GPU processes.
@@ -581,7 +581,7 @@ if [[ "${CUDAGYM_ENABLED:-0}" == "1" ]]; then
     # Launch the compile-only server
     srun $CUDAGYM_SRUN_COMMON --nodes=1 --ntasks=1 -w "$node_i" \
          -o "$LOG_DIR/cudagym/compile/${node_i}_compile.out" \
-         bash -lc "export PYTHONPATH=$SLURM_SUBMIT_DIR/3rdparty/cudagym/src:\${PYTHONPATH}; python -m cudagym.servers.serve \
+         bash -lc "export PYTHONPATH=$SLURM_SUBMIT_DIR/3rdparty/solswarm/cudagym/src:\${PYTHONPATH}; python -m cudagym.servers.serve \
                    --compile-server-only \
                    --host 0.0.0.0 \
                    --port ${COMPILE_PORT} \
@@ -596,7 +596,7 @@ if [[ "${CUDAGYM_ENABLED:-0}" == "1" ]]; then
     # Launch the GPU-only server
     srun $CUDAGYM_SRUN_COMMON $GRES_ARG --nodes=1 --ntasks=1 -w "$node_i" \
          -o "$LOG_DIR/cudagym/gpu/${node_i}_gpu.out" \
-         bash -lc "export PYTHONPATH=$SLURM_SUBMIT_DIR/3rdparty/cudagym/src:\${PYTHONPATH}; python -m cudagym.servers.serve \
+         bash -lc "export PYTHONPATH=$SLURM_SUBMIT_DIR/3rdparty/solswarm/cudagym/src:\${PYTHONPATH}; python -m cudagym.servers.serve \
                    --gpu-server-only ${ALLOW_PROCS_ARG} \
                    --host 0.0.0.0 \
                    --port ${GPU_PORT} \
@@ -644,7 +644,7 @@ if [[ "${CUDAGYM_ENABLED:-0}" == "1" ]]; then
   echo "[INFO] Launching load balancer on node $CUDAGYM_LB_NODE..."
   srun $CUDAGYM_SRUN_COMMON --nodes=1 --ntasks=1 -w "$CUDAGYM_LB_NODE" \
        -o "$LOG_DIR/cudagym/loadbalancer/${CUDAGYM_LB_NODE}_lb.out" \
-       bash -lc "export PYTHONPATH=$SLURM_SUBMIT_DIR/3rdparty/cudagym/src:\${PYTHONPATH}; python 3rdparty/cudagym/deployments/multi_node/cudagym_load_balancer.py \
+       bash -lc "export PYTHONPATH=$SLURM_SUBMIT_DIR/3rdparty/solswarm/cudagym/src:\${PYTHONPATH}; python 3rdparty/solswarm/cudagym/deployments/multi_node/cudagym_load_balancer.py \
                  ${LB_PORT} \
                  '$COMPILE_SERVERS' \
                  '$GPU_SERVERS' \

@@ -659,7 +659,7 @@ def test_ensure_vendored_cudagym_errors_on_missing_checkout(tmp_path, monkeypatc
 def test_ensure_vendored_cudagym_errors_on_missing_deps(tmp_path, monkeypatch):
     import slurm.cudagym_hosting as hosting_mod
 
-    src = tmp_path / "3rdparty" / "cudagym" / "src"
+    src = tmp_path / "3rdparty" / "solswarm" / "cudagym" / "src"
     (src / "cudagym").mkdir(parents=True)
     (src / "cudagym" / "__init__.py").write_text("")
     monkeypatch.setattr(
@@ -674,7 +674,7 @@ def test_ensure_vendored_cudagym_errors_on_missing_deps(tmp_path, monkeypatch):
 def test_ensure_vendored_cudagym_bootstraps_sys_path(tmp_path, monkeypatch):
     import slurm.cudagym_hosting as hosting_mod
 
-    src = tmp_path / "3rdparty" / "cudagym" / "src"
+    src = tmp_path / "3rdparty" / "solswarm" / "cudagym" / "src"
     (src / "cudagym").mkdir(parents=True)
     (src / "cudagym" / "__init__.py").write_text("")
     # The first import check fails (no venv); the retry after the path insert succeeds.
@@ -699,7 +699,7 @@ def test_ensure_vendored_cudagym_displaces_a_stale_installed_package(
     """
     import slurm.cudagym_hosting as hosting_mod
 
-    src = tmp_path / "3rdparty" / "cudagym" / "src"
+    src = tmp_path / "3rdparty" / "solswarm" / "cudagym" / "src"
     (src / "cudagym").mkdir(parents=True)
     (src / "cudagym" / "__init__.py").write_text("")
     stale = types.ModuleType("cudagym")
@@ -721,7 +721,7 @@ def test_ensure_vendored_cudagym_names_the_stale_package_when_that_is_the_cause(
     """A persistent cudagym.rl failure points at the installed copy, not at pip."""
     import slurm.cudagym_hosting as hosting_mod
 
-    src = tmp_path / "3rdparty" / "cudagym" / "src"
+    src = tmp_path / "3rdparty" / "solswarm" / "cudagym" / "src"
     (src / "cudagym").mkdir(parents=True)
     (src / "cudagym" / "__init__.py").write_text("")
     monkeypatch.setitem(sys.modules, "cudagym", types.ModuleType("cudagym"))
