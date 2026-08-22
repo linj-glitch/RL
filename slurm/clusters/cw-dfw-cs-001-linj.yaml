@@ -1,0 +1,33 @@
+host: cw-dfw-cs-001
+hostname: cw-dfw-cs-001-login-02.cw-dfw-cs-001.hpc.nvidia.com
+sku: h100
+gpus_per_node: 8
+
+paths:
+  # Kernel-writer RL workspace under the reasoning-code PPP project.
+  workspace: /lustre/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj
+  cache: ${paths.workspace}/cache
+  # Reuse Alexander's imported training image (world-readable); import our own
+  # copy under ${paths.workspace}/containers if this one moves.
+  container: /lustre/fsw/portfolios/coreai/users/alexandery/containers/nemorl-atlas.sqsh
+  # In-allocation (disjoint) CudaGym hosting runs the vendored
+  # 3rdparty/solswarm/cudagym source over this image's toolchain. The training
+  # image carries torch/triton/CUDA + fastapi, which the smoke profile needs;
+  # import a dedicated cudagym image here if server deps diverge.
+  cudagym_container: /lustre/fsw/portfolios/coreai/users/alexandery/containers/nemorl-atlas.sqsh
+  models: ${paths.workspace}/models
+  output: ${paths.workspace}/experiments/nemorl
+  datasets: ${paths.workspace}/datasets/post_training
+  artifacts: ${paths.workspace}/cudagym_cache/artifacts
+  ccache: ${paths.workspace}/cudagym_cache/ccache
+
+account: nemotron_reason_code
+partition: batch
+qos: normal
+skip_gres: false
+
+# Local submission on this cluster; no cross-cluster tunnel needed for
+# in-allocation hosting.
+requires_proxy_tunnel: false
+
+extra_config_opts: ""
