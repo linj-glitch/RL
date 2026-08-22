@@ -48,6 +48,11 @@ policy:
   # because Qwen3-8B's rope_theta is already 1000000 — no rope scaling needed.
   # See the header for how the compaction mitigation interacts with this value.
   max_total_sequence_length: 40960
+  # Chunk the training/logprob forward over long agentic trajectories: the
+  # unchunked pass on ~40k-token sequences drove a worker-side torch.compile
+  # path that crashed (inductor symbol mismatch vs the baked driver venv,
+  # smoke9). Matches the long-context 35B recipe's setting.
+  logprob_chunk_size: 2048
   tokenizer:
     name: ${policy.model_name}
     # "default" = the model's own template; an SFT checkpoint trained with the

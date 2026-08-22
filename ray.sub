@@ -596,7 +596,7 @@ if [[ "${CUDAGYM_ENABLED:-0}" == "1" ]]; then
     # Launch the GPU-only server
     srun $CUDAGYM_SRUN_COMMON $GRES_ARG --nodes=1 --ntasks=1 -w "$node_i" \
          -o "$LOG_DIR/cudagym/gpu/${node_i}_gpu.out" \
-         bash -lc "export PYTHONPATH=$SLURM_SUBMIT_DIR/3rdparty/solswarm/cudagym/src:\${PYTHONPATH}; python -m cudagym.servers.serve \
+         bash -lc "uv pip install -q --python \$(command -v python) cupti-python >/dev/null 2>&1 || echo '[WARN] cupti-python install failed; SOL timing will error'; export PYTHONPATH=$SLURM_SUBMIT_DIR/3rdparty/solswarm/cudagym/src:\${PYTHONPATH}; python -m cudagym.servers.serve \
                    --gpu-server-only ${ALLOW_PROCS_ARG} \
                    --host 0.0.0.0 \
                    --port ${GPU_PORT} \
