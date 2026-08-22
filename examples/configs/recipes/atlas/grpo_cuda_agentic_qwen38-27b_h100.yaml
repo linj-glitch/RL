@@ -1,0 +1,206 @@
+# Agentic GRPO on CudaGym / KernelFactory — Qwen3.8-27B on H100 (linj).
+# Derived from grpo_cuda_agentic_qwen3-8b_h100.yaml (full copy; see that file
+# for the env.cudagym/H100-disjoint and token-capture rationale). Deltas:
+#   * policy: Qwen/Qwen3.8-27B (dense 64L/5120h, 262k ctx, 248k vocab) —
+#     dtensor TP8 for training, vLLM TP4 for generation.
+#   * serving chat template: the MODEL'S OWN (no atlas override — the 3.8
+#     tokenizer/template family differs from stock Qwen3; its template strips
+#     prior <think>, so multi-chain captures train on the delivered main chain
+#     via token_id_capture.mask_multi_chain=false below).
+#   * tool_parser: qwen3_xml (Qwen3.5+ family dialect).
+# Submit with --num-nodes N+1: the trailing node hosts CudaGym (disjoint).
+defaults: "../../grpo_math_1B.yaml"
+
+grpo:
+  num_prompts_per_step: 8
+  num_generations_per_prompt: 4   # agentic rollouts are expensive (many model calls)
+  max_rollout_turns: 1            # turns are driven INSIDE Gym/OpenCode, not by this loop
+  max_num_steps: 200
+  max_num_epochs: 1
+  normalize_rewards: true
+  use_leave_one_out_baseline: true
+  val_period: 20
+  val_at_start: false
+  max_val_samples: null           # must stay null on the NeMo-Gym path; the runner
+  val_batch_size: null            # sets both to the val dataset size
+  seed: 42
+
+checkpointing:
+  enabled: true
+  checkpoint_dir: "results/grpo-cuda-agentic-27b-h100"
+  # Agentic-path kernel metrics are unprefixed train-side keys (run_async_nemo_gym_rollout
+  # merges aggregate_kernel_metrics into rollout_metrics).
+  metric_name: "train:correctness_rate"
+  higher_is_better: true
+  keep_top_k: 5
+  save_period: 20
+
+policy:
+  model_name: "Qwen/Qwen3.8-27B"
+  # Base Qwen3-8B declares max_position_embeddings=40960, and vLLM refuses a
+  # larger max_model_len than the model config allows. The long-context recipe
+  # raises both to 131072 by overriding that field
+  # (policy.hf_config_overrides.max_position_embeddings), which works here
+  # because Qwen3-8B's rope_theta is already 1000000 — no rope scaling needed.
+  # See the header for how the compaction mitigation interacts with this value.
+  max_total_sequence_length: 40960
+  # Chunk the training/logprob forward over long agentic trajectories: the
+  # unchunked pass on ~40k-token sequences drove a worker-side torch.compile
+  # path that crashed (inductor symbol mismatch vs the baked driver venv,
+  # smoke9). Matches the long-context 35B recipe's setting.
+  logprob_chunk_size: 2048
+  tokenizer:
+    name: ${policy.model_name}
+    # "default" = the model's own template; an SFT checkpoint trained with the
+    # atlas preserving template embeds it, so keep
+    # "default" (overriding would make serving diverge from SFT). Base-model
+    # caveat: stock Qwen3 templates strip <think> from earlier turns, so
+    # multi-turn token capture degrades to the final model call — acceptable
+    # for smoke runs; the SFT checkpoint fixes it.
+    chat_template: "default"
+  train_global_batch_size: 32
+  train_micro_batch_size: 1
+  precision: "bfloat16"
+  dtensor_cfg:
+    enabled: true
+    tensor_parallel_size: 8
+    activation_checkpointing: true
+    sequence_parallel: true
+    # The DTensor worker refuses context parallelism together with sequence
+    # parallelism (NVIDIA-NeMo/RL issue 659), so this stays 1 while
+    # sequence_parallel is on. Agentic trajectories are long enough to want
+    # context parallelism; to use it, set sequence_parallel false and raise
+    # this together, and re-measure — one of the two has to give.
+    context_parallel_size: 1
+  # Packing loads the policy with flash_attention_2 (the packed path's required
+  # backend; nemo_rl/models/automodel/setup.py), and flash-attn's varlen kernel
+  # intermittently fails with "CUDA error: invalid argument" on packed long
+  # agentic trajectories during the logprob pass, after rollouts already
+  # succeeded. With packing disabled the policy uses SDPA, which is stable. Rollouts dominate agentic
+  # wall time, so packing's training-step speedup is not worth the crash rate;
+  # re-enable per-run with ++policy.sequence_packing.enabled=true.
+  sequence_packing:
+    enabled: false
+  generation:
+    backend: "vllm"
+    max_new_tokens: 16384           # per-call cap; matches opencode limit.output
+    temperature: 1.0                # HARD constraint — see header
+    top_p: 1.0
+    top_k: null
+    stop_token_ids: null
+    stop_strings: null
+    vllm_cfg:
+      async_engine: true            # required for the NeMo-Gym path
+      tensor_parallel_size: 4
+      gpu_memory_utilization: 0.7
+      max_model_len: ${policy.max_total_sequence_length}
+      expose_http_server: true      # Gym's vllm_model proxies to this server
+      http_server_serving_chat_kwargs:
+        # OpenCode sends OpenAI `tools` and expects parsed tool_calls back;
+        # hermes parses the <tool_call>{json}</tool_call> blocks Qwen3-family
+        # templates emit (stock Qwen3 and the atlas preserving template alike).
+        enable_auto_tools: true
+        tool_parser: qwen3_xml
+
+data:
+  max_input_seq_length: null        # the trajectory is managed by Gym, not this loop
+  shuffle: true
+  num_workers: 0
+  train:
+    # Explicit dataset_name: the math base's data.train (OpenMathInstruct-2 +
+    # split_validation_size 0.05) survives the defaults merge, and data.default
+    # only fills keys that are MISSING — without these two lines the job would
+    # silently train on math rows and hold out 5% of them as validation.
+    dataset_name: NemoGymDataset
+    split_validation_size: 0
+    data_path: "/datasets/cuda_smoke/train.jsonl"
+  validation:
+    data_path: "/datasets/cuda_smoke/val.jsonl"
+  default:
+    dataset_name: NemoGymDataset
+    env_name: "nemo_gym"
+    prompt_file: null
+    system_prompt_file: null
+    processor: "nemo_gym_data_processor"
+
+env:
+  should_use_nemo_gym: true
+  should_log_nemo_gym_responses: true
+  cudagym:
+    # Launcher-only hosting declaration (the NeMo-Gym runner never reads
+    # env.cudagym): submit_grpo.py resolves/validates it, preflights the
+    # endpoint, and passes the resolved URLs to the Gym cudagym resources
+    # server as env.nemo_gym.cudagym_endpoints.<SKU>. Declare one entry per GPU
+    # this job trains on; each entry must name a distinct SKU.
+    # In-allocation smoke alternative:
+    #   --extra-config-opts "++env.cudagym.b200.hosting.kind=colocated"
+    h100:
+      sku: "H100"
+      hosting:
+        kind: disjoint
+        num_nodes: 2
+  nemo_gym:   # passed into NeMo-Gym as the initial_global_config_dict
+    # Gym server ports inherit the default [5000, 5999) — the range ray.sub's
+    # port layout reserves for them (the GB200 ephemeral range starts at 9000,
+    # so an override up there risks intermittent binds).
+    is_trajectory_collection: false           # true = dump rollouts instead of training (read + popped by NeMo-RL, not Gym)
+    # The agent harness plans its context against the window the model server
+    # actually accepts, so the two cannot drift (cudagym_cuda_agent.yaml reads
+    # this as limit.context).
+    policy_max_model_len: ${policy.generation.vllm_cfg.max_model_len}
+    # cudagym_endpoints (SKU -> URL) is deliberately NOT declared: NeMo-Gym's
+    # launcher crashes on empty top-level mappings, and submit_grpo.py injects
+    # one ++env.nemo_gym.cudagym_endpoints.<SKU> override per env.cudagym entry
+    # above. A launch bypassing submit_grpo.py must pass the same overrides.
+    # cudagym_benchmark_config travels the same way when needed (e.g. the
+    # multi-SKU recipe sets {benchmark_reference: true} for anchorless rows).
+    config_paths:
+    - responses_api_models/vllm_model/configs/vllm_model_for_training.yaml  # required, *_for_training
+    - resources_servers/cudagym/configs/cudagym_cuda_agent.yaml
+    - resources_servers/cudagym/configs/cudagym_cuda_agent_training.yaml    # adds model_server -> policy_model (token capture)
+    # Optional full SolSwarm parity — container mode: each rollout runs inside
+    # the real agent image (submit with --enroot-agent-image <cluster .sqsh
+    # path>), which supplies the optimizer prompt, skills, and /context
+    # reference library; the /submit flow is real, and SOLSWARM_SURFACE_ROOT
+    # (exported by grpo.sh) supplies the stitched problem extras:
+    # - resources_servers/cudagym/configs/cudagym_cuda_agent_solswarm.yaml
+    policy_model:
+      responses_api_models:
+        vllm_model:
+          # The policy emits <think> inline (preserved by the atlas template);
+          # no server-side reasoning split.
+          uses_reasoning_parser: false
+          # OpenCode omits temperature/top_p and main-Gym's vllm_model only
+          # forwards fields the client set — an unset top_p trips the NeMo-RL
+          # vLLM server's on-policy sampling assertion (HTTP 500 on every
+          # call). Pin every outbound body to the training sampling params.
+          sampling_overrides:
+            temperature: ${policy.generation.temperature}
+            top_p: ${policy.generation.top_p}
+    # Base-model smoke: OpenCode drops reasoning from resent history, so
+    # every multi-turn capture splits into multiple roots; train on the
+    # delivered main chain instead of masking (strict default masks). The
+    # SFT checkpoint's embedded preserving template removes the need.
+    token_id_capture:
+      mask_multi_chain: false
+    # Smoke-run guard: a rollout whose model calls all fail burns the full
+    # OpenCode wall-clock budget; 900s caps the damage (production: 3600).
+    cudagym_cuda_agent:
+      responses_api_agents:
+        cuda_agent:
+          timeout: 900
+
+logger:
+  log_dir: "logs/grpo-cuda-agentic-27b-h100"
+  wandb_enabled: false
+  tensorboard_enabled: true
+  monitor_gpus: true
+  # Per-step conversation tables (W&B sink; grpo.sh forces wandb on at submit
+  # time even though the local default above is false). On this path a message
+  # carries only token ids, so the table is rendered by decoding them with the
+  # tokenizer; an agentic episode is many turns, so the tables are large.
+  log_conversations: true
+
+cluster:
+  gpus_per_node: 8
+  num_nodes: 2
