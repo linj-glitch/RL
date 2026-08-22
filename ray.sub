@@ -440,17 +440,21 @@ if not torch.cuda.is_available():
 mats = []
 for d in range(torch.cuda.device_count()):
     with torch.cuda.device(d):
-        mats.append(torch.randn(1024, 1024, device="cuda"))
+        mats.append(torch.randn(4096, 4096, device="cuda"))
+# The reaper cancels jobs whose DCGM_FI_PROF_SM_ACTIVE stays <= 0.01 for
+# 30 minutes (per its alert email). A 4096^2 matmul spans most SMs; 500ms
+# of it every 8s holds SM_ACTIVE ~0.06 per GPU -- clearly above threshold,
+# still negligible next to real work.
 while True:
     t0 = time.time()
-    while time.time() - t0 < 0.1:
+    while time.time() - t0 < 0.5:
         for d, m in enumerate(mats):
             with torch.cuda.device(d):
                 torch.matmul(m, m)
     for d in range(torch.cuda.device_count()):
         with torch.cuda.device(d):
             torch.cuda.synchronize()
-    time.sleep(10)
+    time.sleep(8)
 PYEOF' &
 done
 # ------------------------------------------------------------------------------
