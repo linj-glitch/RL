@@ -68,6 +68,11 @@ policy:
     # train nodes carries the optimizer state instead.
     tensor_parallel_size: 4
     activation_checkpointing: true
+    # 2-node envelope: every >=3-node job on this account gets reaped by
+    # svc-hwinf-cs-sched at the partition DefaultTime (~31min) — see memory
+    # note; raise with cluster ops before scaling out. Offloading the
+    # optimizer lets 27B TP4/DP2 fit one 8xH100 train node.
+    cpu_offload: true
     sequence_parallel: true
     # The DTensor worker refuses context parallelism together with sequence
     # parallelism (NVIDIA-NeMo/RL issue 659), so this stays 1 while
@@ -141,7 +146,7 @@ env:
       sku: "H100"
       hosting:
         kind: disjoint
-        num_nodes: 4
+        num_nodes: 1
   nemo_gym:   # passed into NeMo-Gym as the initial_global_config_dict
     # Gym server ports inherit the default [5000, 5999) — the range ray.sub's
     # port layout reserves for them (the GB200 ephemeral range starts at 9000,
@@ -206,4 +211,4 @@ logger:
 
 cluster:
   gpus_per_node: 8
-  num_nodes: 4
+  num_nodes: 1
