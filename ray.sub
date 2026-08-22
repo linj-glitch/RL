@@ -604,10 +604,11 @@ if [[ "${CUDAGYM_ENABLED:-0}" == "1" ]]; then
   # over the container's copy), and the container provides the runtime deps.
   # In colocated mode the training processes own the GPUs too, so the GPU server
   # must tolerate pre-existing GPU processes.
-  ALLOW_PROCS_ARG=""
-  if [[ "$CUDAGYM_MODE" != "disjoint" ]]; then
-    ALLOW_PROCS_ARG="--allow-existing-procs"
-  fi
+  # Always allow pre-existing GPU processes: the idle-watchdog keepalive
+  # (above) intentionally holds a tiny context on every GPU, and colocated
+  # mode shares GPUs with vLLM anyway. The stray-process guard this disables
+  # is redundant inside a dedicated Slurm allocation.
+  ALLOW_PROCS_ARG="--allow-existing-procs"
   ANY_SERVER_FAILED=false
   for ((i = CUDAGYM_NODE_START; i < CUDAGYM_NODE_END; i++)); do
     node_i=${nodes_array[$i]}
