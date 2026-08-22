@@ -100,6 +100,13 @@ policy:
         # templates emit (stock Qwen3 and the atlas preserving template alike).
         enable_auto_tools: true
         tool_parser: hermes
+        # Serve with the reasoning-preserving template: stock Qwen3 strips
+        # <think> from earlier turns at render time, so each OpenCode turn's
+        # prompt stops extending the previous cumulative sequence and
+        # prefix-merging splits the capture into multiple roots (smoke5:
+        # 27/32 rollouts masked). The preserving template keeps renders
+        # append-only. Path resolved to content by vllm_worker_async.
+        chat_template: /opt/nemo-rl/examples/prompts/atlas_preserving_chat_template.jinja
 
 data:
   max_input_seq_length: null        # the trajectory is managed by Gym, not this loop

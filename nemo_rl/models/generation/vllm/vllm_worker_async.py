@@ -16,6 +16,7 @@ import asyncio
 import copy
 import gc
 import logging
+import os
 import threading
 import time
 import uuid
@@ -639,6 +640,13 @@ class VllmAsyncGenerationWorkerImpl(
         serving_chat_kwargs = serving_chat_default_kwargs | self.cfg["vllm_cfg"].get(
             "http_server_serving_chat_kwargs", dict()
         )
+        # Accept a template FILE PATH like `vllm serve --chat-template` does:
+        # OpenAIServingChat/apply_chat_template want the template content, and
+        # a path string would only fail later, at first render.
+        _chat_template = serving_chat_kwargs["chat_template"]
+        if isinstance(_chat_template, str) and os.path.isfile(_chat_template):
+            with open(_chat_template) as _f:
+                serving_chat_kwargs["chat_template"] = _f.read()
         online_renderer = NeMoRLOnlineRenderer(
             model_config=engine_client.model_config,
             renderer=engine_client.renderer,
