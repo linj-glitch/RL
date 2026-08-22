@@ -108,7 +108,13 @@ policy:
         # hermes parses the <tool_call>{json}</tool_call> blocks Qwen3-family
         # templates emit (stock Qwen3 and the atlas preserving template alike).
         enable_auto_tools: true
-        tool_parser: qwen3_xml
+        # Per the official vLLM recipe for Qwen3.8-27B
+        # (recipes.vllm.ai/Qwen/Qwen3.8-27B): qwen3_coder tool parser +
+        # qwen3 reasoning parser are both required; without the reasoning
+        # parser the <think> block stays in content and tool calls never
+        # parse (27b-2/7: 1-turn rollouts, zero tool_calls).
+        tool_parser: qwen3_coder
+        reasoning_parser: qwen3
 
 data:
   max_input_seq_length: null        # the trajectory is managed by Gym, not this loop
