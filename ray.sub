@@ -422,6 +422,39 @@ nodes=$(scontrol show hostnames "$SLURM_JOB_NODELIST")
 nodes_array=($nodes)
 ip_addresses_array=()
 
+# --- GPU keepalive against the cluster idle watchdog -------------------------
+# svc-hwinf-cs-sched cancels jobs whose GPUs sit idle past a ~31-minute
+# horizon. Large multi-node starts (container extraction + a 27B weight load)
+# exceed it before the first kernel launches, and the disjoint CudaGym eval
+# node idles between eval bursts for the whole job. Run a ~1% duty-cycle
+# matmul heartbeat on every node/GPU for the job's lifetime (100ms burst per
+# GPU every 10s; negligible next to training, and eval clocks are not locked
+# in this smoke setup anyway). Killed automatically with the job.
+mkdir -p "$LOG_DIR/keepalive"
+for node_i in "${nodes_array[@]}"; do
+  srun --overlap --nodes=1 --ntasks=1 -w "$node_i"        --no-container-mount-home --container-image=$CONTAINER --container-mounts=$MOUNTS        -o "$LOG_DIR/keepalive/${node_i}.out"        bash -lc 'python - <<PYEOF
+import time
+import torch
+if not torch.cuda.is_available():
+    raise SystemExit(0)
+mats = []
+for d in range(torch.cuda.device_count()):
+    with torch.cuda.device(d):
+        mats.append(torch.randn(1024, 1024, device="cuda"))
+while True:
+    t0 = time.time()
+    while time.time() - t0 < 0.1:
+        for d, m in enumerate(mats):
+            with torch.cuda.device(d):
+                torch.matmul(m, m)
+    for d in range(torch.cuda.device_count()):
+        with torch.cuda.device(d):
+            torch.cuda.synchronize()
+    time.sleep(10)
+PYEOF' &
+done
+# ------------------------------------------------------------------------------
+
 log_phase "resolving ${#nodes_array[@]} node hostname(s) to IPs"
 for node in $nodes; do
     # Try multiple methods to get IP address - ENHANCED VERSION v2.0
