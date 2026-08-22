@@ -484,6 +484,44 @@ Depending on your data shape, you may want to change these values."""
         )
         self.rch = RolloutCollectionHelper()
 
+        # Trainer-side training-token capture (nemo_gym.token_id_capture): the
+        # Gym model server files each call's token ids under the row's
+        # _ng_rollout_id; run_rollouts freezes + rebuilds each finished
+        # rollout's response.output here because rch.run_examples is Gym's
+        # low-level path and does NOT finalize (Gym's own collect loop does).
+        # None when the run-level token_id_capture block is absent/disabled.
+        self._token_capture_source = None
+        from nemo_gym.global_config import get_global_config_dict
+        from nemo_gym.token_id_capture.config import TokenIdCaptureConfig
+
+        capture_config = TokenIdCaptureConfig.model_validate(
+            get_global_config_dict()
+        )
+        settings = capture_config.token_id_capture
+        if settings.enabled and settings.rebuild_response:
+            if settings.sink is not None:
+                # A framework sink owns the transport; reading it back needs a
+                # matching TokenSource installed here, which we do not build.
+                print(
+                    "token_id_capture.sink is set; NeMo-RL will not rebuild "
+                    "trajectories from the file store.",
+                    file=sys.stderr,
+                )
+            else:
+                directory = capture_config.resolved_dir()
+                if directory is None:
+                    raise ValueError(
+                        "token_id_capture.enabled is true but neither "
+                        "token_id_capture.dir nor model_call_capture_dir is set"
+                    )
+                from nemo_gym.token_id_capture.store import TokenCaptureStore
+
+                self._token_capture_source = TokenCaptureStore(directory)
+                print(
+                    f"Training-token capture enabled; rebuilding trajectories from {directory}",
+                    file=sys.stderr,
+                )
+
     async def run_rollouts(
         self,
         nemo_gym_examples: list[dict],
@@ -525,12 +563,52 @@ Depending on your data shape, you may want to change these values."""
                         )
                     raise
 
+            # Trainer-side token-capture finalization: rebuild this rollout's
+            # response.output from the model server's per-call records
+            # (run_examples never finalizes). Mutates nemo_gym_result in
+            # place; a missing/ambiguous capture masks the sample instead of
+            # training on a hole. The verify step already ran inside /run, so
+            # replacing the output here cannot affect the reward.
+            capture_rollout_id = None
+            capture_build = None
+            if self._token_capture_source is not None:
+                with timer.time(label=f"{timer_prefix}/finalize_token_capture"):
+                    from nemo_gym.token_id_capture.delivery import (
+                        finalize_rollout_token_capture,
+                    )
+
+                    capture_rollout_id = nemo_gym_row.get("_ng_rollout_id")
+                    if capture_rollout_id is not None:
+                        nemo_gym_result["_ng_rollout_id"] = capture_rollout_id
+                    capture_build = await finalize_rollout_token_capture(
+                        nemo_gym_result, self._token_capture_source
+                    )
+                    # NeMo-RL's loss mask reads
+                    # full_result.instance_config.mask_sample; mirror the
+                    # finalizer's top-level flag there.
+                    if nemo_gym_result.get("mask_sample"):
+                        nemo_gym_result.setdefault("instance_config", {})[
+                            "mask_sample"
+                        ] = True
+
             with timer.time(label=f"{timer_prefix}/postprocess_results"):
                 nemo_rl_result = self._postprocess_nemo_gym_to_nemo_rl_result(
                     nemo_gym_result, tokenizer
                 )
                 if _has_nan_generation_logprobs(nemo_rl_result):
                     raise RuntimeError("Generation logprobs contain NaN")
+
+            if capture_rollout_id is not None and capture_build is not None:
+                # The tokens are now inside the training batch; retire the
+                # frozen snapshot. Failed/masked builds are kept as evidence
+                # (retire_rollout_token_capture refuses them itself).
+                from nemo_gym.token_id_capture.delivery import (
+                    retire_rollout_token_capture,
+                )
+
+                await retire_rollout_token_capture(
+                    capture_rollout_id, self._token_capture_source, capture_build
+                )
 
             num_results += 1
             timing_metrics = None
@@ -725,6 +803,47 @@ output prompt token ids till seen: {output_item_dict["prompt_token_ids"][: len(s
             ):
                 output_item_dict["prompt_str"] = prompt_str
                 output_item_dict["generation_str"] = generation_str
+
+        if not nemo_rl_message_log and (
+            (nemo_gym_result.get("instance_config") or {}).get("mask_sample")
+        ):
+            # Token-capture finalization masked this sample (missing or
+            # ambiguous capture) and the harness output carries no token ids.
+            # The sample is already excluded from the loss via mask_sample, so
+            # give it a degenerate but batch-shaped message log instead of
+            # failing the whole step: the templated prompt as the untrained
+            # user span and one EOS token as the "generation". Its reward is
+            # real and still participates in the group baseline.
+            input_messages = nemo_gym_result["responses_create_params"]["input"]
+            try:
+                prompt_token_ids = tokenizer.apply_chat_template(
+                    input_messages, tokenize=True
+                )
+            except Exception:
+                prompt_token_ids = tokenizer.encode("masked rollout")
+            eos_id = tokenizer.eos_token_id
+            if eos_id is None:
+                eos_id = 0
+            nemo_rl_message_log = [
+                {
+                    "role": "user",
+                    "content": "",
+                    "token_ids": torch.tensor(prompt_token_ids),
+                },
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "token_ids": torch.tensor([eos_id]),
+                    "generation_logprobs": torch.tensor([0.0]),
+                    "is_invalid_tool_call": False,
+                    "has_malformed_thinking": False,
+                },
+            ]
+            return {
+                "message_log": nemo_rl_message_log,
+                "input_message_log": nemo_rl_message_log[:1],
+                "full_result": nemo_gym_result,
+            }
 
         if not nemo_rl_message_log:
             input_messages = nemo_gym_result["responses_create_params"]["input"]

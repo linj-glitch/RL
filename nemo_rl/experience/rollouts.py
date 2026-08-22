@@ -25,6 +25,7 @@ from collections import defaultdict
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
 from typing import Any, Optional
+from uuid import uuid4
 
 import ray
 import torch
@@ -2129,6 +2130,13 @@ def _prepare_nemo_gym_rows(
             else configured_max_tokens
         )
         row["_rowidx"] = row_index
+        # Explicit NeMo-Gym rollout id ("_ng_rollout_id" wire key) for
+        # training-token capture: the Gym model server files each call's token
+        # ids under it and the Gym actor rebuilds the trajectory at
+        # finalization. Globally unique (uuid suffix) because NeMo-RL calls
+        # Gym's low-level run_examples, which never clears stale captures — a
+        # reused id would merge two attempts' records.
+        row["_ng_rollout_id"] = f"r{row_index}-{uuid4().hex[:12]}"
 
 
 def _tensorize_nemo_gym_result(result: dict) -> None:
