@@ -498,6 +498,7 @@ Depending on your data shape, you may want to change these values."""
             get_global_config_dict()
         )
         settings = capture_config.token_id_capture
+        self._token_capture_mask_multi_chain = settings.mask_multi_chain
         if settings.enabled and settings.rebuild_response:
             if settings.sink is not None:
                 # A framework sink owns the transport; reading it back needs a
@@ -581,7 +582,9 @@ Depending on your data shape, you may want to change these values."""
                     if capture_rollout_id is not None:
                         nemo_gym_result["_ng_rollout_id"] = capture_rollout_id
                     capture_build = await finalize_rollout_token_capture(
-                        nemo_gym_result, self._token_capture_source
+                        nemo_gym_result,
+                        self._token_capture_source,
+                        mask_multi_chain=self._token_capture_mask_multi_chain,
                     )
                     # NeMo-RL's loss mask reads
                     # full_result.instance_config.mask_sample; mirror the

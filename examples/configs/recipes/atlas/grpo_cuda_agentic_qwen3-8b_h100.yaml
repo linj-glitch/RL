@@ -183,6 +183,12 @@ env:
           sampling_overrides:
             temperature: ${policy.generation.temperature}
             top_p: ${policy.generation.top_p}
+    # Base-model smoke: OpenCode drops reasoning from resent history, so
+    # every multi-turn capture splits into multiple roots; train on the
+    # delivered main chain instead of masking (strict default masks). The
+    # SFT checkpoint's embedded preserving template removes the need.
+    token_id_capture:
+      mask_multi_chain: false
     # Smoke-run guard: a rollout whose model calls all fail burns the full
     # OpenCode wall-clock budget; 900s caps the damage (production: 3600).
     cudagym_cuda_agent:
