@@ -819,6 +819,12 @@ output prompt token ids till seen: {output_item_dict["prompt_token_ids"][: len(s
                 prompt_token_ids = tokenizer.apply_chat_template(
                     input_messages, tokenize=True
                 )
+                # Fast tokenizers can return an Encoding (or a batch of them)
+                # instead of a plain id list; torch.tensor needs ints.
+                prompt_token_ids = getattr(prompt_token_ids, "ids", prompt_token_ids)
+                if prompt_token_ids and not isinstance(prompt_token_ids[0], int):
+                    first = prompt_token_ids[0]
+                    prompt_token_ids = getattr(first, "ids", first)
             except Exception:
                 prompt_token_ids = tokenizer.encode("masked rollout")
             eos_id = tokenizer.eos_token_id

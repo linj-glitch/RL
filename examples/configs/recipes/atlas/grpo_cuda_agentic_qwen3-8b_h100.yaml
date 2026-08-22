@@ -169,6 +169,19 @@ env:
           # The policy emits <think> inline (preserved by the atlas template);
           # no server-side reasoning split.
           uses_reasoning_parser: false
+          # OpenCode omits temperature/top_p and main-Gym's vllm_model only
+          # forwards fields the client set — an unset top_p trips the NeMo-RL
+          # vLLM server's on-policy sampling assertion (HTTP 500 on every
+          # call). Pin every outbound body to the training sampling params.
+          sampling_overrides:
+            temperature: ${policy.generation.temperature}
+            top_p: ${policy.generation.top_p}
+    # Smoke-run guard: a rollout whose model calls all fail burns the full
+    # OpenCode wall-clock budget; 900s caps the damage (production: 3600).
+    cudagym_cuda_agent:
+      responses_api_agents:
+        cuda_agent:
+          timeout: 900
 
 logger:
   log_dir: "logs/grpo-cuda-agentic-h100"
