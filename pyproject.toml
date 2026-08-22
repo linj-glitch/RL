@@ -464,6 +464,44 @@ conflicts = [
     { extra = "sglang" },
   ],
   [
+    # New Gym main's vllm extra pins flashinfer 0.6.13; NeMo-RL's non-vllm
+    # engine extras pin other versions (sglang 0.6.11.post1, mcore
+    # 0.6.8.post1, ...). We never co-install them (the Gym vllm_model
+    # server builds its own per-server venv at runtime).
+    { package = "nemo-gym", extra = "vllm" },
+    { extra = "sglang" },
+  ],
+  [
+    { package = "nemo-gym", extra = "vllm" },
+    { extra = "mcore" },
+  ],
+  [
+    { package = "nemo-gym", extra = "vllm" },
+    { extra = "fsdp" },
+  ],
+  [
+    { package = "nemo-gym", extra = "vllm" },
+    { extra = "automodel" },
+  ],
+  [
+    # Gym main's vllm pin differs from NeMo-RL's vllm extra too; the
+    # training venv installs nemo-gym WITHOUT extras.
+    { package = "nemo-gym", extra = "vllm" },
+    { extra = "vllm" },
+  ],
+  [
+    { package = "nemo-gym", extra = "vllm" },
+    { extra = "trtllm" },
+  ],
+  [
+    { package = "nemo-gym", extra = "vllm" },
+    { extra = "modelopt" },
+  ],
+  [
+    { package = "nemo-gym", extra = "vllm" },
+    { extra = "nvrx" },
+  ],
+  [
     { extra = "automodel" },
     { extra = "fsdp" },
   ],
