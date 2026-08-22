@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import contextlib
+import re
 import gc
 import warnings
 from contextlib import AbstractContextManager, contextmanager, nullcontext
@@ -157,9 +158,18 @@ def _maybe_merge_lora_weight(
     return tensor + torch.matmul(lora_b, lora_a) * scale
 
 
+# Training-side-only entries with no counterpart in the inference model:
+# TE's `_extra_state` blobs, and fp32 master shadows some hybrid-attention
+# architectures register as buffers (e.g. qwen3_5 `linear_attn._fp32_params`).
+# Forwarding them makes vLLM's weight load raise "no module or parameter named".
+_REFIT_EXCLUDE_KEY_RE = re.compile(r".*(_extra_state|_fp32_params).*")
+
+
 def _maybe_adapt_tensor_to_hf(
     model_part: nn.Module, fqn: str, tensor: torch.Tensor, quantization: bool = False
 ) -> list[tuple[str, torch.Tensor]]:
+    if _REFIT_EXCLUDE_KEY_RE.match(fqn):
+        return []
     adapter = getattr(model_part, "state_dict_adapter", None)
     if adapter:
         return adapter.convert_single_tensor_to_hf(
