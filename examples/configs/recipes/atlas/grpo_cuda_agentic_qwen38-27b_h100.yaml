@@ -116,6 +116,15 @@ policy:
     # and model-card sampling) both live in the GDN prefill path on that
     # version. Run the reference kernels and unchunked prefill until a green
     # run licenses re-enabling them one at a time.
+    # Dedicated generation node(s): the trainer keeps its own 8 GPUs, the
+    # engines keep theirs, and refit goes over NCCL collectives instead of
+    # same-GPU IPC — the only memory-feasible layout for TP1 27B engines.
+    # Submit with --num-nodes = train + inference + cudagym (e.g. 3 = 1+1+1).
+    colocated:
+      enabled: false
+      resources:
+        gpus_per_node: 8
+        num_nodes: 1
     vllm_kwargs:
       # FlashInfer's JIT GDN prefill on SM90 is the auto choice; Triton/FLA is
       # the reference implementation, and the chunked-prefill state handoff
@@ -124,14 +133,15 @@ policy:
       gdn_prefill_backend: triton
     vllm_cfg:
       async_engine: true            # required for the NeMo-Gym path
-      # TP2 on purpose: vllm 0.25.1's qwen3_5 GDN TP split is the remaining
-      # serving suspect (both GDN prefill backends produced identical
-      # long-prompt echo-decay at TP4; vllm-ascend flags a Qwen3-Next TP
-      # weight-split precision issue). TP1 would remove TP entirely but OOMs
-      # during colocated refit (52G awake weights + trainer stream on one GPU,
-      # 27b-20); TP2 changes every split boundary vs TP4 and fits.
+      # TP2, CONFIRMED by the from-disk probe matrix (probe_tp_quality3):
+      # at TP4 this model returns empty/corrupt output even loading straight
+      # from disk (vllm 0.25.1 qwen3_5 GDN TP-split bug; vllm-ascend flags the
+      # same for Qwen3-Next); at TP2 the identical ~8k-token long-prompt
+      # request yields a correct Triton kernel. Non-colocated below because
+      # TP2 colocated OOMs during refit (trainer + awake engine share a GPU,
+      # 27b-21).
       tensor_parallel_size: 2
-      gpu_memory_utilization: 0.8
+      gpu_memory_utilization: 0.85
       max_model_len: ${policy.max_total_sequence_length}
       expose_http_server: true      # Gym's vllm_model proxies to this server
       http_server_serving_chat_kwargs:
