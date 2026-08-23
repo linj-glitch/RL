@@ -181,9 +181,15 @@ env:
     policy_model:
       responses_api_models:
         vllm_model:
-          # The policy emits <think> inline (preserved by the atlas template);
-          # no server-side reasoning split.
-          uses_reasoning_parser: false
+          # MUST match the vLLM server's reasoning_parser (qwen3, set in
+          # http_server_serving_chat_kwargs above): vLLM splits thinking into
+          # reasoning_content, and with this flag false the Gym proxy ASSERTS
+          # and 500s EVERY chat completion — OpenCode then retries silently
+          # until its budget expires (27b-9's zero-model-calls hang; caught by
+          # the liveness probe on 27b-13). With true, the proxy re-wraps
+          # reasoning into <think> tags inside content: a valid OpenAI message
+          # for the agent, token capture unaffected.
+          uses_reasoning_parser: true
           # OpenCode omits temperature/top_p and main-Gym's vllm_model only
           # forwards fields the client set — an unset top_p trips the NeMo-RL
           # vLLM server's on-policy sampling assertion (HTTP 500 on every
