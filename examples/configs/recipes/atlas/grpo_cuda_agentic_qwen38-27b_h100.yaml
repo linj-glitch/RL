@@ -118,11 +118,10 @@ policy:
     # run licenses re-enabling them one at a time.
     vllm_kwargs:
       # FlashInfer's JIT GDN prefill on SM90 is the auto choice; Triton/FLA is
-      # the reference implementation.
+      # the reference implementation, and the chunked-prefill state handoff
+      # runs through it too. (Chunked prefill itself cannot be disabled:
+      # qwen3_5's mamba cache mode 'align' requires it — 27b-18.)
       gdn_prefill_backend: triton
-      # Linear-attention state handoff across prefill chunks is the classic
-      # young-arch bug: a ~10k-token agent prompt spans ~5 chunks.
-      enable_chunked_prefill: false
     vllm_cfg:
       async_engine: true            # required for the NeMo-Gym path
       tensor_parallel_size: 4
