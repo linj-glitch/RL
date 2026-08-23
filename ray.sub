@@ -188,29 +188,17 @@ RAY_LOG_SYNC_FREQUENCY=${RAY_LOG_SYNC_FREQUENCY:-}
 # Unset UV_CACHE_DIR to avoid local cache directory interferring with the container cache
 unset UV_CACHE_DIR
 
-# The shared cache mounts at a NEUTRAL path, never over /root/.cache/uv: the
-# image's baked venv holds SYMLINKS into the image's own /root/.cache/uv
-# (e.g. site-packages/websockets/__init__.py -> /root/.cache/uv/archive-v0/...),
-# so overmounting that path dangles them — packages missing from the shared
-# cache then import as empty namespace packages and servers crash on missing
-# submodules (kernelwriter-27b-11: uvicorn -> websockets.legacy.handshake).
-if [[ -n "${UV_CACHE_DIR_OVERRIDE:-}" ]]; then
-  mkdir -p "$UV_CACHE_DIR_OVERRIDE"
-  if [[ -n $MOUNTS ]]; then
-    MOUNTS+=",$UV_CACHE_DIR_OVERRIDE:/nrl_uv_cache"
-  else
-    MOUNTS="$UV_CACHE_DIR_OVERRIDE:/nrl_uv_cache"
-  fi
-  # Inherited by every srun step and forwarded into the containers, so all
-  # in-container uv operations (uv sync, per-actor venvs, Gym server venvs,
-  # the cupti install) read/write the shared wheel cache.
-  export UV_CACHE_DIR=/nrl_uv_cache
-  # Cache on Lustre, venvs in the container overlay: hardlinks can't cross
-  # devices, and symlinks would tie venvs to the mount (the exact bug above).
-  export UV_LINK_MODE=${UV_LINK_MODE:-copy}
-  echo "[INFO] uv cache mounted from $UV_CACHE_DIR_OVERRIDE -> /nrl_uv_cache (UV_CACHE_DIR exported; /root/.cache/uv left untouched)"
+# uv wheels come from a NODE-LOCAL cache seeded by SETUP_COMMAND from the
+# Lustre tarball below (grpo.sh builds the command). Two dead ends, learned
+# the hard way: mounting a shared cache over /root/.cache/uv dangles the image
+# venv's symlinks into its own cache (27b-11: websockets became a namespace
+# package and every cudagym server crashed); mounting it at a neutral path
+# with UV_CACHE_DIR pointed there serializes the ~10 concurrent per-actor venv
+# builds on Lustre flocks and copy-mode installs (27b-12: policy init 35 min).
+if [[ -n "${UV_CACHE_SEED_TAR:-}" && -f "${UV_CACHE_SEED_TAR}" ]]; then
+  echo "[INFO] uv cache seed tar: $UV_CACHE_SEED_TAR (extracted node-locally by SETUP_COMMAND)"
 else
-  echo "[WARN] UV_CACHE_DIR_OVERRIDE unset: every node cold-downloads the venv diff each job (~13 min/node measured)"
+  echo "[WARN] no uv cache seed tar (${UV_CACHE_SEED_TAR:-unset}): nodes cold-download the venv diff (~13 min/node measured)"
 fi
 
 # Create logs directory
@@ -586,7 +574,7 @@ if [[ -n "${NRL_HF_PREWARM_DIR:-}" && -d "${NRL_HF_PREWARM_DIR}" && "${TRAIN_NUM
   srun --overlap -A "$SLURM_JOB_ACCOUNT" -p "$SLURM_JOB_PARTITION" \
        --nodes="$TRAIN_NUM_NODES" --ntasks="$TRAIN_NUM_NODES" --ntasks-per-node=1 -w "$_prewarm_nodes" \
        -o "$LOG_DIR/prewarm-%t.out" \
-       bash -c "t0=\$SECONDS; find '$NRL_HF_PREWARM_DIR' -type f \( -name '*.safetensors' -o -name '*.json' -o -name '*.txt' \) -print0 2>/dev/null | xargs -0 -r -P 4 -n 1 cat > /dev/null 2>/dev/null; echo \"prewarm done in \$((SECONDS - t0))s\"" &
+       bash -c "t0=\$SECONDS; find -L '$NRL_HF_PREWARM_DIR' -type f -print0 2>/dev/null | xargs -0 -r -P 4 -n 1 cat > /dev/null 2>/dev/null; echo \"prewarm done in \$((SECONDS - t0))s\"" &
   NRL_PREWARM_PID=$!  # intentionally NOT in SRUN_PIDS: its normal exit must not look like a failed service
 fi
 

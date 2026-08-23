@@ -53,24 +53,25 @@ export TIME=${TIME:-DEFAULT_TIME}
 export GPUS_PER_NODE=${GPUS_PER_NODE:-DEFAULT_GPUS_PER_NODE}
 # =======================================================================
 
-# Persistent per-user caches on Lustre. The uv wheel cache is mounted into
-# every container (ray.sub wires UV_CACHE_DIR_OVERRIDE -> /root/.cache/uv);
-# without it every job re-downloads the image-lock diff on every node
-# (~13 min/node measured on kernelwriter-27b-9). uv's cache locking is
-# advisory-flock based, so keep ONE running job per cache — our train-fix loop
-# is serial. Concurrent cold-cache jobs can race extraction (ImportError: ...
-# 'transformers' (unknown location)); point UV_CACHE_DIR_OVERRIDE at a per-job
-# dir if jobs ever need to overlap.
+# uv wheels: NODE-LOCAL cache seeded from one Lustre tarball. Both simpler
+# variants lose: no seed = ~13 min of downloads per node (27b-9); a
+# Lustre-MOUNTED live cache = copy-mode installs + flock contention across the
+# ~10 concurrent per-actor venv builds (27b-12: policy init 28s -> 35 min).
+# SETUP_COMMAND below extracts the tar into each container's /root/.cache
+# (merging with the image's own cache — NEVER mount over /root/.cache/uv, the
+# image venv symlinks into it), so uv installs hardlink at local-disk speed
+# with zero network. Refresh the seed after a lock bump:
+#   cd $CACHE_PATH && tar -cf uv-cache-seed.tar.tmp uv && mv uv-cache-seed.tar.tmp uv-cache-seed.tar
 export HF_HOME=${CACHE_PATH}/huggingface
-export UV_CACHE_DIR_OVERRIDE=${UV_CACHE_DIR_OVERRIDE:-${CACHE_PATH}/uv}
+export UV_CACHE_SEED_TAR=${UV_CACHE_SEED_TAR:-${CACHE_PATH}/uv-cache-seed.tar}
 # vLLM torch.compile/AOT artifacts (NeMo-RL appends a per-engine seed suffix to
 # this base) plus the triton/inductor JIT caches: persisting them skips the
 # ~1 min first-request compile per engine per job and de-risks first-prefill
-# JIT stalls. Single-writer assumption as above.
+# JIT stalls. Written once per config, read thereafter.
 export VLLM_CACHE_ROOT=${VLLM_CACHE_ROOT:-${CACHE_PATH}/vllm}
 export TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-${CACHE_PATH}/triton}
 export TORCHINDUCTOR_CACHE_DIR=${TORCHINDUCTOR_CACHE_DIR:-${CACHE_PATH}/inductor}
-mkdir -p "$UV_CACHE_DIR_OVERRIDE" "$VLLM_CACHE_ROOT" "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR" 2>/dev/null || true
+mkdir -p "$VLLM_CACHE_ROOT" "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR" 2>/dev/null || true
 export OUTPUT_DIR=${OUTPUT_ROOT}/${EXP_NAME}
 
 # Set for clusters whose sbatch rejects --gpus-per-node (applied at the sbatch call).
@@ -100,7 +101,10 @@ export UV_EXTRAS=${UV_EXTRAS:-DEFAULT_UV_EXTRAS}
 # bakes only an older interpreter (and a uv whose manifest predates the
 # release). `uv python find` honors requires-python, so on a current image the
 # bootstrap short-circuits; drop it once no image in use predates the pin.
-export SETUP_COMMAND=${SETUP_COMMAND:-"(uv python find >/dev/null 2>&1 || (curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh && uv python install)) && uv sync ${UV_EXTRAS}"}
+# The seed extraction runs first (idempotent via the marker file — the head
+# retry loop re-runs SETUP_COMMAND): it merges the shared wheel tarball into
+# this container's node-local uv cache so the sync below downloads nothing.
+export SETUP_COMMAND=${SETUP_COMMAND:-"( [ -f '${UV_CACHE_SEED_TAR}' ] && [ ! -e /root/.cache/.uv_seeded ] && mkdir -p /root/.cache && tar -xf '${UV_CACHE_SEED_TAR}' -C /root/.cache && touch /root/.cache/.uv_seeded && echo '[uv] node-local cache seeded from ${UV_CACHE_SEED_TAR}' || true ) && (uv python find >/dev/null 2>&1 || (curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh && uv python install)) && uv sync ${UV_EXTRAS}"}
 
 # Rebuild the image-baked per-worker venvs (/opt/ray_venvs/*): after a
 # dependency bump a stale venv dies unpickling Ray internals.
