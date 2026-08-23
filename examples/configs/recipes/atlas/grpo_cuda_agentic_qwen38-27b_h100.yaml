@@ -124,14 +124,14 @@ policy:
       gdn_prefill_backend: triton
     vllm_cfg:
       async_engine: true            # required for the NeMo-Gym path
-      # TP1 on purpose: vllm 0.25.1's qwen3_5 GDN fused-projection TP split is
-      # the remaining serving suspect (both GDN prefill backends produced the
-      # same long-prompt echo-decay at TP4, and vllm-ascend release notes flag
-      # a Qwen3-Next TP weight-split precision issue). One engine per GPU (8x
-      # DP); a 27B bf16 fits a single H100 at util 0.9 with the 16 full-attn
-      # layers' KV (~64KB/token/engine).
-      tensor_parallel_size: 1
-      gpu_memory_utilization: 0.9
+      # TP2 on purpose: vllm 0.25.1's qwen3_5 GDN TP split is the remaining
+      # serving suspect (both GDN prefill backends produced identical
+      # long-prompt echo-decay at TP4; vllm-ascend flags a Qwen3-Next TP
+      # weight-split precision issue). TP1 would remove TP entirely but OOMs
+      # during colocated refit (52G awake weights + trainer stream on one GPU,
+      # 27b-20); TP2 changes every split boundary vs TP4 and fits.
+      tensor_parallel_size: 2
+      gpu_memory_utilization: 0.8
       max_model_len: ${policy.max_total_sequence_length}
       expose_http_server: true      # Gym's vllm_model proxies to this server
       http_server_serving_chat_kwargs:
