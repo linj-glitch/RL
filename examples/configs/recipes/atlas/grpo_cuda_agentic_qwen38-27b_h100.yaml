@@ -73,14 +73,13 @@ policy:
     # note; raise with cluster ops before scaling out. Offloading the
     # optimizer lets 27B TP4/DP2 fit one 8xH100 train node.
     cpu_offload: true
-    # CP over SP: with coherent rollouts the trainer OOMs per-sequence on real
-    # ~15k-token conversations (27b-22 at DP2, 27b-24 at DP4 — DP cannot help
-    # micro-batch-1 memory). CP2 splits each sequence across two GPUs, which
-    # is also the layout long agentic trajectories need at larger models.
-    # sequence_parallel must be off with CP (NVIDIA-NeMo/RL issue 659);
-    # Automodel's cp_linear_attn makes qwen3_5's GDN layers CP-aware.
-    sequence_parallel: false
-    context_parallel_size: 2
+    sequence_parallel: true
+    # CP is rejected for Qwen3.5 DENSE models by the DTensor worker ("only
+    # torch attention backend is available", 27b-25); the MoE variant supports
+    # it via TE. Long-trajectory memory relief must come from elsewhere (the
+    # 27b-22/24 train OOM turned out to be the top-p loss path, not attention
+    # — see generation.top_p).
+    context_parallel_size: 1
   # Packing loads the policy with flash_attention_2 (the packed path's required
   # backend; nemo_rl/models/automodel/setup.py), and flash-attn's varlen kernel
   # intermittently fails with "CUDA error: invalid argument" on packed long
@@ -107,7 +106,14 @@ policy:
     # computation. (top_k truncation is not reflected in logprobs — accepted
     # smoke-scale bias, same as other sub-1.0 sampling recipes.)
     temperature: 0.6
-    top_p: 0.95
+    # top_p MUST stay 1.0: any other value makes the trainer's loss path
+    # replicate top-p over the raw train logits — a seq_len x 248k-vocab
+    # sort/mask that allocates ~22 GiB per micro-batch and OOMs on real-length
+    # conversations (27b-24, apply_top_k_top_p in prepare_loss_input). The
+    # served model's generation_config supplies top_k=20 for request fields
+    # the proxy leaves unset, so tail-cutting still happens engine-side;
+    # temperature 0.6 is the main stabilizer.
+    top_p: 1.0
     # NeMo-RL's NeMo-Gym rollout path asserts top_k is unset (27b-16); the
     # served model's generation_config.json already defaults top_k=20 for
     # request fields the proxy leaves unset, so the effective sampling matches
