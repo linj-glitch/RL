@@ -91,7 +91,11 @@ policy:
     enabled: false
   generation:
     backend: "vllm"
-    max_new_tokens: 16384           # per-call cap; matches opencode limit.output
+    # Per-call cap. 4096 for smoke: think-loops then cost one short turn
+    # instead of the whole budget (opencode continues the session), and the
+    # trainer's per-sequence footprint drops — 27b-22 OOM'd in train() once
+    # rollouts became real full-length conversations. Raise for real tasks.
+    max_new_tokens: 4096
     # Qwen3.8 thinking mode destabilizes at temperature 1.0 / top_p 1.0: with
     # correct weights (post-fa3c6128) 27b-15 still produced on-task openings
     # that derailed into system-prompt word salad within sentences, and 31/32
