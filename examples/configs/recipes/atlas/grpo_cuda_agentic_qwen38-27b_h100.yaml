@@ -92,9 +92,18 @@ policy:
   generation:
     backend: "vllm"
     max_new_tokens: 16384           # per-call cap; matches opencode limit.output
-    temperature: 1.0                # HARD constraint — see header
-    top_p: 1.0
-    top_k: null
+    # Qwen3.8 thinking mode destabilizes at temperature 1.0 / top_p 1.0: with
+    # correct weights (post-fa3c6128) 27b-15 still produced on-task openings
+    # that derailed into system-prompt word salad within sentences, and 31/32
+    # rollouts wrote no kernel. The model card's recommended sampling for
+    # thinking is 0.6/0.95/20. These flow everywhere on-policy: the vLLM
+    # server asserts requests match them, the Gym proxy's sampling_overrides
+    # interpolate them, and NeMo-RL applies the temperature in logprob
+    # computation. (top_k truncation is not reflected in logprobs — accepted
+    # smoke-scale bias, same as other sub-1.0 sampling recipes.)
+    temperature: 0.6
+    top_p: 0.95
+    top_k: 20
     stop_token_ids: null
     stop_strings: null
     vllm_cfg:
