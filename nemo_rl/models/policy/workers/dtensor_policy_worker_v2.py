@@ -159,10 +159,18 @@ def _maybe_merge_lora_weight(
 
 
 # Training-side-only entries with no counterpart in the inference model:
-# TE's `_extra_state` blobs, and fp32 master shadows some hybrid-attention
-# architectures register as buffers (e.g. qwen3_5 `linear_attn._fp32_params`).
-# Forwarding them makes vLLM's weight load raise "no module or parameter named".
-_REFIT_EXCLUDE_KEY_RE = re.compile(r".*(_extra_state|_fp32_params).*")
+# TE's `_extra_state` blobs. Forwarding them makes vLLM's weight load raise
+# "no module or parameter named".
+_REFIT_EXCLUDE_KEY_RE = re.compile(r".*_extra_state.*")
+# qwen3_5's FSDP patch (Automodel cp_linear_attn.patch_hf_model) MOVES each
+# GatedDeltaNet's fp32 params (A_log) into a `_fp32_params` holder submodule,
+# so the trainer key is `...linear_attn._fp32_params.A_log` while HF/vLLM name
+# the same parameter `...linear_attn.A_log`. These are the CANONICAL values,
+# not shadows: excluding them (the previous fix for 27b-1's "no module or
+# parameter named" crash) left every GDN layer's decay at vLLM's dummy init,
+# and the refit model emitted fluent word salad (kernelwriter-27b-14). Rename
+# instead of dropping.
+_FP32_HOLDER_SEGMENT = "._fp32_params."
 
 
 def _maybe_adapt_tensor_to_hf(
@@ -170,6 +178,7 @@ def _maybe_adapt_tensor_to_hf(
 ) -> list[tuple[str, torch.Tensor]]:
     if _REFIT_EXCLUDE_KEY_RE.match(fqn):
         return []
+    fqn = fqn.replace(_FP32_HOLDER_SEGMENT, ".")
     adapter = getattr(model_part, "state_dict_adapter", None)
     if adapter:
         return adapter.convert_single_tensor_to_hf(
