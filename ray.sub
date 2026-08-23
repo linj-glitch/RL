@@ -623,10 +623,12 @@ if [[ "${CUDAGYM_ENABLED:-0}" == "1" ]]; then
   echo "[INFO] GPU servers: $GPU_SERVERS"
 
   CUDAGYM_CONTAINER_MOUNTS="${MOUNTS},${ARTIFACTS_DIR}:${ARTIFACTS_DIR},${CCACHE_DIR}:${CCACHE_DIR}"
-  # --container-name=cgym: the compile/GPU/LB steps on a node share ONE
-  # extracted container instead of each unsquashing the image (~6 min cold);
-  # pyxis serializes same-name creation per node, so concurrent steps are safe.
-  CUDAGYM_SRUN_COMMON="--no-container-mount-home --mpi=pmix --container-image=${CUDAGYM_CONTAINER} --container-name=cgym --container-mounts=${CUDAGYM_CONTAINER_MOUNTS} --container-workdir=$SLURM_SUBMIT_DIR --overlap"
+  # Anonymous containers on purpose: concurrent same-name steps RACE the
+  # creation (pyxis does not serialize it — kernelwriter-27b-10 died in 33s
+  # with "failed to create container filesystem" on the two losers), and with
+  # the health gate running in the background these extractions are off the
+  # training critical path anyway.
+  CUDAGYM_SRUN_COMMON="--no-container-mount-home --mpi=pmix --container-image=${CUDAGYM_CONTAINER} --container-mounts=${CUDAGYM_CONTAINER_MOUNTS} --container-workdir=$SLURM_SUBMIT_DIR --overlap"
   # cudagym.servers.serve is ONE unified server run in compile-only / gpu-only
   # mode; the vendored 3rdparty/solswarm/cudagym/src rides PYTHONPATH (the checkout wins
   # over the container's copy), and the container provides the runtime deps.
