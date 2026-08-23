@@ -188,14 +188,27 @@ RAY_LOG_SYNC_FREQUENCY=${RAY_LOG_SYNC_FREQUENCY:-}
 # Unset UV_CACHE_DIR to avoid local cache directory interferring with the container cache
 unset UV_CACHE_DIR
 
+# The shared cache mounts at a NEUTRAL path, never over /root/.cache/uv: the
+# image's baked venv holds SYMLINKS into the image's own /root/.cache/uv
+# (e.g. site-packages/websockets/__init__.py -> /root/.cache/uv/archive-v0/...),
+# so overmounting that path dangles them — packages missing from the shared
+# cache then import as empty namespace packages and servers crash on missing
+# submodules (kernelwriter-27b-11: uvicorn -> websockets.legacy.handshake).
 if [[ -n "${UV_CACHE_DIR_OVERRIDE:-}" ]]; then
   mkdir -p "$UV_CACHE_DIR_OVERRIDE"
   if [[ -n $MOUNTS ]]; then
-    MOUNTS+=",$UV_CACHE_DIR_OVERRIDE:/root/.cache/uv"
+    MOUNTS+=",$UV_CACHE_DIR_OVERRIDE:/nrl_uv_cache"
   else
-    MOUNTS="$UV_CACHE_DIR_OVERRIDE:/root/.cache/uv"
+    MOUNTS="$UV_CACHE_DIR_OVERRIDE:/nrl_uv_cache"
   fi
-  echo "[INFO] uv cache mounted from $UV_CACHE_DIR_OVERRIDE (-> /root/.cache/uv in every container)"
+  # Inherited by every srun step and forwarded into the containers, so all
+  # in-container uv operations (uv sync, per-actor venvs, Gym server venvs,
+  # the cupti install) read/write the shared wheel cache.
+  export UV_CACHE_DIR=/nrl_uv_cache
+  # Cache on Lustre, venvs in the container overlay: hardlinks can't cross
+  # devices, and symlinks would tie venvs to the mount (the exact bug above).
+  export UV_LINK_MODE=${UV_LINK_MODE:-copy}
+  echo "[INFO] uv cache mounted from $UV_CACHE_DIR_OVERRIDE -> /nrl_uv_cache (UV_CACHE_DIR exported; /root/.cache/uv left untouched)"
 else
   echo "[WARN] UV_CACHE_DIR_OVERRIDE unset: every node cold-downloads the venv diff each job (~13 min/node measured)"
 fi
