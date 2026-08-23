@@ -195,6 +195,9 @@ if [[ -n "${UV_CACHE_DIR_OVERRIDE:-}" ]]; then
   else
     MOUNTS="$UV_CACHE_DIR_OVERRIDE:/root/.cache/uv"
   fi
+  echo "[INFO] uv cache mounted from $UV_CACHE_DIR_OVERRIDE (-> /root/.cache/uv in every container)"
+else
+  echo "[WARN] UV_CACHE_DIR_OVERRIDE unset: every node cold-downloads the venv diff each job (~13 min/node measured)"
 fi
 
 # Create logs directory
@@ -556,6 +559,24 @@ fi
 # TRAIN_NUM_NODES rather than the full allocation (identical when not disjoint).
 NUM_ACTORS=$((GPUS_PER_NODE * TRAIN_NUM_NODES))
 
+########################################################
+# HF checkpoint page-cache prewarm (setup-time reduction)
+########################################################
+# Stream the policy checkpoint through each TRAIN node's page cache while
+# containers extract and venvs sync, so the trainer's weight load reads warm
+# cache instead of cold Lustre (~6x faster observed at 27B). Host-side — no
+# container, starts immediately — and fire-and-forget: training never waits on
+# it, and a node that already has the files cached finishes in seconds.
+if [[ -n "${NRL_HF_PREWARM_DIR:-}" && -d "${NRL_HF_PREWARM_DIR}" && "${TRAIN_NUM_NODES:-0}" -ge 1 ]]; then
+  _prewarm_nodes=$(IFS=,; echo "${nodes_array[*]:0:$TRAIN_NUM_NODES}")
+  log_phase "HF prewarm launched on $_prewarm_nodes ($NRL_HF_PREWARM_DIR)"
+  srun --overlap -A "$SLURM_JOB_ACCOUNT" -p "$SLURM_JOB_PARTITION" \
+       --nodes="$TRAIN_NUM_NODES" --ntasks="$TRAIN_NUM_NODES" --ntasks-per-node=1 -w "$_prewarm_nodes" \
+       -o "$LOG_DIR/prewarm-%t.out" \
+       bash -c "t0=\$SECONDS; find '$NRL_HF_PREWARM_DIR' -type f \( -name '*.safetensors' -o -name '*.json' -o -name '*.txt' \) -print0 2>/dev/null | xargs -0 -r -P 4 -n 1 cat > /dev/null 2>/dev/null; echo \"prewarm done in \$((SECONDS - t0))s\"" &
+  NRL_PREWARM_PID=$!  # intentionally NOT in SRUN_PIDS: its normal exit must not look like a failed service
+fi
+
 # Optionally launch in-allocation CudaGym services (colocated or disjoint).
 if [[ "${CUDAGYM_ENABLED:-0}" == "1" ]]; then
   # Port configuration
@@ -602,7 +623,10 @@ if [[ "${CUDAGYM_ENABLED:-0}" == "1" ]]; then
   echo "[INFO] GPU servers: $GPU_SERVERS"
 
   CUDAGYM_CONTAINER_MOUNTS="${MOUNTS},${ARTIFACTS_DIR}:${ARTIFACTS_DIR},${CCACHE_DIR}:${CCACHE_DIR}"
-  CUDAGYM_SRUN_COMMON="--no-container-mount-home --mpi=pmix --container-image=${CUDAGYM_CONTAINER} --container-mounts=${CUDAGYM_CONTAINER_MOUNTS} --container-workdir=$SLURM_SUBMIT_DIR --overlap"
+  # --container-name=cgym: the compile/GPU/LB steps on a node share ONE
+  # extracted container instead of each unsquashing the image (~6 min cold);
+  # pyxis serializes same-name creation per node, so concurrent steps are safe.
+  CUDAGYM_SRUN_COMMON="--no-container-mount-home --mpi=pmix --container-image=${CUDAGYM_CONTAINER} --container-name=cgym --container-mounts=${CUDAGYM_CONTAINER_MOUNTS} --container-workdir=$SLURM_SUBMIT_DIR --overlap"
   # cudagym.servers.serve is ONE unified server run in compile-only / gpu-only
   # mode; the vendored 3rdparty/solswarm/cudagym/src rides PYTHONPATH (the checkout wins
   # over the container's copy), and the container provides the runtime deps.
@@ -648,40 +672,8 @@ if [[ "${CUDAGYM_ENABLED:-0}" == "1" ]]; then
     sleep 2
   done
 
-  echo "[INFO] Waiting for CudaGym services to start..."
-  sleep 30
-
-  # First-boot container import + torch init can exceed a single fixed wait; retry
-  # each server a few times before declaring failure.
-  check_cudagym_health() {
-    local node=$1 port=$2 label=$3
-    for attempt in {1..4}; do
-      if srun $CUDAGYM_SRUN_COMMON --nodes=1 --ntasks=1 -w "$node" \
-           bash -lc "curl -sf --connect-timeout 5 http://127.0.0.1:${port}/health >/dev/null"; then
-        echo "[OK] ${label} on $node healthy"
-        return 0
-      fi
-      echo "[INFO] ${label} on $node not ready (attempt $attempt/4)..."
-      sleep 15
-    done
-    echo "[ERR] ${label} on $node not responding"
-    return 1
-  }
-
-  echo "[INFO] Checking CudaGym service status..."
-  for ((i = CUDAGYM_NODE_START; i < CUDAGYM_NODE_END; i++)); do
-    node_i=${nodes_array[$i]}
-    check_cudagym_health "$node_i" "$COMPILE_PORT" "CompileServer" || ANY_SERVER_FAILED=true
-    check_cudagym_health "$node_i" "$GPU_PORT" "GPUServer" || ANY_SERVER_FAILED=true
-  done
-
-  # Cancel the job if any server failed
-  if [ "$ANY_SERVER_FAILED" = true ]; then
-    echo "[ERROR] One or more CudaGym services failed health checks. Cancelling job ${SLURM_JOB_ID}."
-    scancel "$SLURM_JOB_ID" 2>/dev/null || true
-    exit 1
-  fi
-
+  # The load balancer only needs the (static) server URL lists, and it polls its
+  # backends, so it launches right away — before the servers finish booting.
   echo "[INFO] Launching load balancer on node $CUDAGYM_LB_NODE..."
   srun $CUDAGYM_SRUN_COMMON --nodes=1 --ntasks=1 -w "$CUDAGYM_LB_NODE" \
        -o "$LOG_DIR/cudagym/loadbalancer/${CUDAGYM_LB_NODE}_lb.out" \
@@ -693,36 +685,42 @@ if [[ "${CUDAGYM_ENABLED:-0}" == "1" ]]; then
                  ${GPU_MAX_LOAD}" &
   SRUN_PIDS["cudagym-lb-0"]=$!
 
-  echo "[INFO] Waiting for load balancer to start..."
-  sleep 10
-
-  # Verify load balancer is running with retries
-  echo "[INFO] Checking load balancer status..."
-  LB_READY=false
-  for retry in {1..5}; do
-    echo "[CHECK][LB] http://${CUDAGYM_LB_NODE_IP}:${LB_PORT}/health (attempt $retry/5)"
-    if srun $CUDAGYM_SRUN_COMMON --nodes=1 --ntasks=1 -w "$CUDAGYM_LB_NODE" \
-         bash -lc "curl -sf --connect-timeout 5 http://127.0.0.1:${LB_PORT}/health >/dev/null"; then
-      LB_READY=true
-      echo "[OK] Load balancer is running"
-      # Print status
-      srun $CUDAGYM_SRUN_COMMON --nodes=1 --ntasks=1 -w "$CUDAGYM_LB_NODE" \
-           bash -lc "curl -s --connect-timeout 5 http://127.0.0.1:${LB_PORT}/status | head -c 1000 || true; echo"
-      break
+  # Health gating runs in the BACKGROUND so Ray bringup proceeds in parallel —
+  # the old inline version (fixed sleeps + containerized curl sruns, each
+  # extracting its own container) serialized ~5 min ahead of the Ray sruns on
+  # kernelwriter-27b-9. Probes go host-side straight to the node IPs; the
+  # driver's own env spin-up wait provides the ordering guarantee for rollouts.
+  # On timeout the gate cancels the whole job loudly.
+  _cudagym_probe() {  # <url> <ip> <port>: HTTP 200 via curl, TCP-connect fallback
+    if command -v curl >/dev/null 2>&1; then
+      curl -sf --connect-timeout 3 "$1" >/dev/null 2>&1
     else
-      echo "[INFO] Load balancer not ready yet (attempt $retry/5)..."
-      sleep 5
+      (exec 3<>"/dev/tcp/$2/$3") 2>/dev/null
     fi
-  done
-
-  if [ "$LB_READY" = false ]; then
-    echo "[ERROR] Load balancer is not responding after multiple attempts"
-    echo "[DEBUG] Checking if load balancer process is running..."
-    srun --overlap --nodes=1 --ntasks=1 -w "$CUDAGYM_LB_NODE" ps aux | grep -E "(cudagym_load_balancer|python.*${LB_PORT})" || echo "No load balancer process found"
-    echo "[ERROR] Cancelling job ${SLURM_JOB_ID} due to load balancer failure."
+  }
+  (
+    _deadline=$((SECONDS + ${CUDAGYM_HEALTH_TIMEOUT:-900}))
+    while (( SECONDS < _deadline )); do
+      _pending=0
+      for ((i = CUDAGYM_NODE_START; i < CUDAGYM_NODE_END; i++)); do
+        ip_i=${ip_addresses_array[$i]}
+        _cudagym_probe "http://$ip_i:${COMPILE_PORT}/health" "$ip_i" "$COMPILE_PORT" || { _pending=1; break; }
+        _cudagym_probe "http://$ip_i:${GPU_PORT}/health" "$ip_i" "$GPU_PORT" || { _pending=1; break; }
+      done
+      if (( _pending == 0 )); then
+        _cudagym_probe "http://${CUDAGYM_LB_NODE_IP}:${LB_PORT}/health" "$CUDAGYM_LB_NODE_IP" "$LB_PORT" || _pending=1
+      fi
+      if (( _pending == 0 )); then
+        log_phase "CudaGym services + load balancer healthy"
+        touch "$LOG_DIR/CUDAGYM_HEALTHY"
+        exit 0
+      fi
+      sleep 10
+    done
+    echo "[ERROR] CudaGym services not healthy after ${CUDAGYM_HEALTH_TIMEOUT:-900}s. Cancelling job ${SLURM_JOB_ID}." | tee "$LOG_DIR/cudagym/health_gate_failed.log"
     scancel "$SLURM_JOB_ID" 2>/dev/null || true
-    exit 1
-  fi
+  ) &
+  NRL_CUDAGYM_GATE_PID=$!  # intentionally NOT in SRUN_PIDS: its normal exit must not look like a failed service
 
   # Expose the unified CudaGym endpoint (load balancer) to the training driver.
   # Inherited by the ray-head/ray-worker srun invocations below (srun propagates

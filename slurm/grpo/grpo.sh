@@ -53,10 +53,24 @@ export TIME=${TIME:-DEFAULT_TIME}
 export GPUS_PER_NODE=${GPUS_PER_NODE:-DEFAULT_GPUS_PER_NODE}
 # =======================================================================
 
-# CACHE_PATH holds the HF cache only; the uv cache stays container-local. A
-# shared Lustre uv cache lets concurrent jobs race cold-cache extraction
-# (ImportError: ... 'transformers' (unknown location)).
+# Persistent per-user caches on Lustre. The uv wheel cache is mounted into
+# every container (ray.sub wires UV_CACHE_DIR_OVERRIDE -> /root/.cache/uv);
+# without it every job re-downloads the image-lock diff on every node
+# (~13 min/node measured on kernelwriter-27b-9). uv's cache locking is
+# advisory-flock based, so keep ONE running job per cache — our train-fix loop
+# is serial. Concurrent cold-cache jobs can race extraction (ImportError: ...
+# 'transformers' (unknown location)); point UV_CACHE_DIR_OVERRIDE at a per-job
+# dir if jobs ever need to overlap.
 export HF_HOME=${CACHE_PATH}/huggingface
+export UV_CACHE_DIR_OVERRIDE=${UV_CACHE_DIR_OVERRIDE:-${CACHE_PATH}/uv}
+# vLLM torch.compile/AOT artifacts (NeMo-RL appends a per-engine seed suffix to
+# this base) plus the triton/inductor JIT caches: persisting them skips the
+# ~1 min first-request compile per engine per job and de-risks first-prefill
+# JIT stalls. Single-writer assumption as above.
+export VLLM_CACHE_ROOT=${VLLM_CACHE_ROOT:-${CACHE_PATH}/vllm}
+export TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-${CACHE_PATH}/triton}
+export TORCHINDUCTOR_CACHE_DIR=${TORCHINDUCTOR_CACHE_DIR:-${CACHE_PATH}/inductor}
+mkdir -p "$UV_CACHE_DIR_OVERRIDE" "$VLLM_CACHE_ROOT" "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR" 2>/dev/null || true
 export OUTPUT_DIR=${OUTPUT_ROOT}/${EXP_NAME}
 
 # Set for clusters whose sbatch rejects --gpus-per-node (applied at the sbatch call).
@@ -91,6 +105,16 @@ export SETUP_COMMAND=${SETUP_COMMAND:-"(uv python find >/dev/null 2>&1 || (curl 
 # Rebuild the image-baked per-worker venvs (/opt/ray_venvs/*): after a
 # dependency bump a stale venv dies unpickling Ray internals.
 export NRL_FORCE_REBUILD_VENVS=${NRL_FORCE_REBUILD_VENVS:-true}
+
+# Page-cache prewarm: ray.sub background-reads this directory on every TRAIN
+# node while containers extract and venvs sync, so the trainer's
+# from_pretrained streams from warm page cache instead of cold Lustre
+# (measured 6:57 -> ~1 min for the 27B checkpoint). Derived from the recipe's
+# policy model_name; an unset or missing dir skips the warm quietly.
+_POLICY_MODEL=$(grep -m1 -E '^[[:space:]]*model_name:' "examples/configs/recipes/atlas/${CONFIG_NAME}" 2>/dev/null | awk '{print $2}' | tr -d '"' | tr -d "'")
+if [ -n "$_POLICY_MODEL" ]; then
+    export NRL_HF_PREWARM_DIR="${HF_HOME}/hub/models--${_POLICY_MODEL//\//--}"
+fi
 
 export COMMAND="uv run ${UV_EXTRAS} ${RUN_SCRIPT} \
     --config examples/configs/recipes/atlas/${CONFIG_NAME} \
