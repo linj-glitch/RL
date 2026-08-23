@@ -110,6 +110,19 @@ policy:
     top_k: null
     stop_token_ids: null
     stop_strings: null
+    # vllm 0.25.1 predates the official Qwen3.8 recipe's 0.27 pin; the two
+    # remaining serving suspects for 27b-17's long-prompt degeneration
+    # (on-task openings decaying into system-prompt echo with correct weights
+    # and model-card sampling) both live in the GDN prefill path on that
+    # version. Run the reference kernels and unchunked prefill until a green
+    # run licenses re-enabling them one at a time.
+    vllm_kwargs:
+      # FlashInfer's JIT GDN prefill on SM90 is the auto choice; Triton/FLA is
+      # the reference implementation.
+      gdn_prefill_backend: triton
+      # Linear-attention state handoff across prefill chunks is the classic
+      # young-arch bug: a ~10k-token agent prompt spans ~5 chunks.
+      enable_chunked_prefill: false
     vllm_cfg:
       async_engine: true            # required for the NeMo-Gym path
       tensor_parallel_size: 4
