@@ -103,7 +103,11 @@ policy:
     # smoke-scale bias, same as other sub-1.0 sampling recipes.)
     temperature: 0.6
     top_p: 0.95
-    top_k: 20
+    # NeMo-RL's NeMo-Gym rollout path asserts top_k is unset (27b-16); the
+    # served model's generation_config.json already defaults top_k=20 for
+    # request fields the proxy leaves unset, so the effective sampling matches
+    # the model card anyway.
+    top_k: null
     stop_token_ids: null
     stop_strings: null
     vllm_cfg:
