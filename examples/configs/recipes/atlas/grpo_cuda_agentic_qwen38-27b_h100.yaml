@@ -73,13 +73,14 @@ policy:
     # note; raise with cluster ops before scaling out. Offloading the
     # optimizer lets 27B TP4/DP2 fit one 8xH100 train node.
     cpu_offload: true
-    sequence_parallel: true
-    # The DTensor worker refuses context parallelism together with sequence
-    # parallelism (NVIDIA-NeMo/RL issue 659), so this stays 1 while
-    # sequence_parallel is on. Agentic trajectories are long enough to want
-    # context parallelism; to use it, set sequence_parallel false and raise
-    # this together, and re-measure — one of the two has to give.
-    context_parallel_size: 1
+    # CP over SP: with coherent rollouts the trainer OOMs per-sequence on real
+    # ~15k-token conversations (27b-22 at DP2, 27b-24 at DP4 — DP cannot help
+    # micro-batch-1 memory). CP2 splits each sequence across two GPUs, which
+    # is also the layout long agentic trajectories need at larger models.
+    # sequence_parallel must be off with CP (NVIDIA-NeMo/RL issue 659);
+    # Automodel's cp_linear_attn makes qwen3_5's GDN layers CP-aware.
+    sequence_parallel: false
+    context_parallel_size: 2
   # Packing loads the policy with flash_attention_2 (the packed path's required
   # backend; nemo_rl/models/automodel/setup.py), and flash-attn's varlen kernel
   # intermittently fails with "CUDA error: invalid argument" on packed long
