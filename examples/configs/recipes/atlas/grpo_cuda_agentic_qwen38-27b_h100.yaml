@@ -238,6 +238,12 @@ env:
           sampling_overrides:
             temperature: ${policy.generation.temperature}
             top_p: ${policy.generation.top_p}
+            # Qwen3-Next-family model-card guidance against endless repetition:
+            # at TP2 with healthy weights the failure mode became think-block
+            # repetition loops consuming the whole 16k budget (27b-22 r26).
+            # NOT reflected in trainer logprobs — accepted smoke-scale
+            # off-policy bias; revisit before long training runs.
+            presence_penalty: 1.0
     # Base-model smoke: OpenCode drops reasoning from resent history, so
     # every multi-turn capture splits into multiple roots; train on the
     # delivered main chain instead of masking (strict default masks). The
