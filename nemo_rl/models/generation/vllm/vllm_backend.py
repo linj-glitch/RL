@@ -201,6 +201,12 @@ class VllmInternalWorkerExtension:
     def _load_hf_weights(self, policy_weights: list[tuple[str, torch.Tensor]]) -> None:
         from nemo_rl.models.generation.vllm.quantization import fp8
 
+        if self._use_native_layerwise_reload():
+            # Layerwise reload (armed in _weight_update_lifecycle) buffers raw
+            # bf16 weights and requantizes with the quant method's own native
+            # semantics — NRL's manual fp8 cast must not run here.
+            self._load_full_hf_weights(policy_weights)
+            return
         if fp8.is_fp8_model(self.model_runner.vllm_config):
             fp8.load_weights(policy_weights, self.model_runner)
             return
@@ -617,6 +623,32 @@ class VllmInternalWorkerExtension:
             process_weights_after_loading,
         )
 
+        if self._use_native_layerwise_reload():
+            # The custom DeepseekV4 quant method repacks params after load, so
+            # the model's stacked weight loaders no longer work on the live
+            # params (refit died on 'Parameter' has no
+            # 'load_merged_column_weight'). This wheel ships a layerwise
+            # reload flow (metadata recorded by the dummy loader at init):
+            # restore loadable params on meta, buffer incoming bf16 weights
+            # per layer, then materialize + requantize natively on completion.
+            from vllm.model_executor.model_loader.reload import (
+                finalize_layerwise_reload,
+                initialize_layerwise_reload,
+            )
+
+            initialize_layerwise_reload(self.model_runner.model)
+
+            def native_finalize() -> None:
+                with set_current_vllm_config(self.model_runner.vllm_config):
+                    finalize_layerwise_reload(
+                        self.model_runner.model, self.model_config
+                    )
+                self._maybe_process_mtp_drafter_after_loading()
+
+            yield native_finalize
+            self._maybe_process_fp8_kv_cache()
+            return
+
         def finalize() -> None:
             with set_current_vllm_config(self.model_runner.vllm_config):
                 process_weights_after_loading(
@@ -628,6 +660,12 @@ class VllmInternalWorkerExtension:
         # Preserve the IPC lifetime boundary: the COMPLETE ACK is sent before
         # this optional second pass, just as it was before lifecycle hooks.
         self._maybe_process_fp8_kv_cache()
+
+    def _use_native_layerwise_reload(self) -> bool:
+        """Refit via vLLM's layerwise reload for models whose custom quant
+        method repacks params post-load (currently DeepseekV4)."""
+        quant_config = getattr(self.model_runner.vllm_config, "quant_config", None)
+        return "DeepseekV4" in type(quant_config).__name__
 
     def _weight_update_errors_are_fatal(self) -> bool:
         """Whether transport errors should propagate instead of returning False."""
