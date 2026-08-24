@@ -40,7 +40,7 @@ policy:
   # Agent prompts are ~10k tokens; 16384 fits prompt + a 4k turn and matches
   # the dsv3 template's window. Divisible by TP8 x 2 x CP4 = 64.
   max_total_sequence_length: 16384
-  make_sequence_length_divisible_by: 64
+  make_sequence_length_divisible_by: 16
   # dsv3 template runs unpacked (grpo_math_1B default); if MCore asserts
   # packing-for-CP on this path, first fallback is context_parallel_size: 1.
   sequence_packing:
@@ -51,7 +51,9 @@ policy:
     num_layers_in_first_pipeline_stage: 7
     num_layers_in_last_pipeline_stage: 6
     expert_model_parallel_size: 32
-    context_parallel_size: 4
+    # 24 train nodes = 192 GPUs: TP8 x PP8 = 64-way model, DP3. CP4 needed the
+    # full 256-GPU grid; activation ckpt carries the 16k window at CP1.
+    context_parallel_size: 1
     moe_enable_deepep: true
     moe_token_dispatcher_type: flex
     optimizer:
@@ -69,13 +71,15 @@ policy:
     max_new_tokens: 4096
     temperature: 1.0
     top_p: 1.0
-    # Colocated, as the dsv3 template validated: engines sleep during train
-    # phases (overrides the 27B parent's dedicated-generation-node block).
+    # NON-colocated: 52 GB/GPU of engine weights cannot share a card with
+    # the trainer's shards + load transients (init OOM at util 0.85 and 0.92,
+    # dsv4-9/10). Same 33-node budget, recut: 24 train + 8 generation + 1
+    # eval; refit via NCCL collectives (the layout validated at 27B).
     colocated:
-      enabled: true
+      enabled: false
       resources:
-        gpus_per_node: null
-        num_nodes: null
+        gpus_per_node: 8
+        num_nodes: 8
     vllm_cfg:
       # TP16, not 32: some V4 grouped-BMM weight has <32 groups, so TP32
       # leaves ranks with ZERO groups — DeepGEMM zero-divides (dsv4-7) and
