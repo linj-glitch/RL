@@ -215,7 +215,14 @@ nemo_gym = ["nemo_gym"]
 # CudaGym SDK (thin HTTP client: cudagym.sdk / cudagym.contracts + the `cudagym`
 # CLI) for the atlas kernel envs. Slim by design (no torch) — the driver and the
 # SYSTEM-venv env actors import it (nemo_rl/environments/atlas/*).
-atlas = ["cudagym"]
+atlas = [
+  "cudagym",
+  # DeepSeek-V4 (model_type deepseek_v4) needs transformers >= 5.8 in the
+  # DRIVER venv (AutoConfig/AutoTokenizer at startup; dsv4-1 KeyError). The
+  # automodel/sglang extras cap transformers lower, so atlas is conflict-forked
+  # from them below — they never share a venv with the driver.
+  "transformers>=5.8.1",
+]
 
 [dependency-groups]
 
@@ -448,6 +455,18 @@ constraint-dependencies = [
 exclude-dependencies = ["nvidia-cutlass-dsl-libs-base"]
 
 conflicts = [
+  [
+    { package = "nemo-rl", extra = "atlas" },
+    { package = "nemo-rl", extra = "automodel" },
+  ],
+  [
+    { package = "nemo-rl", extra = "atlas" },
+    { package = "nemo-rl", extra = "sglang" },
+  ],
+  [
+    { package = "nemo-rl", extra = "atlas" },
+    { package = "nemo-rl", extra = "trtllm" },
+  ],
   [
     { package = "nemo-rl", extra = "automodel" },
     { package = "nemo-gym", extra = "vllm" },

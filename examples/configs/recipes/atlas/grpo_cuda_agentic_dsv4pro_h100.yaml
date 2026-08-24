@@ -23,6 +23,13 @@ checkpointing:
 
 policy:
   model_name: "deepseek-ai/DeepSeek-V4-Pro-0813"
+  tokenizer:
+    name: ${policy.model_name}
+    # The HF repo ships NO chat_template (only their custom encoding module);
+    # this file transcribes encoding_dsv4.py — thinking mode, DSML tool
+    # blocks, tool results merged into user turns. Serving and training both
+    # render through it.
+    chat_template: "examples/configs/recipes/atlas/templates/dsv4_thinking.jinja"
   # Agent prompts are ~10k tokens; 16384 fits prompt + a 4k turn and matches
   # the dsv3 template's window. Divisible by TP8 x 2 x CP4 = 64.
   max_total_sequence_length: 16384

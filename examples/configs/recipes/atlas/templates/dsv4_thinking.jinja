@@ -1,0 +1,97 @@
+{#- DeepSeek-V4 chat template (thinking mode), transcribed from the checkpoint's
+    canonical encoder (encoding/encoding_dsv4.py in deepseek-ai/DeepSeek-V4-Pro-0813).
+    The HF repo ships no chat_template, so this file is the serving-side source
+    of truth. Scope: system/user/assistant/tool roles + OpenAI tools, thinking
+    mode with tools present (=> reasoning kept on every assistant turn, per the
+    encoder's effective_drop_thinking=False rule). DSML argument rendering: when
+    a history tool_call's arguments arrive as an unparseable JSON string, we emit
+    the single-parameter fallback exactly as encode_arguments_to_dsml does.  -#}
+{{- '<｜begin▁of▁sentence｜>' -}}
+{%- set dsml = '｜DSML｜' -%}
+{%- set tools_block -%}
+{%- if tools -%}
+## Tools
+
+You have access to a set of tools to help answer the user's question. You can invoke tools by writing a "<{{ dsml }}tool_calls>" block like the following:
+
+<{{ dsml }}tool_calls>
+<{{ dsml }}invoke name="$TOOL_NAME">
+<{{ dsml }}parameter name="$PARAMETER_NAME" string="true|false">$PARAMETER_VALUE</{{ dsml }}parameter>
+...
+</{{ dsml }}invoke>
+<{{ dsml }}invoke name="$TOOL_NAME2">
+...
+</{{ dsml }}invoke>
+</{{ dsml }}tool_calls>
+
+String parameters should be specified as is and set `string="true"`. For all other types (numbers, booleans, arrays, objects), pass the value in JSON format and set `string="false"`.
+
+If thinking_mode is enabled (triggered by <think>), you MUST output your complete reasoning inside <think>...</think> BEFORE any tool calls or final response.
+
+Otherwise, output directly after </think> with tool calls or final response.
+
+### Available Tool Schemas
+
+{% for tool in tools %}{{ tool.function | tojson }}
+{% endfor %}
+You MUST strictly follow the above defined tool name and parameter schemas to invoke tool calls.
+{%- endif -%}
+{%- endset -%}
+{%- set ns = namespace(sys_done=false, in_tool_turn=false) -%}
+{%- for message in messages -%}
+    {%- set next_role = messages[loop.index].role if not loop.last else 'END' -%}
+    {%- if message.role == 'tool' -%}
+        {%- if not ns.in_tool_turn -%}
+            {{- '<｜User｜>' -}}
+            {%- set ns.in_tool_turn = true -%}
+        {%- else -%}
+            {{- '\n\n' -}}
+        {%- endif -%}
+        {{- '<tool_result>' + (message.content if message.content is string else message.content | tojson) + '</tool_result>' -}}
+        {%- if next_role == 'assistant' or next_role == 'END' -%}
+            {{- '<｜Assistant｜><think>' -}}
+            {%- set ns.in_tool_turn = false -%}
+        {%- endif -%}
+    {%- else -%}
+        {%- set ns.in_tool_turn = false -%}
+        {%- if message.role == 'system' -%}
+            {{- message.content if message.content else '' -}}
+            {%- if tools -%}{{- '\n\n' + tools_block -}}{%- endif -%}
+            {%- set ns.sys_done = true -%}
+        {%- elif message.role == 'user' -%}
+            {%- if not ns.sys_done and tools and loop.first -%}
+                {{- tools_block + '\n\n' -}}{%- set ns.sys_done = true -%}
+            {%- endif -%}
+            {{- '<｜User｜>' + (message.content if message.content is string else message.content | tojson) -}}
+            {%- if next_role == 'assistant' or next_role == 'END' -%}
+                {{- '<｜Assistant｜><think>' -}}
+            {%- endif -%}
+        {%- elif message.role == 'assistant' -%}
+            {{- (message.reasoning_content if message.reasoning_content else '') + '</think>' -}}
+            {{- message.content if message.content else '' -}}
+            {%- if message.tool_calls -%}
+                {{- '\n\n<' + dsml + 'tool_calls>\n' -}}
+                {%- for tc in message.tool_calls -%}
+                    {{- '<' + dsml + 'invoke name="' + tc.function.name + '">\n' -}}
+                    {%- if tc.function.arguments is mapping -%}
+                        {%- for k, v in tc.function.arguments | items -%}
+                            {%- if v is string -%}
+                                {{- '<' + dsml + 'parameter name="' + k + '" string="true">' + v + '</' + dsml + 'parameter>\n' -}}
+                            {%- else -%}
+                                {{- '<' + dsml + 'parameter name="' + k + '" string="false">' + (v | tojson) + '</' + dsml + 'parameter>\n' -}}
+                            {%- endif -%}
+                        {%- endfor -%}
+                    {%- else -%}
+                        {{- '<' + dsml + 'parameter name="arguments" string="false">' + tc.function.arguments + '</' + dsml + 'parameter>\n' -}}
+                    {%- endif -%}
+                    {{- '</' + dsml + 'invoke>\n' -}}
+                {%- endfor -%}
+                {{- '</' + dsml + 'tool_calls>' -}}
+            {%- endif -%}
+            {{- '<｜end▁of▁sentence｜>' -}}
+        {%- endif -%}
+    {%- endif -%}
+{%- endfor -%}
+{%- if add_generation_prompt and messages and messages[-1].role not in ['user', 'tool'] -%}
+    {{- '<｜Assistant｜><think>' -}}
+{%- endif -%}
