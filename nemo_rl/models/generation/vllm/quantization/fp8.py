@@ -475,8 +475,38 @@ def quantize_mxfp8_weight(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Ten
     return value, scale
 
 
+def ensure_fp8_config_initialized(vllm_config) -> None:
+    """Lazily build ``global_fp8_config`` inside executor worker processes.
+
+    NRL propagates the fp8 config to workers by patching
+    ``ray_executor.RayDistributedExecutor.collective_rpc``, but engines built
+    on ``ray_executor_v2.RayExecutorV2`` (multiproc-style RPC, used for
+    multi-node PP) never run that hook, so refit lands here with
+    ``global_fp8_config`` unset. Reconstruct the fields the refit load path
+    needs from the worker-visible ``vllm_config``.
+    """
+    global global_fp8_config
+    if global_fp8_config is not None:
+        return
+    quant_cls = type(getattr(vllm_config, "quant_config", None)).__name__
+    global_fp8_config = FP8Config(
+        # DeepseekV4FP8Config's kernels expect ue8m0 (pow2) weight scales.
+        use_weight_pow2_scale="DeepseekV4" in quant_cls,
+        use_activation_pow2_scale=False,
+        model_parallel_size=vllm_config.parallel_config.world_size,
+        kv_cache_dtype=str(vllm_config.cache_config.cache_dtype),
+        use_fp8_weights=True,
+        is_mx="MxFp8" in quant_cls,
+    )
+    logger.warning(
+        f"global_fp8_config was unset in this worker (RayExecutorV2 path); "
+        f"reconstructed from vllm_config: {global_fp8_config}"
+    )
+
+
 def load_weights(weights, model_runner):
     global global_fp8_config
+    ensure_fp8_config_initialized(model_runner.vllm_config)
     weights_quantized = []
     model = model_runner.model
 
