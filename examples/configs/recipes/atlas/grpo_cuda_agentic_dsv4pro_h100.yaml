@@ -94,7 +94,11 @@ policy:
       # eager) (dsv4-11). TP cannot exceed 16 (grouped-BMM zero-groups,
       # dsv4-7/8), so depth-wise is the only way down.
       pipeline_parallel_size: 2
-      gpu_memory_utilization: 0.85
+      # 0.6, deliberately low: vLLM's profiler under-counts V4's ~30GB of
+      # re-charged private pools and then requests a single 61GiB KV block at
+      # 0.85 (dsv4-13). MLA KV is ~35KB/token, so even the small residual
+      # budget (~10GB/GPU) holds >250k tokens — far beyond the smoke's needs.
+      gpu_memory_utilization: 0.6
       enforce_eager: true
       # The checkpoint is fp8-native (e4m3, ue8m0 pow2 scales): route through
       # NeMo-RL's init_fp8 path — precision fp8 unlocks the fp8 KV cache that
