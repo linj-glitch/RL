@@ -13,6 +13,7 @@
 # limitations under the License.
 import logging
 import os
+import random
 import shlex
 import shutil
 import subprocess
@@ -94,8 +95,24 @@ def create_local_venv(
     exec_cmd.extend(["echo", f"Finished creating venv {venv_path}"])
 
     # Always run uv sync first to ensure the build requirements are set (for --no-build-isolation packages)
-    subprocess.run(["uv", "sync", "--directory", git_root], env=env, check=True)
-    subprocess.run(exec_cmd, env=env, check=True)
+    # Editable packages with C extensions (e.g. megatron-core) are rebuilt into the
+    # shared source tree; concurrent builders on different nodes race on the
+    # delete+copy of the built .so, so retry with jitter on failure.
+    max_attempts = 5
+    for attempt in range(1, max_attempts + 1):
+        try:
+            subprocess.run(["uv", "sync", "--directory", git_root], env=env, check=True)
+            subprocess.run(exec_cmd, env=env, check=True)
+            break
+        except subprocess.CalledProcessError:
+            if attempt == max_attempts:
+                raise
+            delay = random.uniform(5, 30) * attempt
+            logger.warning(
+                f"venv sync for {venv_name} failed (attempt {attempt}/{max_attempts}), "
+                f"retrying in {delay:.0f}s (likely a concurrent editable-build race)"
+            )
+            time.sleep(delay)
 
     # Return the path to the python executable in the virtual environment
     python_path = os.path.join(venv_path, "bin", "python")
