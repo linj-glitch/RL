@@ -69,11 +69,12 @@ export UV_CACHE_SEED_TAR=${UV_CACHE_SEED_TAR:-${CACHE_PATH}/uv-cache-seed.tar}
 # ~1 min first-request compile per engine per job and de-risks first-prefill
 # JIT stalls. Written once per config, read thereafter.
 export VLLM_CACHE_ROOT=${VLLM_CACHE_ROOT:-${CACHE_PATH}/vllm}
-# DeepGEMM's fp8-block post-process divides by a zero grouped-BMM batch on
-# some TP32 shards of DeepSeek-V4 (kernelwriter-dsv4-7); the cutlass/triton
-# block-fp8 kernels serve the same layers correctly. Scope: only fp8-block
-# models consult this.
-export VLLM_USE_DEEP_GEMM=${VLLM_USE_DEEP_GEMM:-0}
+# DeepGEMM stays ON: its dsv4-7 ZeroDivision was a symptom of TP32 sharding a
+# grouped-BMM weight to zero groups (fixed by TP16), while the cutlass c3x
+# fallback rejects V4's block-fp8 shapes at ANY TP (dsv4-8 at TP32, dsv4-12 at
+# TP16: dispatch_scaled_mm hpp:17). DeepGEMM is the kernel this model was
+# built for.
+export VLLM_USE_DEEP_GEMM=${VLLM_USE_DEEP_GEMM:-1}
 export TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-${CACHE_PATH}/triton}
 export TORCHINDUCTOR_CACHE_DIR=${TORCHINDUCTOR_CACHE_DIR:-${CACHE_PATH}/inductor}
 mkdir -p "$VLLM_CACHE_ROOT" "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR" 2>/dev/null || true
