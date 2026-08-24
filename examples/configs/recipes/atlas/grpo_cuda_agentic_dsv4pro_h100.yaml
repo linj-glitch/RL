@@ -50,9 +50,12 @@ policy:
     pipeline_model_parallel_size: 8
     num_layers_in_first_pipeline_stage: 7
     num_layers_in_last_pipeline_stage: 6
-    expert_model_parallel_size: 32
-    # 24 train nodes = 192 GPUs: TP8 x PP8 = 64-way model, DP3. CP4 needed the
-    # full 256-GPU grid; activation ckpt carries the 16k window at CP1.
+    # EP x PP must divide the world: at 24 train nodes (192 GPUs) the dsv3
+    # template's EP32 x PP8 = 256-grid doesn't fit (dsv4-15). EP24 x PP8 = 192
+    # exactly; 384 experts / 24 = 16 per rank.
+    expert_model_parallel_size: 24
+    # CP4 needed the full 256-GPU grid; activation ckpt carries the 16k
+    # window at CP1.
     context_parallel_size: 1
     moe_enable_deepep: true
     moe_token_dispatcher_type: flex
