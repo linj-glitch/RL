@@ -18,6 +18,13 @@
 # Submit with --num-nodes 33 (+1 trailing CudaGym eval node).
 defaults: "grpo_cuda_agentic_qwen38-27b_h100.yaml"
 
+# FP8 generation vs bf16 trainer logprobs is a real distribution gap; NeMo-RL
+# refuses FP8 rollouts without IS correction (dsv4-4), and the dsv3 recipe
+# ships the same pair.
+loss_fn:
+  use_importance_sampling_correction: true
+  use_on_policy_kl_approximation: true
+
 checkpointing:
   checkpoint_dir: "results/grpo-cuda-agentic-dsv4pro"
 
