@@ -99,9 +99,10 @@ policy:
         # (the 27B pairing rule, commit 8a3483eb).
         tool_parser: deepseek_v4
         reasoning_parser: deepseek_v4
-    vllm_kwargs:
-      # dsv3 template's MoE backend for H100 serving.
-      moe_backend: triton
+    # No moe_backend override: the dsv3 template's `triton` cannot serve
+    # V4's MXFP4 experts (SILU unsupported, dsv4-6); the build ships a
+    # dedicated deepseek_v4 MXFP4 backend oracle — let it choose.
+    vllm_kwargs: {}
 
 env:
   nemo_gym:
