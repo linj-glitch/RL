@@ -1332,12 +1332,23 @@ def setup(
             assert policy_config["dtensor_cfg"]["enabled"] == False, (
                 "DTensor backend is not supported with kv cache fp8 enabled."
             )
-            assert not should_use_async_rollouts(generation_config), (
-                "Async rollouts is not supported with kv cache fp8 enabled."
+            # The async-rollouts and PP1 restrictions exist for the
+            # trainer-side KV-scale calibration/refit pipeline (per-tensor fp8
+            # KV). Layouts with dynamic per-block scales (DeepSeek-V4
+            # fp8_ds_mla: UE8M0 scales computed at cache-write time) never
+            # touch that pipeline — requires_kv_scale_sync is False — so the
+            # restrictions do not apply. Declared via
+            # vllm_cfg.dynamic_kv_block_scales.
+            _dynamic_kv_scales = generation_config["vllm_cfg"].get(
+                "dynamic_kv_block_scales", False
             )
-            assert policy_config["megatron_cfg"]["pipeline_model_parallel_size"] == 1, (
-                "Currently when using FP8 KV cache in generation, then in megatron we only support pipeline_model_parallel_size=1. We will add more support in future."
-            )
+            if not _dynamic_kv_scales:
+                assert not should_use_async_rollouts(generation_config), (
+                    "Async rollouts is not supported with kv cache fp8 enabled."
+                )
+                assert policy_config["megatron_cfg"]["pipeline_model_parallel_size"] == 1, (
+                    "Currently when using FP8 KV cache in generation, then in megatron we only support pipeline_model_parallel_size=1. We will add more support in future."
+                )
 
         configure_vllm_for_router_replay(policy_config)
         vllm_kwargs = generation_config.setdefault("vllm_kwargs", {})

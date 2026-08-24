@@ -1284,7 +1284,14 @@ class VllmGeneration(GenerationInterface):
         """Check if KV cache scales should be synchronized during refit.
 
         Returns True if kv_cache_dtype is fp8/fp8_e4m3.
+
+        Models whose engine-side cache layout computes scales dynamically per
+        block (e.g. DeepSeek-V4's fp8_ds_mla: UE8M0 block scales packed into
+        the token slot at write time) have no per-tensor scales to calibrate
+        or ship at refit — declare that with vllm_cfg.dynamic_kv_block_scales.
         """
+        if self.cfg["vllm_cfg"].get("dynamic_kv_block_scales", False):
+            return False
         return "kv_cache_dtype" in self.cfg["vllm_cfg"] and self.cfg["vllm_cfg"][
             "kv_cache_dtype"
         ].startswith("fp8")
