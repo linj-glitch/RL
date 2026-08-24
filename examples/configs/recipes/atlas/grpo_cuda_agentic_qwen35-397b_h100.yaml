@@ -1,0 +1,89 @@
+# Agentic GRPO on CudaGym / KernelFactory — Qwen3.5-397B-A17B on 256 H100s.
+# Lin's large-model trial (2026-08-24): the trainer parallelism is copied from
+# upstream's VALIDATED recipe for this exact model
+# (examples/configs/recipes/llm/grpo-qwen3.5-397ba17b-32n8g-megatron.v2.yaml:
+# TP8 x PP8 x EP32 across 32 nodes, vLLM at TP16/EP64), layered onto our
+# agentic env (defaults chain). Serving dialect follows Alexander's
+# 3.5-family agentic recipe (qwen3_xml tools, no reasoning split — the
+# 2507-style A17B instruct is non-thinking).
+#
+# Submit with --num-nodes 33: 32 train/generation (colocated, as upstream
+# validated — one TP16/EP64 engine spans 8 nodes, so disaggregating would
+# double the fleet) + 1 trailing CudaGym eval node.
+defaults: "grpo_cuda_agentic_qwen38-27b_h100.yaml"
+
+checkpointing:
+  checkpoint_dir: "results/grpo-cuda-agentic-qwen35-397b"
+
+policy:
+  model_name: "Qwen/Qwen3.5-397B-A17B"
+  # Agent prompts are ~10k tokens; 16384 fits prompt + one 4k turn with room,
+  # and divides TP8. (Upstream ran 8192 for math; too small for OpenCode.)
+  max_total_sequence_length: 16384
+  # Upstream runs this model UNPACKED; packing+MoE+agentic is an untested
+  # combination, so mirror upstream until the smoke is green.
+  sequence_packing:
+    enabled: false
+  megatron_cfg:
+    tensor_model_parallel_size: 8
+    pipeline_model_parallel_size: 8
+    # Uneven first/last stages balance the embedding/lm-head layers.
+    num_layers_in_first_pipeline_stage: 6
+    num_layers_in_last_pipeline_stage: 6
+    expert_model_parallel_size: 32
+    moe_token_dispatcher_type: allgather
+    optimizer:
+      lr: 1.0e-06
+      min_lr: 1.0e-06
+      weight_decay: 0.1
+      use_precision_aware_optimizer: false
+    scheduler:
+      lr_decay_iters: null
+      lr_warmup_iters: 10
+      lr_warmup_init: 1.0e-07
+  generation:
+    # A17B instruct is non-thinking: no think-loop hazard, so return to the
+    # family convention (Alexander's recipes document temperature/top_p 1.0
+    # as the on-policy hard constraint).
+    temperature: 1.0
+    top_p: 1.0
+    # Upstream's validated colocated layout for this model — engines sleep
+    # during training phases and wake for generation (overrides the 27B
+    # parent's dedicated-generation-node block).
+    colocated:
+      enabled: true
+      resources:
+        gpus_per_node: null
+        num_nodes: null
+    vllm_cfg:
+      tensor_parallel_size: 16
+      expert_parallel_size: 64
+      enable_expert_parallel: true
+      gpu_memory_utilization: 0.7
+      http_server_serving_chat_kwargs:
+        enable_auto_tools: true
+        # Qwen3.5's template emits XML-dialect calls (<function=...> blocks);
+        # hermes/qwen3_coder fail to parse them (Alexander's 35B-A3B note).
+        tool_parser: qwen3_xml
+
+env:
+  nemo_gym:
+    policy_model:
+      responses_api_models:
+        vllm_model:
+          # No reasoning parser on the serving side (non-thinking instruct),
+          # so the proxy must not expect a reasoning split — the 27B pairing
+          # rule in reverse (see 8a3483eb).
+          uses_reasoning_parser: false
+          # temp/top_p only: presence_penalty was a 3.8 think-loop
+          # countermeasure and penalizes repeated identifiers in code.
+          sampling_overrides:
+            temperature: ${policy.generation.temperature}
+            top_p: ${policy.generation.top_p}
+
+logger:
+  log_dir: "logs/grpo-cuda-agentic-qwen35-397b"
+
+cluster:
+  gpus_per_node: 8
+  num_nodes: 32

@@ -109,16 +109,13 @@ policy:
     # trainer's per-sequence footprint drops — 27b-22 OOM'd in train() once
     # rollouts became real full-length conversations. Raise for real tasks.
     max_new_tokens: 4096
-    # Qwen3.8 thinking mode destabilizes at temperature 1.0 / top_p 1.0: with
-    # correct weights (post-fa3c6128) 27b-15 still produced on-task openings
-    # that derailed into system-prompt word salad within sentences, and 31/32
-    # rollouts wrote no kernel. The model card's recommended sampling for
-    # thinking is 0.6/0.95/20. These flow everywhere on-policy: the vLLM
-    # server asserts requests match them, the Gym proxy's sampling_overrides
-    # interpolate them, and NeMo-RL applies the temperature in logprob
-    # computation. (top_k truncation is not reflected in logprobs — accepted
-    # smoke-scale bias, same as other sub-1.0 sampling recipes.)
-    temperature: 0.6
+    # 1.0 per Lin's directive (GRPO needs generation diversity) and the
+    # family convention (Alexander's recipes document temp/top_p 1.0 as the
+    # on-policy hard constraint). Known caveat: Qwen3.8 thinking mode is less
+    # stable at 1.0 (27b-15/17 think-derailment; 0.6 helped) — but rollout
+    # quality for this base model is gated on serving/SFT regardless, and
+    # this recipe's current job is validating the Megatron path.
+    temperature: 1.0
     # top_p MUST stay 1.0: any other value makes the trainer's loss path
     # replicate top-p over the raw train logits — a seq_len x 248k-vocab
     # sort/mask that allocates ~22 GiB per micro-batch and OOMs on real-length
