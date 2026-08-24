@@ -61,6 +61,10 @@ policy:
   train_global_batch_size: 32
   train_micro_batch_size: 1
   precision: "bfloat16"
+  # The base config interpolates this from the DTENSOR TP, which resolves to
+  # 1 with dtensor disabled — Megatron's packed logprob path then asserts
+  # (needs a multiple of TP*2*CP; 27b-27). Same expression the dsv3 recipe uses.
+  make_sequence_length_divisible_by: ${mul:${policy.megatron_cfg.tensor_model_parallel_size}, ${mul:2, ${policy.megatron_cfg.context_parallel_size}}}
   # MEGATRON BACKEND (Lin's directive 2026-08-24): the scale path toward
   # trillion-param models — PP/EP/CP compose here where DTensor tops out
   # (no pipeline parallelism; CP rejected for qwen3_5 dense, 27b-25; and
