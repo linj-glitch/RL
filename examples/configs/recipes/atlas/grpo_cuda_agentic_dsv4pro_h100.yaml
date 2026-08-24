@@ -103,7 +103,7 @@ policy:
       enabled: false
       resources:
         gpus_per_node: 8
-        num_nodes: 8
+        num_nodes: 12
     vllm_cfg:
       # TP16, not 32: some V4 grouped-BMM weight has <32 groups, so TP32
       # leaves ranks with ZERO groups — DeepGEMM zero-divides (dsv4-7) and
@@ -117,7 +117,7 @@ policy:
       # buffers, aux-stream private pools; 7.15 GB "private pools" despite
       # eager) (dsv4-11). TP cannot exceed 16 (grouped-BMM zero-groups,
       # dsv4-7/8), so depth-wise is the only way down.
-      pipeline_parallel_size: 2
+      pipeline_parallel_size: 3
       # 0.5: vLLM's profiler sees only ~6GB of V4's real ~38GB rank footprint
       # (custom pools escape its accounting), so the KV grab is exactly
       # util*79.11 - 6.13GB regardless of what is actually free (61.1GB @0.85,
