@@ -63,6 +63,11 @@ export GPUS_PER_NODE=${GPUS_PER_NODE:-DEFAULT_GPUS_PER_NODE}
 # with zero network. Refresh the seed after a lock bump:
 #   cd $CACHE_PATH && tar -cf uv-cache-seed.tar.tmp uv && mv uv-cache-seed.tar.tmp uv-cache-seed.tar
 export HF_HOME=${CACHE_PATH}/huggingface
+# Everything is prewarmed into HF_HOME; offline mode makes hub resolution
+# purely cache-deterministic. With it unset, every rank's snapshot_download
+# does a network etag check and one hub flake across hundreds of ranks
+# poisons path resolution (dsv4-27: "No .safetensors files or index found").
+export HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}
 export UV_CACHE_SEED_TAR=${UV_CACHE_SEED_TAR:-${CACHE_PATH}/uv-cache-seed.tar}
 # vLLM torch.compile/AOT artifacts (NeMo-RL appends a per-engine seed suffix to
 # this base) plus the triton/inductor JIT caches: persisting them skips the

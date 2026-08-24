@@ -31,6 +31,11 @@ defaults: "grpo_cuda_agentic_qwen38-27b_h100.yaml"
 loss_fn:
   use_importance_sampling_correction: true
   use_on_policy_kl_approximation: true
+  # KL=0 skips the reference model entirely (init_reference_model gates on
+  # kl_penalty > 0). At TP1 the 1.6T reference costs ~29GB/GPU and stays
+  # GPU-resident (dsv4-26 OOM: 44GB policy + 29GB ref + reload > 79GB).
+  # Restoring KL for long runs needs a CPU-hosted reference state.
+  reference_policy_kl_penalty: 0.0
 
 checkpointing:
   checkpoint_dir: "results/grpo-cuda-agentic-dsv4pro"
@@ -53,7 +58,16 @@ policy:
   sequence_packing:
     enabled: false
   megatron_cfg:
-    tensor_model_parallel_size: 8
+    # dsv4-25 OOM'd in reload_from_cpu grabbing a 13.8GB contiguous buffer
+    # with 2GB reserved-but-unallocated; expandable segments removes the
+    # contiguity requirement. Scoped here so vLLM workers keep cuMem.
+    env_vars:
+      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+    # dsv4_hybrid attention (CSA indexer kernels) hard-asserts TP=1 (dsv4-22);
+    # the 192-GPU grid recuts as TP1 x PP8 x EP24 -> DP24, batch 24 % DP24 = 0.
+    # SP requires TP>1, so it stays off.
+    tensor_model_parallel_size: 1
+    sequence_parallel: false
     pipeline_model_parallel_size: 8
     num_layers_in_first_pipeline_stage: 7
     num_layers_in_last_pipeline_stage: 6

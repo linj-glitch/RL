@@ -375,8 +375,10 @@ def _get_module_from_param_name(model, name: str):
     # The module path is all but the last part (the parameter's own name)
     path_parts = name.split(".")
     module_path = path_parts[:-1]
-    # Replace with the fused model name
-    packed_modules_mapping = model.packed_modules_mapping
+    # Replace with the fused model name. Not every model class declares
+    # packed_modules_mapping (e.g. the custom DeepseekV4ForCausalLM has no
+    # fused modules) — treat missing as "no remapping".
+    packed_modules_mapping = getattr(model, "packed_modules_mapping", None) or {}
     reversed_mapping = {
         original_name: fused_name
         for fused_name, original_names_list in packed_modules_mapping.items()
