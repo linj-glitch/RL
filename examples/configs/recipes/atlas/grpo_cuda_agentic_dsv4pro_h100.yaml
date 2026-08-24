@@ -16,6 +16,13 @@
 # to live there.
 #
 # Submit with --num-nodes 33 (+1 trailing CudaGym eval node).
+#
+# TRAINER PREREQ: the vendored Megatron-LM working tree must be on the
+# internal dsv4_mtp branch (gitlab-master ADLR/megatron-lm @ 8fd14d526) —
+# public MLM has no `dsv4_hybrid` experimental attention variant (dsv4-16;
+# checked MLM main, bridge-main's pin, and PR-3772's pin). The exp upload
+# ships working trees, so a checkout suffices; proper fork/pin bookkeeping
+# pending.
 defaults: "grpo_cuda_agentic_qwen38-27b_h100.yaml"
 
 # FP8 generation vs bf16 trainer logprobs is a real distribution gap; NeMo-RL
