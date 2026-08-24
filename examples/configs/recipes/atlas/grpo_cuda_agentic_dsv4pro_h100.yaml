@@ -103,7 +103,7 @@ policy:
       enabled: false
       resources:
         gpus_per_node: 8
-        num_nodes: 12
+        num_nodes: 6
     vllm_cfg:
       # TP16, not 32: some V4 grouped-BMM weight has <32 groups, so TP32
       # leaves ranks with ZERO groups — DeepGEMM zero-divides (dsv4-7) and
