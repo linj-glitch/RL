@@ -186,6 +186,14 @@ def import_model_from_hf_name(
         model_provider.gradient_accumulation_fusion = megatron_config[
             "gradient_accumulation_fusion"
         ]
+        # Honor the MTP setting during import too. Otherwise the provider keeps
+        # the HF config's MTP layers, which some bridges (e.g. DeepSeek-V4)
+        # have no weight mappings for — they would be built, left at random
+        # init, and saved into the converted checkpoint.
+        if hasattr(model_provider, "mtp_num_layers"):
+            model_provider.mtp_num_layers = (
+                megatron_config.get("mtp_num_layers", 0) or None
+            )
     if transformer_layer_spec is not None:
         model_provider.transformer_layer_spec = transformer_layer_spec
     if mamba_stack_spec is not None:
