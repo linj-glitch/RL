@@ -72,6 +72,9 @@ policy:
     vllm_cfg:
       tensor_parallel_size: 32
       gpu_memory_utilization: 0.75
+      # V4's fp8_ds_mla cache layout asserts on anything else (dsv4-2:
+      # "only supports fp8 kv-cache, got auto"). MLA KV is tiny anyway.
+      kv_cache_dtype: "fp8"
       http_server_serving_chat_kwargs:
         enable_auto_tools: true
         # Matched pair registered as `deepseek_v4` in this vLLM build
