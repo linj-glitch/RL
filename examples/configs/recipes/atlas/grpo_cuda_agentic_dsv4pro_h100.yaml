@@ -1,0 +1,99 @@
+# Agentic GRPO on CudaGym / KernelFactory — DeepSeek-V4-Pro-0813 (1.6T MoE,
+# 49B active, MLA + DSA) on 32 train nodes. Lin's target model (2026-08-24).
+#
+# Trainer layout is upstream's validated DeepSeek-V3 671B template
+# (grpo-dapomath17k-dsv3-megatron.yaml: TP8 x PP8 x EP32 x CP4, DeepEP flex,
+# 61 layers split 7/6 first/last — V4-Pro is also 61 layers) with the
+# 1.6T memory delta carried by optimizer offload: per-GPU fp32 Adam state is
+# ~75 GB at 256 GPUs, so the optimizer lives in host RAM (2 TB/node, ~600
+# GB/node used) with precision-aware states and overlapped H2D/D2H.
+#
+# The checkpoint is FP8-native: Megatron-Bridge's deepseek_v4_bridge imports
+# and dequantizes to bf16 (Pro variant listed); vLLM serves the FP8 weights
+# directly (50 GB/GPU awake at TP32 — same colocated envelope the V3 recipe
+# validated at 42 GB/GPU bf16). KNOWN BOSS FIGHT: refit crosses the
+# bf16-trainer -> fp8-server precision gap every step; expect the fix loop
+# to live there.
+#
+# Submit with --num-nodes 33 (+1 trailing CudaGym eval node).
+defaults: "grpo_cuda_agentic_qwen38-27b_h100.yaml"
+
+checkpointing:
+  checkpoint_dir: "results/grpo-cuda-agentic-dsv4pro"
+
+policy:
+  model_name: "deepseek-ai/DeepSeek-V4-Pro-0813"
+  # Agent prompts are ~10k tokens; 16384 fits prompt + a 4k turn and matches
+  # the dsv3 template's window. Divisible by TP8 x 2 x CP4 = 64.
+  max_total_sequence_length: 16384
+  make_sequence_length_divisible_by: 64
+  # dsv3 template runs unpacked (grpo_math_1B default); if MCore asserts
+  # packing-for-CP on this path, first fallback is context_parallel_size: 1.
+  sequence_packing:
+    enabled: false
+  megatron_cfg:
+    tensor_model_parallel_size: 8
+    pipeline_model_parallel_size: 8
+    num_layers_in_first_pipeline_stage: 7
+    num_layers_in_last_pipeline_stage: 6
+    expert_model_parallel_size: 32
+    context_parallel_size: 4
+    moe_enable_deepep: true
+    moe_token_dispatcher_type: flex
+    optimizer:
+      lr: 5.0e-07
+      min_lr: 5.0e-08
+      # Halves the offloaded state (bf16 moments) and the PCIe traffic.
+      use_precision_aware_optimizer: true
+      optimizer_cpu_offload: true
+      optimizer_offload_fraction: 1.0
+      overlap_cpu_optimizer_d2h_h2d: true
+    scheduler:
+      lr_warmup_init: 5.0e-08
+  generation:
+    # A17B-class MoE decode is fast; keep the smoke turn cap.
+    max_new_tokens: 4096
+    temperature: 1.0
+    top_p: 1.0
+    # Colocated, as the dsv3 template validated: engines sleep during train
+    # phases (overrides the 27B parent's dedicated-generation-node block).
+    colocated:
+      enabled: true
+      resources:
+        gpus_per_node: null
+        num_nodes: null
+    vllm_cfg:
+      tensor_parallel_size: 32
+      gpu_memory_utilization: 0.75
+      http_server_serving_chat_kwargs:
+        enable_auto_tools: true
+        # Matched pair registered as `deepseek_v4` in this vLLM build
+        # (deepseekv4_engine_tool_parser / deepseek_v4_engine_reasoning_parser);
+        # the proxy-side uses_reasoning_parser below MUST stay in sync
+        # (the 27B pairing rule, commit 8a3483eb).
+        tool_parser: deepseek_v4
+        reasoning_parser: deepseek_v4
+    vllm_kwargs:
+      # dsv3 template's MoE backend for H100 serving.
+      moe_backend: triton
+
+env:
+  nemo_gym:
+    policy_model:
+      responses_api_models:
+        vllm_model:
+          # Reasoning parser is ON serving-side (V4-Pro thinks), so the proxy
+          # must re-wrap reasoning into content.
+          uses_reasoning_parser: true
+          # temp/top_p only — presence_penalty was a Qwen3.8 think-loop
+          # countermeasure and penalizes repeated identifiers in code.
+          sampling_overrides:
+            temperature: ${policy.generation.temperature}
+            top_p: ${policy.generation.top_p}
+
+logger:
+  log_dir: "logs/grpo-cuda-agentic-dsv4pro"
+
+cluster:
+  gpus_per_node: 8
+  num_nodes: 32
