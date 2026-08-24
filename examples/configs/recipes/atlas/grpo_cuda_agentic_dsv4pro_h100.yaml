@@ -83,7 +83,13 @@ policy:
       # dispatch (dsv4-8). At TP16 every rank keeps >=1 group; fp8 weights
       # are 52 GB/GPU, hence the higher memory fraction.
       tensor_parallel_size: 16
-      gpu_memory_utilization: 0.85
+      # 52 GB/GPU of fp8 weights: give vLLM nearly the whole card and skip
+      # CUDA-graph capture (graphs + capture workspace OOM'd init at 0.85,
+      # dsv4-9; Alexander's MoE recipes run enforce_eager for the same
+      # reason). Colocation survives because the trainer's optimizer lives
+      # in host RAM.
+      gpu_memory_utilization: 0.92
+      enforce_eager: true
       # The checkpoint is fp8-native (e4m3, ue8m0 pow2 scales): route through
       # NeMo-RL's init_fp8 path — precision fp8 unlocks the fp8 KV cache that
       # V4's fp8_ds_mla layout requires (dsv4-2) and satisfies the
