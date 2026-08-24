@@ -15,6 +15,6 @@
 	shallow = true
 [submodule "3rdparty/solswarm"]
 	path = 3rdparty/solswarm
-	url = ssh://git@gitlab-master.nvidia.com:12051/atlas/solswarm.git
-	branch = alexandery/rl-integration
+	url = https://gitlab-master.nvidia.com/atlas/solswarm.git
+	branch = linj/kernelwriter
 	shallow = true
