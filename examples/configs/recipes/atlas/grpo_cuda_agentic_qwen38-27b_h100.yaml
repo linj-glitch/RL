@@ -61,25 +61,35 @@ policy:
   train_global_batch_size: 32
   train_micro_batch_size: 1
   precision: "bfloat16"
+  # MEGATRON BACKEND (Lin's directive 2026-08-24): the scale path toward
+  # trillion-param models — PP/EP/CP compose here where DTensor tops out
+  # (no pipeline parallelism; CP rejected for qwen3_5 dense, 27b-25; and
+  # Alexander documents a DTensor CP logprob-correctness bug in his longctx
+  # recipe). Megatron-Bridge maps qwen3_5 dense incl. GatedDeltaNet params
+  # (qwen35_bridge.py), so the dtensor _fp32_params refit rename does not
+  # apply on this path — bridge param mapping is the analogous bug surface
+  # to watch.
   dtensor_cfg:
+    enabled: false
+  megatron_cfg:
     enabled: true
-    # TP must divide num_key_value_heads (4): TP8 leaves half a KV head per
-    # rank and the qwen3_5 forward reshape fails (27b-2). TP4 + DP over 4
-    # train nodes carries the optimizer state instead.
-    tensor_parallel_size: 4
-    activation_checkpointing: true
-    # 2-node envelope: every >=3-node job on this account gets reaped by
-    # svc-hwinf-cs-sched at the partition DefaultTime (~31min) — see memory
-    # note; raise with cluster ops before scaling out. Offloading the
-    # optimizer lets 27B TP4/DP2 fit one 8xH100 train node.
-    cpu_offload: true
-    sequence_parallel: true
-    # CP is rejected for Qwen3.5 DENSE models by the DTensor worker ("only
-    # torch attention backend is available", 27b-25); the MoE variant supports
-    # it via TE. Long-trajectory memory relief must come from elsewhere (the
-    # 27b-22/24 train OOM turned out to be the top-p loss path, not attention
-    # — see generation.top_p).
+    # Required by MCore whenever logprob_chunk_size is set (and keeps the
+    # fp32 logit conversion out of the peak-memory window).
+    defer_fp32_logits: true
+    # 27B dense bf16 = ~13.5 GB/GPU weights at TP4; KV heads (4) divide TP4
+    # exactly (TP8 fails the head split, 27b-2). Distributed optimizer shards
+    # states over DP=4 (2 train nodes / TP4 / CP1).
+    tensor_model_parallel_size: 4
+    pipeline_model_parallel_size: 1
+    # CP1 for the first Megatron validation: CP over the GDN linear-attention
+    # layers of the DENSE variant is unproven on MCore (Alexander ran CP2 on
+    # the MoE variant and CP8 on stock qwen3). Packing below is already on,
+    # so raising CP later is a one-knob change.
     context_parallel_size: 1
+    sequence_parallel: true
+    activation_checkpointing: true
+    # Mirrors Alexander's qwen3.5-family Megatron recipe.
+    apply_rope_fusion: false
   # Packing loads the policy with flash_attention_2 (the packed path's required
   # backend; nemo_rl/models/automodel/setup.py), and flash-attn's varlen kernel
   # intermittently fails with "CUDA error: invalid argument" on packed long
@@ -88,7 +98,10 @@ policy:
   # wall time, so packing's training-step speedup is not worth the crash rate;
   # re-enable per-run with ++policy.sequence_packing.enabled=true.
   sequence_packing:
-    enabled: false
+    # Megatron packs through Transformer Engine — the automodel path's
+    # flash-attn varlen instability (the original reason packing was off)
+    # does not apply, and MCore requires packing for context parallelism.
+    enabled: true
   generation:
     backend: "vllm"
     # Per-call cap. 4096 for smoke: think-loops then cost one short turn
