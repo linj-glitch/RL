@@ -77,8 +77,13 @@ policy:
         gpus_per_node: null
         num_nodes: null
     vllm_cfg:
-      tensor_parallel_size: 32
-      gpu_memory_utilization: 0.75
+      # TP16, not 32: some V4 grouped-BMM weight has <32 groups, so TP32
+      # leaves ranks with ZERO groups — DeepGEMM zero-divides (dsv4-7) and
+      # the cutlass c3x fallback rejects the same degenerate shards at
+      # dispatch (dsv4-8). At TP16 every rank keeps >=1 group; fp8 weights
+      # are 52 GB/GPU, hence the higher memory fraction.
+      tensor_parallel_size: 16
+      gpu_memory_utilization: 0.85
       # The checkpoint is fp8-native (e4m3, ue8m0 pow2 scales): route through
       # NeMo-RL's init_fp8 path — precision fp8 unlocks the fp8 KV cache that
       # V4's fp8_ds_mla layout requires (dsv4-2) and satisfies the
