@@ -69,6 +69,11 @@ export UV_CACHE_SEED_TAR=${UV_CACHE_SEED_TAR:-${CACHE_PATH}/uv-cache-seed.tar}
 # ~1 min first-request compile per engine per job and de-risks first-prefill
 # JIT stalls. Written once per config, read thereafter.
 export VLLM_CACHE_ROOT=${VLLM_CACHE_ROOT:-${CACHE_PATH}/vllm}
+# DeepGEMM's fp8-block post-process divides by a zero grouped-BMM batch on
+# some TP32 shards of DeepSeek-V4 (kernelwriter-dsv4-7); the cutlass/triton
+# block-fp8 kernels serve the same layers correctly. Scope: only fp8-block
+# models consult this.
+export VLLM_USE_DEEP_GEMM=${VLLM_USE_DEEP_GEMM:-0}
 export TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-${CACHE_PATH}/triton}
 export TORCHINDUCTOR_CACHE_DIR=${TORCHINDUCTOR_CACHE_DIR:-${CACHE_PATH}/inductor}
 mkdir -p "$VLLM_CACHE_ROOT" "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR" 2>/dev/null || true
