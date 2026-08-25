@@ -2280,6 +2280,59 @@ class MegatronPolicyWorkerImpl(
             if task is not None
         ]
 
+    def _prefill_pp_broadcast_spec_cache(self, conversion_tasks) -> None:
+        """Batch the Bridge's per-tensor PP spec handshakes into one exchange.
+
+        Megatron-Bridge's ``broadcast_from_pp_rank`` does a blocking gloo
+        ``all_gather_object`` per tensor to learn (shape, dtype, tp attrs) —
+        ~50k+ serial CPU collectives for a 384-expert MoE, dominating the
+        first refit (NeMo-RL #1189 measured the same on DSv3: 693s -> 47s).
+        The result is cached per mapping under ``cache_key=str(hf_param)``;
+        prefill exactly that cache with ONE all_gather of every task's local
+        param spec. Suffixed cache keys (e.g. MLA "_q"/"_scale" splits) are
+        left to the slow path — they are a small minority of tensors.
+        """
+        pp_group = None
+        for task in conversion_tasks:
+            mapping = getattr(task, "mapping", None)
+            if mapping is not None and getattr(mapping, "pp_group", None) is not None:
+                pp_group = mapping.pp_group
+                break
+        if pp_group is None or torch.distributed.get_world_size(pp_group) == 1:
+            return
+
+        local_specs: dict[str, Optional[tuple]] = {}
+        for task in conversion_tasks:
+            mapping = getattr(task, "mapping", None)
+            if mapping is None or not hasattr(mapping, "_tensor_spec_output_cache"):
+                continue
+            key = str(mapping.hf_param)
+            weight = task.param_weight
+            if weight is None:
+                local_specs.setdefault(key, None)
+            else:
+                local_specs[key] = (
+                    weight.shape,
+                    weight.dtype,
+                    getattr(weight, "tensor_model_parallel", None),
+                    getattr(weight, "partition_dim", None),
+                )
+
+        pp_size = torch.distributed.get_world_size(pp_group)
+        gathered: list[Optional[dict]] = [None] * pp_size
+        torch.distributed.all_gather_object(gathered, local_specs, group=pp_group)
+
+        for task in conversion_tasks:
+            mapping = getattr(task, "mapping", None)
+            if mapping is None or not hasattr(mapping, "_tensor_spec_output_cache"):
+                continue
+            key = str(mapping.hf_param)
+            if key in mapping._tensor_spec_output_cache:
+                continue
+            spec_row = [g.get(key) if g else None for g in gathered]
+            if any(s is not None for s in spec_row):
+                mapping._tensor_spec_output_cache[key] = spec_row
+
     def _calculate_refit_param_info(self) -> list[tuple[str, int]]:
         """Calculate parameter information for refit.
 
@@ -2295,6 +2348,7 @@ class MegatronPolicyWorkerImpl(
             List of (parameter_name, size_in_bytes) tuples.
         """
         self.refit_conversion_tasks = self._build_refit_conversion_tasks()
+        self._prefill_pp_broadcast_spec_cache(self.refit_conversion_tasks)
         param_info = []
 
         def calculate_size_in_bytes(param, tp_size, ep_size):

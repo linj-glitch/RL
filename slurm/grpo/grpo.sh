@@ -68,6 +68,11 @@ export HF_HOME=${CACHE_PATH}/huggingface
 # does a network etag check and one hub flake across hundreds of ranks
 # poisons path resolution (dsv4-27: "No .safetensors files or index found").
 export HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}
+# Refit transfer tuning (speedup item 5): 1.6GB default buckets underfill the
+# ring; checkpoint-engine-class systems use ~8GiB. 3 buffers overlap
+# gather/pack/broadcast.
+export NRL_REFIT_BUFFER_MEMORY_RATIO=${NRL_REFIT_BUFFER_MEMORY_RATIO:-0.06}
+export NRL_REFIT_NUM_BUFFERS=${NRL_REFIT_NUM_BUFFERS:-3}
 export UV_CACHE_SEED_TAR=${UV_CACHE_SEED_TAR:-${CACHE_PATH}/uv-cache-seed.tar}
 # vLLM torch.compile/AOT artifacts (NeMo-RL appends a per-engine seed suffix to
 # this base) plus the triton/inductor JIT caches: persisting them skips the
