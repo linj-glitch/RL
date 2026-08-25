@@ -68,8 +68,89 @@ _MXFP4_EXPERT_WEIGHT_RE = re.compile(r"\.experts\.\d+\.w[123]\.weight$")
 _CLONE_PASSTHROUGH_MAX_BYTES = 32 * 1024 * 1024
 
 
+_MXFP_GROUP_SIZE = 32
+_E2M1_MAX = 6.0
+
+# Whether triton_kernels' MXFP4 downcast kernel is usable in this process:
+# None = untried, True = usable, False = failed once (never retried). The
+# kernel is only ever exercised on SM100 during normal serving (on H100 the
+# engine loads pre-packed MXFP4 from disk, so refit is its first call site)
+# and its JIT compilation fails on SM90.
+_TRITON_MXFP4_DOWNCAST_USABLE: bool | None = None
+
+
+def _mxfp4_downcast_torch(
+    weight: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Pure-torch MXFP4 quantization along the last dim (checkpoint layout).
+
+    Byte-identical port of triton_kernels' ``downcast_to_mxfp`` in its
+    default ROUND_UP scale mode, using only plain torch ops (no triton JIT,
+    which fails to compile on SM90): per 32-element group, the ue8m0 scale
+    byte is the exponent of ``2**ceil(log2(absmax / 6))``; values are divided
+    by that scale and rounded to the e2m1 grid {0, 0.5, 1, 1.5, 2, 3, 4, 6}
+    (nearest, ties away from zero) with the sign in nibble bit 3; nibble
+    pairs pack as ``even | (odd << 4)``.
+
+    Args:
+        weight: High-precision (bf16/fp16/fp32) weight of shape [..., K],
+            K divisible by 32.
+
+    Returns:
+        Tuple of (packed e2m1 uint8 tensor of shape [..., K/2], ue8m0 scale
+        uint8 tensor of shape [..., K/32]).
+    """
+    k = weight.shape[-1]
+    if k % _MXFP_GROUP_SIZE != 0:
+        raise ValueError(
+            "MXFP4 quantization requires the last dim to be divisible by "
+            f"{_MXFP_GROUP_SIZE}, got shape {tuple(weight.shape)}."
+        )
+    src = weight.reshape(
+        *weight.shape[:-1], k // _MXFP_GROUP_SIZE, _MXFP_GROUP_SIZE
+    ).float()
+    group_max = src.abs().amax(dim=-1, keepdim=True)
+    # 2**ceil(log2(absmax / 6)) via fp32 bit twiddling: adding 0x007FFFFF
+    # bumps the exponent unless the mantissa is all zeros. All-zero groups
+    # keep a zero scale byte: their members quantize to 0x0 nibbles below
+    # (quant_scale forced to 0) and upcast multiplies by the decoded 0.0
+    # scale, yielding exact zeros without NaN/inf — same as the kernel.
+    ds_int = (group_max / _E2M1_MAX).view(torch.int32)
+    ds_int_rounded = (ds_int + 0x007FFFFF) & 0x7F800000
+    dequant_scale = ds_int_rounded.view(torch.float32)
+    quant_scale = torch.where(
+        dequant_scale == 0, torch.zeros_like(dequant_scale), 1.0 / dequant_scale
+    )
+    q = (src * quant_scale).contiguous()
+
+    q_int = q.view(torch.int32)
+    exponents = (q_int >> 23) & 0xFF
+    mantissas = q_int & 0x7FFFFF
+    e8_bias, e2_bias = 127, 1
+    # Subnormal e2m1 magnitudes (|q| < 1): shift the implicit leading 1 into
+    # the mantissa. Shift amounts are clamped to 31 to match PTX shift
+    # semantics; larger shifts only arise for magnitudes that round to zero.
+    sub_shift = (e8_bias - 1 - exponents).clamp(0, 31)
+    sub_mant = (0x400000 | (mantissas >> 1)) >> sub_shift
+    mantissas = torch.where(exponents < e8_bias, sub_mant, mantissas)
+    exponents = exponents.clamp(min=e8_bias - e2_bias) - (e8_bias - e2_bias)
+    # 3-bit magnitude code: exponent and top mantissa bit plus a guard bit,
+    # rounded nearest (ties up) and saturated at code 0x7 (= 6.0).
+    code = ((((exponents << 2) | (mantissas >> 21)) + 1) >> 1).clamp(max=0x7)
+    nibbles = code | (torch.signbit(q).to(torch.int32) << 3)
+
+    nibbles = nibbles.reshape(*weight.shape[:-1], k // 2, 2)
+    qweight = (nibbles[..., 0] | (nibbles[..., 1] << 4)).to(torch.uint8)
+    scale = (ds_int_rounded >> 23).squeeze(-1).to(torch.uint8)
+    return qweight, scale
+
+
 def _bf16_to_mxfp4(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """Quantize a weight to checkpoint-layout MXFP4 along the last dim.
+
+    Tries triton_kernels' downcast kernel once per process for CUDA inputs;
+    if it fails (e.g. its JIT does not compile on SM90 engines), permanently
+    falls back to the byte-identical pure-torch implementation.
 
     Args:
         weight: High-precision (bf16/fp16/fp32) weight of shape [..., K],
@@ -80,21 +161,24 @@ def _bf16_to_mxfp4(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         element in the low nibble, ue8m0 scale uint8 tensor of shape
         [..., K/32]) — the byte layout DeepSeek-V4 MXFP4 checkpoints store.
     """
-    from vllm.utils.import_utils import has_triton_kernels
+    global _TRITON_MXFP4_DOWNCAST_USABLE
+    if weight.is_cuda and _TRITON_MXFP4_DOWNCAST_USABLE is not False:
+        try:
+            from triton_kernels.numerics_details.mxfp import downcast_to_mxfp
 
-    if not has_triton_kernels():
-        raise RuntimeError(
-            "triton_kernels is required to quantize bf16 refit weights to "
-            "MXFP4 for DeepSeek-V4 expert reload."
-        )
-    from triton_kernels.numerics_details.mxfp import (
-        downcast_to_mxfp,
-        downcast_to_mxfp_torch,
-    )
-
-    downcast = downcast_to_mxfp if weight.is_cuda else downcast_to_mxfp_torch
-    qweight, scale = downcast(weight, torch.uint8, axis=-1)
-    return qweight, scale
+            qweight, scale = downcast_to_mxfp(weight, torch.uint8, axis=-1)
+        except Exception:
+            _TRITON_MXFP4_DOWNCAST_USABLE = False
+            logger.warning(
+                "triton_kernels' MXFP4 downcast is unusable on this device "
+                "(its JIT is known to fail on SM90); using the pure-torch "
+                "MXFP4 quantizer for this and all later refit buckets.",
+                exc_info=True,
+            )
+        else:
+            _TRITON_MXFP4_DOWNCAST_USABLE = True
+            return qweight, scale
+    return _mxfp4_downcast_torch(weight)
 
 
 def _pow2_scale_to_e8m0(scale: torch.Tensor) -> torch.Tensor:
