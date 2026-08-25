@@ -9,13 +9,16 @@ paths:
   # Kernel-writer RL workspace under the reasoning-code PPP project (Lustre).
   workspace: /scratch/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj
   cache: ${paths.workspace}/cache
-  # Local copy of cmunley's arm64 NeMo-RL image (prefetched /opt/ray_venvs +
-  # /opt/nemo_rl_venv, CPython 3.13/uv) — copied under our workspace so jobs
-  # never depend on another user's dir moving.
-  container: ${paths.workspace}/containers/nemo-rl-super35-arm64.sqsh
+  # Baked 2026-08-25 from cmunley's arm64 image (nemo-rl-super35-arm64.sqsh,
+  # kept alongside as fallback): /opt/nemo_rl_venv synced to this branch's
+  # lock (incl. loguru/fastapi for the CudaGym servers + cupti-python for SOL
+  # timing), node 22.15.0 + opencode-ai 1.17.9 in /usr/local, lz4-compressed.
+  # Rebake after a lock bump: enroot start --rw + uv sync + enroot export
+  # (ENROOT_SQUASH_OPTIONS='-comp lz4 -noappend').
+  container: ${paths.workspace}/containers/nemo-rl-kernelwriter-gb300-20260825.sqsh
   # In-allocation (disjoint) CudaGym hosting reuses the training image: it
   # carries torch/triton/CUDA + fastapi, which the smoke profile needs.
-  cudagym_container: ${paths.workspace}/containers/nemo-rl-super35-arm64.sqsh
+  cudagym_container: ${paths.workspace}/containers/nemo-rl-kernelwriter-gb300-20260825.sqsh
   models: ${paths.workspace}/models
   output: ${paths.workspace}/experiments/nemorl
   datasets: ${paths.workspace}/datasets/post_training
