@@ -68,6 +68,12 @@ export HF_HOME=${CACHE_PATH}/huggingface
 # does a network etag check and one hub flake across hundreds of ranks
 # poisons path resolution (dsv4-27: "No .safetensors files or index found").
 export HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}
+# Ray's default object store preallocates 30% of node RAM (/dev/shm plasma).
+# On 900GB Grace nodes that is ~270GB gone before the fully CPU-offloaded
+# optimizer (~270GB/node) and HF->Megatron conversion staging even start —
+# smoke-5/3288378 died to host oom_kills mid-conversion. 32GB is generous
+# for this path: rollouts travel over HTTP, refit over NCCL collectives.
+export RAY_OBJECT_STORE_BYTES=${RAY_OBJECT_STORE_BYTES:-34359738368}
 # The GB300 arm64 image bakes VLLM_USE_FASTOKENS=1 (its fork's Rust
 # tokenizer), but the venv carries no fastokens package — the vLLM fork then
 # refuses tokenizer init (smoke-4/3287841: "fastokens >= 0.2.0 is required

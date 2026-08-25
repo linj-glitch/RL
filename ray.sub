@@ -997,6 +997,7 @@ while [[ \$count -lt $num_retries ]]; do
   if cat <<EOFINNER | bash; then
 ray start --head \
     --disable-usage-stats \
+    ${RAY_OBJECT_STORE_BYTES:+--object-store-memory=$RAY_OBJECT_STORE_BYTES} \
     --resources="\$RAY_RESOURCES" \
     \$HEAD_RAY_RESOURCE_ARGS \
     --node-ip-address="$head_node_ip" \
@@ -1212,6 +1213,7 @@ while [[ \$count -lt $WORKER_NUM_RETRIES ]]; do
   cat <<EOFINNER | bash
 ray start --address "$ip_head" \
           --disable-usage-stats \
+          ${RAY_OBJECT_STORE_BYTES:+--object-store-memory=$RAY_OBJECT_STORE_BYTES} \
           --resources="\$RAY_RESOURCES" \
           --min-worker-port=${MIN_WORKER_PORT} \
           --max-worker-port=${MAX_WORKER_PORT} \
