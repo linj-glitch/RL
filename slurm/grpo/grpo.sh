@@ -122,6 +122,14 @@ export UV_EXTRAS=${UV_EXTRAS:-DEFAULT_UV_EXTRAS}
 # this container's node-local uv cache so the sync below downloads nothing.
 export SETUP_COMMAND=${SETUP_COMMAND:-"( [ -f '${UV_CACHE_SEED_TAR}' ] && [ ! -e /root/.cache/.uv_seeded ] && mkdir -p /root/.cache && tar -xf '${UV_CACHE_SEED_TAR}' -C /root/.cache && touch /root/.cache/.uv_seeded && echo '[uv] node-local cache seeded from ${UV_CACHE_SEED_TAR}' || true ) && (uv python find >/dev/null 2>&1 || (curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh && uv python install)) && uv sync ${UV_EXTRAS}"}
 
+# Cluster-specific per-container setup (cluster yaml `extra_setup:`), prefixed
+# so it runs before the seed-extract/uv-sync steps in every container — e.g.
+# extracting a prestaged offline toolchain the image lacks. Empty = no-op.
+export EXTRA_SETUP=${EXTRA_SETUP:-DEFAULT_EXTRA_SETUP}
+if [ -n "$EXTRA_SETUP" ]; then
+    export SETUP_COMMAND="( ${EXTRA_SETUP} ) && ${SETUP_COMMAND}"
+fi
+
 # Rebuild the image-baked per-worker venvs (/opt/ray_venvs/*): after a
 # dependency bump a stale venv dies unpickling Ray internals.
 export NRL_FORCE_REBUILD_VENVS=${NRL_FORCE_REBUILD_VENVS:-true}

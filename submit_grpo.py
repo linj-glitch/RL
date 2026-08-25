@@ -400,6 +400,8 @@ def main():
         "GPUS_PER_NODE": cluster_config["gpus_per_node"],
         # Cluster facts come from the cluster yaml, not from name-matching here.
         "SKIP_GRES_ARG": "1" if cluster_config["skip_gres"] else "",
+        # Optional per-container setup prefix (see grpo.sh EXTRA_SETUP).
+        "EXTRA_SETUP": cluster_config.get("extra_setup", ""),
         "SLURM_ACCOUNT": cluster_config["account"],
         "SLURM_PARTITION": cluster_config["partition"],
         "SLURM_QOS": cluster_config["qos"],  # empty = no --qos flag
