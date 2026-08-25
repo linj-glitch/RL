@@ -640,6 +640,13 @@ if [[ "${CUDAGYM_ENABLED:-0}" == "1" ]]; then
   # mode shares GPUs with vLLM anyway. The stray-process guard this disables
   # is redundant inside a dedicated Slurm allocation.
   ALLOW_PROCS_ARG="--allow-existing-procs"
+  # The server containers are anonymous and never run SETUP_COMMAND (only the
+  # ray head/worker containers do), so on images whose default python lacks
+  # the SDK's runtime deps (loguru/fastapi/uvicorn — e.g. the arm64 GB300
+  # image) every server dies at import. Run the same setup file first (it
+  # builds the training venv, whose atlas/nemo_gym extras carry all server
+  # deps) and prefer that venv's python once it exists.
+  CUDAGYM_SETUP_PREFIX="[ -f '$SETUP_COMMAND_FILE' ] && bash '$SETUP_COMMAND_FILE'; PYBIN=\$([ -x /opt/nemo_rl_venv/bin/python ] && echo /opt/nemo_rl_venv/bin/python || echo python); "
   ANY_SERVER_FAILED=false
   for ((i = CUDAGYM_NODE_START; i < CUDAGYM_NODE_END; i++)); do
     node_i=${nodes_array[$i]}
@@ -649,7 +656,7 @@ if [[ "${CUDAGYM_ENABLED:-0}" == "1" ]]; then
     # Launch the compile-only server
     srun $CUDAGYM_SRUN_COMMON --nodes=1 --ntasks=1 -w "$node_i" \
          -o "$LOG_DIR/cudagym/compile/${node_i}_compile.out" \
-         bash -lc "export PYTHONPATH=$SLURM_SUBMIT_DIR/3rdparty/solswarm/cudagym/src:\${PYTHONPATH}; python -m cudagym.servers.serve \
+         bash -lc "${CUDAGYM_SETUP_PREFIX}export PYTHONPATH=$SLURM_SUBMIT_DIR/3rdparty/solswarm/cudagym/src:\${PYTHONPATH}; \$PYBIN -m cudagym.servers.serve \
                    --compile-server-only \
                    --host 0.0.0.0 \
                    --port ${COMPILE_PORT} \
@@ -664,7 +671,7 @@ if [[ "${CUDAGYM_ENABLED:-0}" == "1" ]]; then
     # Launch the GPU-only server
     srun $CUDAGYM_SRUN_COMMON $GRES_ARG --nodes=1 --ntasks=1 -w "$node_i" \
          -o "$LOG_DIR/cudagym/gpu/${node_i}_gpu.out" \
-         bash -lc "uv pip install -q --python \$(command -v python) cupti-python >/dev/null 2>&1 || echo '[WARN] cupti-python install failed; SOL timing will error'; export PYTHONPATH=$SLURM_SUBMIT_DIR/3rdparty/solswarm/cudagym/src:\${PYTHONPATH}; python -m cudagym.servers.serve \
+         bash -lc "${CUDAGYM_SETUP_PREFIX}uv pip install -q --python \$PYBIN cupti-python >/dev/null 2>&1 || echo '[WARN] cupti-python install failed; SOL timing will error'; export PYTHONPATH=$SLURM_SUBMIT_DIR/3rdparty/solswarm/cudagym/src:\${PYTHONPATH}; \$PYBIN -m cudagym.servers.serve \
                    --gpu-server-only ${ALLOW_PROCS_ARG} \
                    --host 0.0.0.0 \
                    --port ${GPU_PORT} \
@@ -680,7 +687,7 @@ if [[ "${CUDAGYM_ENABLED:-0}" == "1" ]]; then
   echo "[INFO] Launching load balancer on node $CUDAGYM_LB_NODE..."
   srun $CUDAGYM_SRUN_COMMON --nodes=1 --ntasks=1 -w "$CUDAGYM_LB_NODE" \
        -o "$LOG_DIR/cudagym/loadbalancer/${CUDAGYM_LB_NODE}_lb.out" \
-       bash -lc "export PYTHONPATH=$SLURM_SUBMIT_DIR/3rdparty/solswarm/cudagym/src:\${PYTHONPATH}; python 3rdparty/solswarm/cudagym/deployments/multi_node/cudagym_load_balancer.py \
+       bash -lc "${CUDAGYM_SETUP_PREFIX}export PYTHONPATH=$SLURM_SUBMIT_DIR/3rdparty/solswarm/cudagym/src:\${PYTHONPATH}; \$PYBIN 3rdparty/solswarm/cudagym/deployments/multi_node/cudagym_load_balancer.py \
                  ${LB_PORT} \
                  '$COMPILE_SERVERS' \
                  '$GPU_SERVERS' \
