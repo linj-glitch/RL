@@ -197,10 +197,66 @@ def _pow2_scale_to_e8m0(scale: torch.Tensor) -> torch.Tensor:
     return byte.view(torch.float8_e8m0fnu)
 
 
+_FP8_BLOCK_SIZE = 128
+
+# Whether vllm.utils.deep_gemm.per_block_cast_to_fp8 is usable in this
+# process: None = untried, True = usable, False = failed once (never
+# retried). The wheel function is wrapped in ``@torch.compile``, and
+# inductor's generated triton kernels can fail to JIT on SM90 engine
+# workers (PassManager::run failed), same as the MXFP4 downcast kernel.
+_COMPILED_FP8_BLOCK_CAST_USABLE: bool | None = None
+
+
+def _fp8_block_cast_torch(
+    weight: torch.Tensor, use_ue8m0: bool
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Pure-torch blockwise [128, 128] fp8 e4m3 quantization.
+
+    Eager port of ``vllm.utils.deep_gemm.per_block_cast_to_fp8`` (whose
+    ``torch.compile`` wrapper fails to JIT on SM90): zero-pad to block
+    multiples, per-block absmax clamped to 1e-4 (all-zero blocks therefore
+    get a small positive scale and decode to exact zeros — never a zero
+    scale), scale = absmax / 448, optionally ceiled to a power of two.
+
+    Args:
+        weight: High-precision 2D weight of shape [M, N].
+        use_ue8m0: Ceil scales to powers of two (2**ceil(log2(scale))).
+
+    Returns:
+        Tuple of (fp8 e4m3fn weight of shape [M, N], float32 inverse block
+        scale of shape [ceil(M/128), ceil(N/128)]).
+    """
+    assert weight.dim() == 2
+    m, n = weight.shape
+    bs = _FP8_BLOCK_SIZE
+    fp8_dtype = torch.float8_e4m3fn
+    fp8_max = torch.finfo(fp8_dtype).max  # 448.0
+    pad_m = (m + bs - 1) // bs * bs
+    pad_n = (n + bs - 1) // bs * bs
+    x_padded = torch.zeros(
+        (pad_m, pad_n), dtype=weight.dtype, device=weight.device
+    )
+    x_padded[:m, :n] = weight
+    x_view = x_padded.view(-1, bs, pad_n // bs, bs)
+    x_amax = x_view.abs().float().amax(dim=(1, 3), keepdim=True).clamp(1e-4)
+    sf = x_amax / fp8_max
+    if use_ue8m0:
+        sf = torch.pow(2.0, torch.ceil(torch.log2(sf.abs())))
+    x_scaled = (x_view * (1.0 / sf)).to(fp8_dtype)
+    return (
+        x_scaled.view_as(x_padded)[:m, :n].contiguous(),
+        sf.view(x_view.size(0), x_view.size(2)),
+    )
+
+
 def _bf16_to_fp8_block(
     weight: torch.Tensor, scale_e8m0: bool
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Quantize a 2D weight to blockwise [128, 128] fp8 checkpoint format.
+
+    Tries the wheel's ``torch.compile``-wrapped ``per_block_cast_to_fp8``
+    once per process for CUDA inputs; if inductor fails to JIT (SM90 engine
+    workers), permanently falls back to the eager-torch port.
 
     Args:
         weight: High-precision 2D weight.
@@ -212,11 +268,28 @@ def _bf16_to_fp8_block(
         Tuple of (fp8 e4m3 weight with ``weight``'s shape, inverse block
         scale of shape [ceil(M/128), ceil(N/128)]).
     """
-    from vllm.utils.deep_gemm import per_block_cast_to_fp8
+    global _COMPILED_FP8_BLOCK_CAST_USABLE
+    qweight = scale = None
+    if weight.is_cuda and _COMPILED_FP8_BLOCK_CAST_USABLE is not False:
+        try:
+            from vllm.utils.deep_gemm import per_block_cast_to_fp8
 
-    qweight, scale = per_block_cast_to_fp8(
-        weight, block_size=[128, 128], use_ue8m0=scale_e8m0
-    )
+            qweight, scale = per_block_cast_to_fp8(
+                weight, block_size=[128, 128], use_ue8m0=scale_e8m0
+            )
+        except Exception:
+            _COMPILED_FP8_BLOCK_CAST_USABLE = False
+            logger.warning(
+                "vllm's compiled per_block_cast_to_fp8 is unusable on this "
+                "device (inductor triton JIT is known to fail on SM90); "
+                "using the eager-torch blockwise fp8 quantizer for this and "
+                "all later refit buckets.",
+                exc_info=True,
+            )
+        else:
+            _COMPILED_FP8_BLOCK_CAST_USABLE = True
+    if qweight is None:
+        qweight, scale = _fp8_block_cast_torch(weight, scale_e8m0)
     if scale_e8m0:
         scale = _pow2_scale_to_e8m0(scale)
     return qweight, scale
