@@ -164,7 +164,16 @@ export NRL_FORCE_REBUILD_VENVS=${NRL_FORCE_REBUILD_VENVS:-true}
 # policy model_name; an unset or missing dir skips the warm quietly.
 _POLICY_MODEL=$(grep -m1 -E '^[[:space:]]*model_name:' "examples/configs/recipes/atlas/${CONFIG_NAME}" 2>/dev/null | awk '{print $2}' | tr -d '"' | tr -d "'")
 if [ -n "$_POLICY_MODEL" ]; then
-    export NRL_HF_PREWARM_DIR="${HF_HOME}/hub/models--${_POLICY_MODEL//\//--}"
+    # Once the HF->Megatron conversion cache exists ($HF_HOME/nemo_rl/<model>,
+    # written on the first run), the trainer and reference model load the
+    # dist-ckpt from THERE and never re-read the HF shards — prewarm the dir
+    # the ranks will actually stream.
+    _MEGATRON_CKPT_DIR="${HF_HOME}/nemo_rl/${_POLICY_MODEL}"
+    if [ -d "$_MEGATRON_CKPT_DIR" ]; then
+        export NRL_HF_PREWARM_DIR="$_MEGATRON_CKPT_DIR"
+    else
+        export NRL_HF_PREWARM_DIR="${HF_HOME}/hub/models--${_POLICY_MODEL//\//--}"
+    fi
 fi
 
 export COMMAND="uv run ${UV_EXTRAS} ${RUN_SCRIPT} \
