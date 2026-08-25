@@ -185,6 +185,10 @@ class VllmInternalWorkerExtension:
     _mtp_drafter_from_disk: bool = False
     _sparse_delta_applier: Any = None
     _nrl_named_parameters: dict[str, torch.nn.Parameter]
+    # attn_sink tensors diverted from the DeepseekV4 layerwise-reload wire,
+    # applied post-finalize (see quantization/deepseek_v4.py).
+    _nrl_pending_attn_sinks: dict[str, torch.Tensor]
+    _nrl_dsv4_refit_quantizer: Any = None
 
     def _get_named_parameters(self) -> dict[str, torch.nn.Parameter]:
         params = getattr(self, "_nrl_named_parameters", None)
@@ -192,6 +196,20 @@ class VllmInternalWorkerExtension:
             params = dict(self.model_runner.model.named_parameters())
             self._nrl_named_parameters = params
         return params
+
+    def _get_dsv4_refit_quantizer(self) -> Any:
+        """Lazily build the DeepseekV4 checkpoint-format refit quantizer."""
+        if self._nrl_dsv4_refit_quantizer is None:
+            from nemo_rl.models.generation.vllm.quantization.deepseek_v4 import (
+                DeepseekV4CheckpointFormatQuantizer,
+            )
+
+            model_config = self.model_runner.vllm_config.model_config
+            self._nrl_dsv4_refit_quantizer = DeepseekV4CheckpointFormatQuantizer(
+                model_path=model_config.model,
+                expert_dtype=getattr(model_config.hf_config, "expert_dtype", "fp4"),
+            )
+        return self._nrl_dsv4_refit_quantizer
 
     def _load_full_hf_weights(
         self, policy_weights: list[tuple[str, torch.Tensor]]
@@ -202,9 +220,24 @@ class VllmInternalWorkerExtension:
         from nemo_rl.models.generation.vllm.quantization import fp8
 
         if self._use_native_layerwise_reload():
-            # Layerwise reload (armed in _weight_update_lifecycle) buffers raw
-            # bf16 weights and requantizes with the quant method's own native
-            # semantics — NRL's manual fp8 cast must not run here.
+            # Layerwise reload (armed in _weight_update_lifecycle) counts a
+            # layer as complete — and flushes its buffered weights — only when
+            # ALL of its checkpoint-format elements are loaded, *including the
+            # quantization scales*, and its flush replays weight bytes
+            # verbatim through the original loaders. A bf16-only wire never
+            # completes a quantized layer (buffered buckets accumulate until
+            # OOM) and would bit-cast bf16 into fp8/MXFP4 containers. So
+            # requantize each bucket engine-side into DeepSeek-V4 checkpoint
+            # format (weight + scale pairs), reproducing the disk-load stream
+            # that the layerwise machinery is built for. attn_sink is loaded
+            # by the model via a direct copy_ that no-ops on meta params, so
+            # those tensors are diverted and applied after finalize.
+            policy_weights, attn_sinks = self._get_dsv4_refit_quantizer().transform(
+                policy_weights
+            )
+            if not hasattr(self, "_nrl_pending_attn_sinks"):
+                self._nrl_pending_attn_sinks = {}
+            self._nrl_pending_attn_sinks.update(attn_sinks)
             self._load_full_hf_weights(policy_weights)
             return
         if fp8.is_fp8_model(self.model_runner.vllm_config):
@@ -636,13 +669,24 @@ class VllmInternalWorkerExtension:
                 initialize_layerwise_reload,
             )
 
+            from nemo_rl.models.generation.vllm.quantization.deepseek_v4 import (
+                apply_attn_sinks,
+            )
+
             initialize_layerwise_reload(self.model_runner.model)
+            # Reset per refit; filled by the checkpoint-format transform in
+            # _load_hf_weights, applied after finalize (see apply_attn_sinks).
+            self._nrl_pending_attn_sinks = {}
 
             def native_finalize() -> None:
                 with set_current_vllm_config(self.model_runner.vllm_config):
                     finalize_layerwise_reload(
                         self.model_runner.model, self.model_config
                     )
+                apply_attn_sinks(
+                    self.model_runner.model, self._nrl_pending_attn_sinks
+                )
+                self._nrl_pending_attn_sinks = {}
                 self._maybe_process_mtp_drafter_after_loading()
 
             yield native_finalize
