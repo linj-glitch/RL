@@ -37,6 +37,10 @@ checkpointing:
   checkpoint_dir: "results/grpo-cuda-agentic-qwen35-397b-smoke-gb300"
 
 policy:
+  # Restated (inherited value identical): grpo.sh greps model_name from THIS
+  # file to arm the per-node HF page-cache prewarm — 794 GB of shards reads
+  # much faster warm than cold on the trainer's first from_pretrained.
+  model_name: "Qwen/Qwen3.5-397B-A17B"
   megatron_cfg:
     # EP8 x ETP1 exactly tiles each stage's TP2 x DP4 = 8 GPUs (expert-DP 1);
     # 512 experts / 8 = 64 per rank (~35 GB weights+grads, fine in 284 GB).
