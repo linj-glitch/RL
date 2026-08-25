@@ -68,6 +68,12 @@ export HF_HOME=${CACHE_PATH}/huggingface
 # does a network etag check and one hub flake across hundreds of ranks
 # poisons path resolution (dsv4-27: "No .safetensors files or index found").
 export HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}
+# The GB300 arm64 image bakes VLLM_USE_FASTOKENS=1 (its fork's Rust
+# tokenizer), but the venv carries no fastokens package — the vLLM fork then
+# refuses tokenizer init (smoke-4/3287841: "fastokens >= 0.2.0 is required
+# when VLLM_USE_FASTOKENS=1"). The config's policy.tokenizer.use_fastokens
+# stays the source of truth; keep the ambient env var off unless set.
+export VLLM_USE_FASTOKENS=${VLLM_USE_FASTOKENS:-0}
 # CudaGym health gate: ray.sub defaults to 900s, tuned for images with the
 # venv prebaked. The server containers now run SETUP_COMMAND (venv build) on
 # top of a 27GB image extraction, so cold nodes need more headroom —
