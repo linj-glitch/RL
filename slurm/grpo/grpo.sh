@@ -102,9 +102,15 @@ export VLLM_CACHE_ROOT=${VLLM_CACHE_ROOT:-${CACHE_PATH}/vllm}
 # TP16: dispatch_scaled_mm hpp:17). DeepGEMM is the kernel this model was
 # built for.
 export VLLM_USE_DEEP_GEMM=${VLLM_USE_DEEP_GEMM:-1}
-export TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-${CACHE_PATH}/triton}
-export TORCHINDUCTOR_CACHE_DIR=${TORCHINDUCTOR_CACHE_DIR:-${CACHE_PATH}/inductor}
-mkdir -p "$VLLM_CACHE_ROOT" "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR" 2>/dev/null || true
+# NODE-LOCAL, not shared: Triton's JIT cache is not multi-writer safe on
+# Lustre — 16 engine ranks compiling MoE kernels concurrently corrupted the
+# shared dir (smoke-8/3289558: OSError Errno 14 'Bad address' on .cubin/.llir
+# under mmap + KeyError 'cubin'), wedging every engine at warmup. The
+# rank-scoped VLLM_CACHE_ROOT above keeps the expensive AOT artifacts warm
+# across jobs; the ~1 min per-node triton rebuild is the price of correctness.
+export TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-/tmp/nrl-cache/triton}
+export TORCHINDUCTOR_CACHE_DIR=${TORCHINDUCTOR_CACHE_DIR:-/tmp/nrl-cache/inductor}
+mkdir -p "$VLLM_CACHE_ROOT" 2>/dev/null || true
 export OUTPUT_DIR=${OUTPUT_ROOT}/${EXP_NAME}
 
 # Set for clusters whose sbatch rejects --gpus-per-node (applied at the sbatch call).
