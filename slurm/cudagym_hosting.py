@@ -71,6 +71,9 @@ CLUSTER_SILICON: dict[str, str] = {
     "h200": "H200",
     "gb200": "GB200",
     "b200": "B200",
+    # Like GB200, GB300 clocks stay unlocked (rack-scale NVLink parts).
+    "gb300": "GB300",
+    "b300": "B300",
 }
 
 EXAMPLE_HOSTING_BLOCK = (
@@ -409,6 +412,11 @@ def resolve_hosting(
     registry: Optional[dict[str, EndpointEntry]] = None
     resolved: list[ResolvedEntry] = []
     for name, entry in raw.items():
+        if entry is None:
+            # A child recipe disables an inherited entry by nulling it
+            # (`env.cudagym.<name>: null`) — the defaults deep-merge otherwise
+            # keeps the parent's entry alive alongside the child's own.
+            continue
         if not isinstance(entry, dict):
             raise HostingError(f"env.cudagym.{name} must be a mapping")
         # Declared, never inferred from the entry name, and spelled exactly as
