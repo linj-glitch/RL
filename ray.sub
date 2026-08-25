@@ -436,7 +436,7 @@ ip_addresses_array=()
 # in this smoke setup anyway). Killed automatically with the job.
 mkdir -p "$LOG_DIR/keepalive"
 for node_i in "${nodes_array[@]}"; do
-  srun --overlap --nodes=1 --ntasks=1 -w "$node_i"        --no-container-mount-home --container-image=$CONTAINER --container-mounts=$MOUNTS        -o "$LOG_DIR/keepalive/${node_i}.out"        bash -lc 'python - <<PYEOF
+  srun --overlap --nodes=1 --ntasks=1 -w "$node_i"        --no-container-mount-home --container-image=$CONTAINER --container-mounts=$MOUNTS        -o "$LOG_DIR/keepalive/${node_i}.out"        bash -lc 'PYBIN=$([ -x /opt/nemo_rl_venv/bin/python ] && echo /opt/nemo_rl_venv/bin/python || command -v python3 || echo python); $PYBIN - <<PYEOF
 import time
 import torch
 if not torch.cuda.is_available():
