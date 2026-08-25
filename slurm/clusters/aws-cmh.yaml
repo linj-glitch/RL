@@ -1,0 +1,38 @@
+host: aws-cmh-slurm-1
+# Submission runs ON this cluster's login node; SSHTunnel targets self.
+hostname: localhost
+# GB300 NVL72: aarch64 (Grace), 4 GPUs/node, 284 GB HBM/GPU, 140 CPUs, 900 GB RAM.
+sku: gb300
+gpus_per_node: 4
+
+paths:
+  # Kernel-writer RL workspace under the reasoning-code PPP project (Lustre).
+  workspace: /scratch/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj
+  cache: ${paths.workspace}/cache
+  # Local copy of cmunley's arm64 NeMo-RL image (prefetched /opt/ray_venvs +
+  # /opt/nemo_rl_venv, CPython 3.13/uv) — copied under our workspace so jobs
+  # never depend on another user's dir moving.
+  container: ${paths.workspace}/containers/nemo-rl-super35-arm64.sqsh
+  # In-allocation (disjoint) CudaGym hosting reuses the training image: it
+  # carries torch/triton/CUDA + fastapi, which the smoke profile needs.
+  cudagym_container: ${paths.workspace}/containers/nemo-rl-super35-arm64.sqsh
+  models: ${paths.workspace}/models
+  output: ${paths.workspace}/experiments/nemorl
+  datasets: ${paths.workspace}/datasets/post_training
+  artifacts: ${paths.workspace}/cudagym_cache/artifacts
+  ccache: ${paths.workspace}/cudagym_cache/ccache
+
+account: nemotron_reason_code
+partition: batch
+# No QoS scheduling on this cluster (srun/sbatch accepted without --qos).
+qos: ""
+skip_gres: false
+requires_proxy_tunnel: false
+
+# The arm64 image lacks node/opencode (Dockerfile.atlas bakes them on x86);
+# extract the prestaged offline bundle (node 22.15.0 + opencode-ai@1.17.9,
+# built on this cluster's aarch64 login node) into every container. Idempotent
+# and network-free — Lustre-local, per the prestage-everything convention.
+extra_setup: "[ -x /usr/local/bin/opencode ] || tar -xf /scratch/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj/tools/opencode-node-arm64.tar -C /usr/local"
+
+extra_config_opts: ""

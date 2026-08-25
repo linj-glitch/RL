@@ -1,0 +1,72 @@
+# Agentic GRPO on CudaGym / KernelFactory — Qwen3.5-397B-A17B SMOKE on GB300.
+# The h100 smoke recut for GB300 NVL72 nodes (aarch64, 4 GPUs/node, 284 GB
+# HBM/GPU vs H100's 8x80 GB). Same mechanisms, re-mathed grids:
+#
+# TRAINER GRID — 12 nodes / 48 GPUs: TP2 x PP6 x DP4, EP8 x ETP1, CP1.
+#   * TP2/PP6 inherited (60/PP6 = 10 layers/stage, 2 KV heads/TP2 = 1, GDN
+#     16 key / 64 value heads divide TP2). DP drops 8 -> 4 with the 3.5x
+#     per-GPU memory, so EP16 no longer tiles: EP x ETP must divide the
+#     stage group TP2 x DP4 = 8 -> EP8 (512/8 = 64 experts/rank, expert-DP 1,
+#     same tiling rule as the H100 recut).
+#   * bf16 weights+grads/GPU: experts 10L x 64 x 12.6M ~= 8.1B + non-expert
+#     ~0.6B at TP2 -> ~35 GB (end stages ~39 GB); + bf16 KL reference ~17 GB
+#     -> ~56 GB worst case against 284 GB. Optimizer stays fully CPU-offloaded
+#     (the 2.4T rehearsal knob): bf16 moments ~35 GB/GPU x 4 GPUs = ~140 GB
+#     host RAM of the node's 900 GB.
+#   * Batch: global 32 % DP4 = 0, mbs 1 -> 8 accum.
+#
+# GENERATION GRID — one bf16 engine, TP16 x PP1 x EP16 = 16 GPUs (4 nodes):
+#   * TP16 is the validated engine width for this model (in-repo 397B recipe);
+#     PP1 drops the UNPROVEN TP16xPP2 combination the h100 smoke carries as a
+#     known risk — 794 GB / 16 ~= 50 GB/GPU weights fits outright, util 0.85
+#     leaves ~190 GB/GPU for KV. All 16 GPUs share the rack's NVLink domain.
+#   * EP16 = DP1 x TP16 as NRL requires; 512/16 = 32 experts/rank. 2 GQA KV
+#     heads replicate across TP16 (vLLM handles it); GDN 16/64 heads divide 16.
+#
+# CUDAGYM — in-allocation disjoint on 1 GB300 node (the managed astra/gb300
+# endpoint is disabled: pod18 outage). The inherited h100 entry is nulled out;
+# resolve_hosting skips null entries.
+#
+# Submit with --num-nodes 17: 12 train + 4 generation + 1 trailing CudaGym
+# eval node, e.g.:
+#   --extra-config-opts "logger.wandb_enabled=false grpo.max_num_steps=2
+#                        grpo.max_num_epochs=2 checkpointing.enabled=false"
+defaults: "grpo_cuda_agentic_qwen35-397b_smoke_h100.yaml"
+
+checkpointing:
+  checkpoint_dir: "results/grpo-cuda-agentic-qwen35-397b-smoke-gb300"
+
+policy:
+  megatron_cfg:
+    # EP8 x ETP1 exactly tiles each stage's TP2 x DP4 = 8 GPUs (expert-DP 1);
+    # 512 experts / 8 = 64 per rank (~35 GB weights+grads, fine in 284 GB).
+    expert_model_parallel_size: 8
+  generation:
+    colocated:
+      resources:
+        gpus_per_node: 4
+        num_nodes: 4
+    vllm_cfg:
+      tensor_parallel_size: 16
+      # PP1: whole model per TP16 group — drops the unproven TP16xPP2 combo.
+      pipeline_parallel_size: 1
+      expert_parallel_size: 16
+
+env:
+  cudagym:
+    # Disable the inherited H100 disjoint entry (this cluster serves GB300);
+    # resolve_hosting treats a null entry as deleted.
+    h100: null
+    gb300:
+      sku: "GB300"
+      hosting:
+        kind: disjoint
+        num_nodes: 1
+
+logger:
+  log_dir: "logs/grpo-cuda-agentic-qwen35-397b-smoke-gb300"
+
+cluster:
+  gpus_per_node: 4
+  # 12 train + 4 generation; the CudaGym node rides on top at submit time.
+  num_nodes: 16
