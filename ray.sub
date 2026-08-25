@@ -977,6 +977,12 @@ for v in \$(env | awk -F= '/^(PMI|PMIX|MPI|OMPI|SLURM)_/{print \$1}'); do
     unset "\$v"
 done
 
+# Image ENV wins over srun-passed env under enroot, so re-assert the job's
+# value INSIDE the container (expanded at submit time): the GB300 arm64 image
+# bakes VLLM_USE_FASTOKENS=1 but the venvs ship no fastokens, and the vLLM
+# fork then refuses tokenizer init at engine load (smoke-7/3288979).
+export VLLM_USE_FASTOKENS=${VLLM_USE_FASTOKENS:-0}
+
 # Start the head without --block. 'ray start --head' then returns as soon as the
 # GCS is listening, so we touch STARTED_RAY_HEAD only after the head is actually up.
 # Workers gate on that file, so they only try to connect once the GCS is accepting
@@ -1179,6 +1185,9 @@ source $LOG_DIR/topology_probe.sh
 for v in \$(env | awk -F= '/^(PMI|PMIX|MPI|OMPI|SLURM)_/{print \$1}'); do
     unset "\$v"
 done
+
+# Same image-ENV override as the head (see comment there).
+export VLLM_USE_FASTOKENS=${VLLM_USE_FASTOKENS:-0}
 
 # Wait for the head to signal that its GCS is listening before connecting.
 echo "[INFO] Worker \$SLURM_PROCID: waiting for Ray head GCS to be ready..."
