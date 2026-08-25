@@ -1,0 +1,152 @@
+# Agentic GRPO on CudaGym / KernelFactory — Qwen3.5-397B-A17B SMOKE on H100.
+# Dress rehearsal (2026-08-24) for the Qwen3.8-2.4T fallback
+# (grpo_cuda_agentic_qwen38-2.4t_h100.yaml): same GDN+MoE architecture family
+# (qwen3_5_moe), same stripped-of-V4-carve-outs structure — bf16 checkpoint
+# and bf16 serving (no fp8/pow2/kv-scale anything), model's own chat
+# template, plain bf16->bf16 NCCL refit, non-colocated, full CPU-offloaded
+# optimizer — exercised at ~1/6 the params so every mechanism the 2.4T run
+# depends on gets a green light at 17 nodes instead of 89.
+#
+# MODEL (config.json @ main): Qwen3_5MoeForConditionalGeneration (composite;
+# AutoBridge resolves the suffix + text_config, vLLM registers the class
+# directly), model_type qwen3_5_moe. 60 layers (45 GDN linear-attention +
+# 15 full-attention, interval 4), hidden 4096, 32 heads / 2 KV heads (GQA,
+# head_dim 256), GDN 16 key / 64 value heads, 512 experts top-10
+# (moe_intermediate 1024 + 1 shared expert), vocab 248320, 262144 ctx,
+# dtype bf16, NO quantization_config, 1 MTP layer (training keeps
+# mtp_num_layers 0). ~397B params ~= 794 GB bf16, 94 shards.
+#
+# TRAINER GRID — 12 nodes / 96 GPUs: TP2 x PP6 x DP8, EP16 x ETP1, CP1.
+#   * Upstream validated this exact model at TP8 x PP8 x EP32 on 32 nodes
+#     (grpo-qwen3.5-397ba17b-32n8g-megatron.v2.yaml); this recut shrinks the
+#     fleet and keeps every split exact: 60 layers / PP6 = 10 per stage (no
+#     first/last tweaks), 2 KV heads / TP2 = 1, GDN 16 key / 64 value heads
+#     divide TP2, 512 experts / EP16 = 32 per rank, and EP16 x ETP1 =
+#     TP2 x DP8 = 16 GPUs per stage (expert-DP 1).
+#   * bf16 weights+grads (4 B/param) per GPU: experts 10L x 32 x 12.6M
+#     = 4.0B + non-expert ~0.6B at TP2 ~= 18.5 GB (end stages ~22.5 GB with
+#     the 248k embedding/head) — nowhere near the ~50 GB envelope, which is
+#     the point: the smoke validates mechanisms, not memory heroics.
+#   * KL stays at the base default (0.01, reference model ON): +2 B/param
+#     ~= +9 GB -> ~32 GB worst case. No loss_fn overrides at all — bf16
+#     trainer + bf16 vLLM, non-async: NeMo-RL's IS-correction asserts
+#     (grpo.py:1322/4183) don't apply, base defaults stand.
+#   * Optimizer fully CPU-offloaded + precision-aware: NOT memory-required
+#     at this scale (fp32 states would fit on-GPU), kept deliberately to
+#     rehearse the 2.4T path (same knobs, same H2D/D2H overlap). Deviates
+#     from upstream's use_precision_aware_optimizer: false for that reason.
+#   * Batch: global 32 (8 prompts x 4 gens) % DP8 = 0, mbs 1 -> 4 accum.
+#
+# GENERATION GRID — one bf16 engine, TP16 x PP2 x EP16 = 32 GPUs (4 nodes):
+# 794 GB / 32 ~= 25 GB/GPU of weights (60/PP2 = 30 layers/stage even);
+# at the inherited util 0.85 that leaves ~40 GB for KV — only the 15
+# full-attention layers page KV (~15 KB/token/rank with the 2 GQA heads
+# replicated across TP16), millions of tokens for a 32 x 16k smoke. TP16
+# is the in-repo 397B recipe's validated engine width; EP16 = TP as NRL
+# requires (EP must be a multiple of TP, vLLM EP = DP x TP).
+#
+# Submit with --num-nodes 17: 12 train + 4 generation + 1 trailing CudaGym
+# eval node. Smoke-scale it with the usual opts, e.g.:
+#   --extra-config-opts "++grpo.max_num_steps=2 ++checkpointing.enabled=false"
+# (val already gated: val_at_start false, val_period 20 > 2 steps.)
+defaults: "grpo_cuda_agentic_qwen38-27b_h100.yaml"
+
+checkpointing:
+  checkpoint_dir: "results/grpo-cuda-agentic-qwen35-397b-smoke"
+
+policy:
+  model_name: "Qwen/Qwen3.5-397B-A17B"
+  # Agent prompts are ~10k tokens; 16384 fits prompt + one 4k turn with room
+  # (family convention) and divides make_sequence_length_divisible_by
+  # = TP2 x 2 x CP1 = 4.
+  max_total_sequence_length: 16384
+  # Upstream runs the 3.5-family MoE UNPACKED (packing+MoE+agentic is
+  # untested); mirror it — same setting the 2.4T recipe carries.
+  sequence_packing:
+    enabled: false
+  megatron_cfg:
+    # Same fragmentation shape as dsv4-25: full optimizer CPU-offload
+    # reloads large contiguous buffers every step; expandable segments
+    # removes the contiguity requirement. Scoped here so vLLM workers keep
+    # cuMem. (Rehearses the 2.4T setting.)
+    env_vars:
+      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+    tensor_model_parallel_size: 2
+    pipeline_model_parallel_size: 6
+    # 512 experts / 16 = 32 per rank; EP16 x ETP1 exactly tiles each stage's
+    # TP2 x DP8 = 16 GPUs. ETP pinned to 1 (base default) — Megatron's
+    # ETP-follows-TP default would overrun the stage group.
+    expert_model_parallel_size: 16
+    expert_tensor_parallel_size: 1
+    # Upstream's validated dispatcher for this exact model (v2 recipe);
+    # the base default is alltoall.
+    moe_token_dispatcher_type: "allgather"
+    optimizer:
+      # lr/weight_decay from the upstream v2 recipe for this model.
+      lr: 1.0e-06
+      min_lr: 1.0e-06
+      weight_decay: 0.1
+      # Halves the offloaded state (bf16 moments) and the PCIe traffic —
+      # the 2.4T rehearsal knob, see header.
+      use_precision_aware_optimizer: true
+      optimizer_cpu_offload: true
+      optimizer_offload_fraction: 1.0
+      overlap_cpu_optimizer_d2h_h2d: true
+    scheduler:
+      lr_warmup_init: 1.0e-07
+      lr_warmup_iters: 10
+  generation:
+    # NON-colocated (inherited enabled: false): rehearses the 2.4T layout —
+    # dedicated engine nodes, refit via NCCL collectives, bf16 both sides.
+    colocated:
+      resources:
+        gpus_per_node: 8
+        num_nodes: 4
+    vllm_cfg:
+      # TP16 crosses a node pair — validated for this model by the in-repo
+      # 397B recipe (TP16 engines). 2 KV heads replicate across TP16 (vLLM
+      # handles kv-head replication); GDN 16 key / 64 value heads divide 16.
+      tensor_parallel_size: 16
+      # 60 layers / 2 = 30 per stage, ~25 GB/GPU bf16 weights.
+      pipeline_parallel_size: 2
+      # NeMo-RL derives enable_expert_parallel from EP > 1; EP must equal
+      # DP x TP per stage = 16 here. 512 / 16 = 32 experts per rank.
+      expert_parallel_size: 16
+      http_server_serving_chat_kwargs:
+        enable_auto_tools: true
+        # Qwen3.5's template emits XML-dialect calls (<function=...> blocks);
+        # hermes/qwen3_coder fail to parse them (Alexander's 35B-A3B note,
+        # mirrored by the non-smoke 397B recipe).
+        tool_parser: qwen3_xml
+        # The 2507-style A17B instruct is NON-thinking, and the defaults
+        # merge is DEEP — omitting the key would silently inherit the
+        # parent's `qwen3` reasoning parser and break the pairing rule
+        # against uses_reasoning_parser: false below (the non-smoke 397B
+        # recipe has that latent bug). "" is vLLM's native disabled default.
+        reasoning_parser: ""
+
+env:
+  nemo_gym:
+    policy_model:
+      responses_api_models:
+        vllm_model:
+          # No reasoning parser serving-side (non-thinking instruct), so the
+          # proxy must not expect a reasoning split — the 27B pairing rule
+          # in reverse (see 8a3483eb).
+          uses_reasoning_parser: false
+          # The parent's presence_penalty: 1.0 was a 3.8 think-loop
+          # countermeasure and penalizes repeated identifiers in code; the
+          # deep merge would silently inherit it, so pin the OpenAI-neutral
+          # 0.0 (same fix as the 2.4T recipe).
+          sampling_overrides:
+            temperature: ${policy.generation.temperature}
+            top_p: ${policy.generation.top_p}
+            presence_penalty: 0.0
+
+logger:
+  log_dir: "logs/grpo-cuda-agentic-qwen35-397b-smoke"
+
+cluster:
+  gpus_per_node: 8
+  # 12 train + 4 generation; the CudaGym node rides on top at submit time.
+  num_nodes: 16
