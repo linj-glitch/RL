@@ -1,0 +1,56 @@
+From 4c89d0ec5cd4c53647e49c46d6429a222627cd15 Mon Sep 17 00:00:00 2001
+From: Lin Jia <linj@nvidia.com>
+Date: Mon, 24 Aug 2026 23:42:52 -0700
+Subject: [PATCH] conversion fixes for DeepSeek-V4 RL refit
+
+- skip None conversion-task slots in load_weights_hf_to_megatron
+- apply hf-keys check in the PP-placeholder pass of build_conversion_tasks
+  so task lists agree across PP ranks
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../bridge/models/conversion/model_bridge.py  | 21 +++++++++++++++++--
+ 1 file changed, 19 insertions(+), 2 deletions(-)
+
+diff --git a/src/megatron/bridge/models/conversion/model_bridge.py b/src/megatron/bridge/models/conversion/model_bridge.py
+index 181896b..1fe07ee 100644
+--- a/src/megatron/bridge/models/conversion/model_bridge.py
++++ b/src/megatron/bridge/models/conversion/model_bridge.py
+@@ -1299,8 +1299,10 @@ class MegatronModelBridge(
+ 
+         _hf_import_cache: Dict[str, torch.Tensor] = {}
+         for task in self._with_progress_tracking(hf_to_megatron_tasks, description):
+-            # None means megatron module not on current rank, skip if this task is not going to happen
+-            if task.megatron_module is None:
++            # A task slot is None when no mapping/HF weight exists for a megatron
++            # param (build_conversion_tasks warns and leaves the slot empty);
++            # task.megatron_module is None when the module is not on this rank.
++            if task is None or task.megatron_module is None:
+                 continue
+             # 1) Fetch source tensor(s) from HF state dict, with caching for grouped mappings
+             hf_param_key = str(task.mapping.hf_param)
+@@ -1976,6 +1978,21 @@ class MegatronModelBridge(
+                 # Skip tasks with no mapping found
+                 if mapping is None:
+                     continue
++                # Apply the same HF-key existence check as the owning-rank pass
++                # above. Otherwise a param whose HF weights are absent (e.g.
++                # DeepSeek-V4 router gate.bias) is dropped on the owning rank
++                # but gets a placeholder here on non-owning ranks, so the task
++                # lists disagree across PP and per-task PP broadcasts see no
++                # owner ("Object must exist on at least one PP rank").
++                if hf_keys is not None and not mapping.allow_hf_name_mismatch:
++                    if isinstance(mapping.hf_param, str):
++                        if mapping.hf_param not in hf_keys:
++                            continue
++                    else:
++                        if any(
++                            hf_param not in hf_keys for hf_param in mapping.hf_param.values()
++                        ):
++                            continue
+                 # This is an exception here we pass in global name
+                 # we are not using global_name to extract module and weights
+                 # only use it for param mapping auto dispatch checks
+-- 
+2.34.1
+
