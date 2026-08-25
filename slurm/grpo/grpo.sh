@@ -68,6 +68,11 @@ export HF_HOME=${CACHE_PATH}/huggingface
 # does a network etag check and one hub flake across hundreds of ranks
 # poisons path resolution (dsv4-27: "No .safetensors files or index found").
 export HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}
+# CudaGym health gate: ray.sub defaults to 900s, tuned for images with the
+# venv prebaked. The server containers now run SETUP_COMMAND (venv build) on
+# top of a 27GB image extraction, so cold nodes need more headroom —
+# smoke-3/3287598 was gate-killed at +907s still mid-setup.
+export CUDAGYM_HEALTH_TIMEOUT=${CUDAGYM_HEALTH_TIMEOUT:-1800}
 # Refit transfer tuning (speedup item 5): 1.6GB default buckets underfill the
 # ring; checkpoint-engine-class systems use ~8GiB. 3 buffers overlap
 # gather/pack/broadcast.
