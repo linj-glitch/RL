@@ -112,9 +112,11 @@ policy:
       # Smoke hardening (round 2, job 16635152): an engine PP0 worker OOM'd at
       # init on an 8.36GB alloc with 6.1GB free — CUDA-graph capture workspaces
       # on top of weights+KV at inherited util. Eager mode for the smoke, and
-      # util 0.75 keeps ~10GB slack (KV at 16k ctx needs far less than the grab).
+      # util 0.60: round 3 (16638265) OOM'd at REFIT — 0.75 left ~5GB free vs the
+      # 8.3GB incoming broadcast bucket; 0.60 leaves ~13GB. KV at 16k ctx with only
+      # 15 full-attn layers needs a fraction of even this grab.
       enforce_eager: true
-      gpu_memory_utilization: 0.75
+      gpu_memory_utilization: 0.60
       # NeMo-RL derives enable_expert_parallel from EP > 1; EP must equal
       # DP x TP per stage = 16 here. 512 / 16 = 32 experts per rank.
       expert_parallel_size: 16
