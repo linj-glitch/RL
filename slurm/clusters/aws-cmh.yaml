@@ -9,12 +9,17 @@ paths:
   # Kernel-writer RL workspace under the reasoning-code PPP project (Lustre).
   workspace: /scratch/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj
   cache: ${paths.workspace}/cache
-  # Baked 2026-08-25 from cmunley's arm64 image (nemo-rl-super35-arm64.sqsh,
-  # kept alongside as fallback): /opt/nemo_rl_venv synced to this branch's
-  # lock (incl. loguru/fastapi for the CudaGym servers + cupti-python for SOL
+  # Baked from cmunley's arm64 image (nemo-rl-super35-arm64.sqsh, kept
+  # alongside as fallback): /opt/nemo_rl_venv synced to this branch's lock
+  # (incl. loguru/fastapi for the CudaGym servers + cupti-python for SOL
   # timing), node 22.15.0 + opencode-ai 1.17.9 in /usr/local, lz4-compressed.
   # Rebake after a lock bump: enroot start --rw + uv sync + enroot export
-  # (ENROOT_SQUASH_OPTIONS='-comp lz4 -noappend').
+  # (ENROOT_SQUASH_OPTIONS='-comp lz4 -noappend'), then VERIFY
+  # `/opt/nemo_rl_venv/bin/python -c pass` INSIDE the image: uv can install a
+  # newer patch interpreter during the sync and leave the prebuilt venv's
+  # symlink dangling. The -0825 bake pointed at a deleted cpython-3.13.13 and
+  # this image ships no system python3, so ray.sub's GPU keepalive died on
+  # every node and the idle reaper cancelled smoke-10/11.
   container: ${paths.workspace}/containers/nemo-rl-kernelwriter-gb300-20260826.sqsh
   # In-allocation (disjoint) CudaGym hosting reuses the training image: it
   # carries torch/triton/CUDA + fastapi, which the smoke profile needs.
