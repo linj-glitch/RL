@@ -59,7 +59,11 @@ policy:
   # Agent prompts are ~10k tokens; 16384 fits prompt + one 4k turn with room
   # (family convention) and divides make_sequence_length_divisible_by
   # = TP2 x 2 x CP1 = 4.
-  max_total_sequence_length: 16384
+  # 32k, not 16k: in smoke-4 (16648599) 26 of 64 rollouts exceeded 16384 and
+  # returned token-less responses (capture hole -> masked). OpenCode
+  # kernel-writing sessions routinely pass 16k. Engine KV at util 0.60 has
+  # ample room; trainer runs activation checkpointing from the parent.
+  max_total_sequence_length: 32768
   # Upstream runs the 3.5-family MoE UNPACKED (packing+MoE+agentic is
   # untested); mirror it — same setting the 2.4T recipe carries.
   sequence_packing:
@@ -158,3 +162,12 @@ cluster:
   gpus_per_node: 8
   # 12 train + 4 generation; the CudaGym node rides on top at submit time.
   num_nodes: 16
+
+env:
+  nemo_gym:
+    cudagym_cuda_agent:
+      responses_api_agents:
+        cuda_agent:
+          # 1800, not 900: smoke-4 lost 25/64 rollouts to the backstop killing
+          # opencode mid-model-call (the "already frozen" symptom).
+          timeout: 1800
