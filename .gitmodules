@@ -10,7 +10,7 @@
 	shallow = true
 [submodule "3rdparty/Gym-workspace/Gym"]
 	path = 3rdparty/Gym-workspace/Gym
-	url = https://github.com/linj-glitch/Gym.git
+	url = https://gitlab-master.nvidia.com/atlas/nemogym.git
 	branch = linj/kernelwriter
 	shallow = true
 [submodule "3rdparty/solswarm"]
