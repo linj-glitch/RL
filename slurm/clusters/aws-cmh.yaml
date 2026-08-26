@@ -15,10 +15,10 @@ paths:
   # timing), node 22.15.0 + opencode-ai 1.17.9 in /usr/local, lz4-compressed.
   # Rebake after a lock bump: enroot start --rw + uv sync + enroot export
   # (ENROOT_SQUASH_OPTIONS='-comp lz4 -noappend').
-  container: ${paths.workspace}/containers/nemo-rl-kernelwriter-gb300-20260825.sqsh
+  container: ${paths.workspace}/containers/nemo-rl-kernelwriter-gb300-20260826.sqsh
   # In-allocation (disjoint) CudaGym hosting reuses the training image: it
   # carries torch/triton/CUDA + fastapi, which the smoke profile needs.
-  cudagym_container: ${paths.workspace}/containers/nemo-rl-kernelwriter-gb300-20260825.sqsh
+  cudagym_container: ${paths.workspace}/containers/nemo-rl-kernelwriter-gb300-20260826.sqsh
   models: ${paths.workspace}/models
   output: ${paths.workspace}/experiments/nemorl
   datasets: ${paths.workspace}/datasets/post_training
