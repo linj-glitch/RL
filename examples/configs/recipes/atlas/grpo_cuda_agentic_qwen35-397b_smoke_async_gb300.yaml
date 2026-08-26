@@ -46,6 +46,16 @@ policy:
   # Restated (inherited value identical): grpo.sh greps model_name from THIS
   # file to arm the per-node HF page-cache prewarm.
   model_name: "Qwen/Qwen3.5-397B-A17B"
+  # Kernel-writing sessions are long; 256k+ context requested. 262144 is the
+  # model's native max_position_embeddings (no hf_config_overrides needed) and
+  # divides make_sequence_length_divisible_by = TP2 x 2 = 4. Propagates to the
+  # engine (vllm_cfg.max_model_len) and the Gym proxy (policy_max_model_len)
+  # via the parent chain's interpolations. Engine KV at util 0.60: only the
+  # 15 full-attn layers page KV (~31 KB/token/rank with both GQA heads
+  # replicated across TP16), so ~120 GB/GPU of KV still fits several full
+  # 262k streams concurrently; vLLM preempts beyond that. Trainer side stays
+  # protected by the inherited chunked logprob forward + mbs 1.
+  max_total_sequence_length: 262144
 
 grpo:
   async_grpo:
@@ -71,6 +81,21 @@ loss_fn:
   # ratio 5.0) is left at base defaults for the smoke — consider it for the
   # large job if ratios spike.
   use_importance_sampling_correction: true
+
+# ONE env block only (see the smoke_h100 note: a duplicate top-level env: key
+# silently replaces the whole mapping).
+env:
+  nemo_gym:
+    cudagym_cuda_agent:
+      responses_api_agents:
+        cuda_agent:
+          # Kernel-writing opencode sessions can run long; 1h per rollout is
+          # the most that fits the batch partition's 4h MaxTime alongside 4
+          # smoke steps. Async + in-flight refit tolerates the tail: a late
+          # model call against an already-frozen capture resolves through the
+          # frozen-drop path instead of masking the batch. Raise further for
+          # the large job on batch_long.
+          timeout: 3600
 
 logger:
   log_dir: "logs/grpo-cuda-agentic-qwen35-397b-smoke-async-gb300"
