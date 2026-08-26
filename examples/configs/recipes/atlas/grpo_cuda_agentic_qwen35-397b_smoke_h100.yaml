@@ -109,6 +109,12 @@ policy:
       tensor_parallel_size: 16
       # 60 layers / 2 = 30 per stage, ~25 GB/GPU bf16 weights.
       pipeline_parallel_size: 2
+      # Smoke hardening (round 2, job 16635152): an engine PP0 worker OOM'd at
+      # init on an 8.36GB alloc with 6.1GB free — CUDA-graph capture workspaces
+      # on top of weights+KV at inherited util. Eager mode for the smoke, and
+      # util 0.75 keeps ~10GB slack (KV at 16k ctx needs far less than the grab).
+      enforce_eager: true
+      gpu_memory_utilization: 0.75
       # NeMo-RL derives enable_expert_parallel from EP > 1; EP must equal
       # DP x TP per stage = 16 here. 512 / 16 = 32 experts per rank.
       expert_parallel_size: 16
