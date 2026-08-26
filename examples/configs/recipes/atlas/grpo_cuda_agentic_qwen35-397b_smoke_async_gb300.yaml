@@ -1,0 +1,76 @@
+# Agentic ASYNC GRPO on CudaGym / KernelFactory — Qwen3.5-397B-A17B SMOKE on
+# GB300 NVL72 (this cluster's tray: nvidia-smi reports "NVIDIA GB300", 284 GB
+# HBM/GPU, 4 GPUs/node — there is no GB200 hardware here, so the async recipe
+# targets GB300 and inherits the GB300 smoke's validated grids unchanged).
+#
+# WHAT CHANGES vs the sync GB300 smoke — only the async training mode:
+#   * grpo.async_grpo.enabled: the trajectory collector runs in a background
+#     Ray actor and generation overlaps training (async_grpo_train,
+#     grpo.py). The collector has first-class NeMo Gym support — it stamps
+#     _ng_task_index, streams run_async_nemo_gym_rollout, and retries partial
+#     Gym streams — and token_id_capture lives in the NemoGym environment
+#     actor BELOW the sync/async split, so the kernelwriter capture path
+#     (mask_multi_chain, frozen-capture drops) is identical in both modes.
+#   * loss_fn.use_importance_sampling_correction: REQUIRED for async
+#     (grpo.py asserts) — trajectories are sampled from weights up to
+#     max_trajectory_age_steps old, and the pi_train/pi_gen ratio corrects
+#     the mismatch. Uses the engine logprobs the capture path already
+#     delivers.
+#   * in_flight_weight_updates + max_generation_failures: 3 mirror the
+#     in-repo async+Gym precedent (grpo_qwen3_30ba3b_thinking_swe1.yaml).
+#     OpenCode kernel-writing rollouts run to 1800 s — without in-flight
+#     refit the collector would stall every step on the longest rollout,
+#     which is the sync behavior async exists to remove. A late model call
+#     that crosses a refit resolves through the frozen-capture drop path on
+#     the Gym side (TokenCaptureFrozenError), not a masked batch.
+#
+# Everything else — trainer grid TP2 x PP6 x DP4 / EP8, one TP16 x PP1 x EP16
+# bf16 engine on 4 dedicated nodes (non-colocated, inherited enabled: false),
+# eager engines at util 0.60, CudaGym in-allocation disjoint on 1 node — is
+# the GB300 smoke's, unchanged. Async needs no resource reshuffle: the
+# engine fleet already lives on its own nodes, which is the layout the
+# async vLLM path requires.
+#
+# Submit with --num-nodes 17 (12 train + 4 generation + 1 trailing CudaGym
+# node), smoke-scaled, e.g.:
+#   --extra-config-opts "logger.wandb_enabled=false grpo.max_num_steps=4
+#                        grpo.max_num_epochs=2 checkpointing.enabled=false"
+# (4 steps, not 2: the replay buffer only exercises trajectory aging and
+# in-flight refit once there are multiple weight versions in play.)
+defaults: "grpo_cuda_agentic_qwen35-397b_smoke_gb300.yaml"
+
+checkpointing:
+  checkpoint_dir: "results/grpo-cuda-agentic-qwen35-397b-smoke-async-gb300"
+
+policy:
+  # Restated (inherited value identical): grpo.sh greps model_name from THIS
+  # file to arm the per-node HF page-cache prewarm.
+  model_name: "Qwen/Qwen3.5-397B-A17B"
+
+grpo:
+  async_grpo:
+    enabled: true
+    # Strictest freshness for the smoke: a trajectory generated at weights vN
+    # trains step vN or vN+1 only. Loosen for throughput on the large job.
+    max_trajectory_age_steps: 1
+    # Agentic Gym streams can lose a worker transiently (opencode/network);
+    # the swe1 async+Gym recipe tolerates 3 before aborting.
+    max_generation_failures: 3
+    # Update engine weights during generation instead of pausing for the
+    # longest in-flight rollout (1800 s agent timeout makes pausing
+    # pathological). vLLM requires async_engine: true, inherited from the
+    # 27B parent ("required for the NeMo-Gym path").
+    in_flight_weight_updates: true
+    recompute_kv_cache_after_weight_updates: false
+
+loss_fn:
+  # Hard requirement for async GRPO (grpo.py asserts at startup): corrects
+  # for trajectories sampled from up-to-max_trajectory_age_steps-old weights.
+  # The sync smoke deliberately carries no loss_fn block; this is the one
+  # loss-side knob async needs. TIS truncation (swe1 carries type: tis,
+  # ratio 5.0) is left at base defaults for the smoke — consider it for the
+  # large job if ratios spike.
+  use_importance_sampling_correction: true
+
+logger:
+  log_dir: "logs/grpo-cuda-agentic-qwen35-397b-smoke-async-gb300"

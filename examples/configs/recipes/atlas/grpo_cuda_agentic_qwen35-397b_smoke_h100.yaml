@@ -137,6 +137,10 @@ policy:
         # recipe has that latent bug). "" is vLLM's native disabled default.
         reasoning_parser: ""
 
+# ONE env block only: a second top-level `env:` key would silently replace
+# this whole mapping (YAML last-key-wins), which is exactly how the
+# uses_reasoning_parser/presence_penalty overrides below got dropped in the
+# first smoke rounds.
 env:
   nemo_gym:
     policy_model:
@@ -154,6 +158,12 @@ env:
             temperature: ${policy.generation.temperature}
             top_p: ${policy.generation.top_p}
             presence_penalty: 0.0
+    cudagym_cuda_agent:
+      responses_api_agents:
+        cuda_agent:
+          # 1800, not 900: smoke-4 lost 25/64 rollouts to the backstop killing
+          # opencode mid-model-call (the "already frozen" symptom).
+          timeout: 1800
 
 logger:
   log_dir: "logs/grpo-cuda-agentic-qwen35-397b-smoke"
@@ -162,12 +172,3 @@ cluster:
   gpus_per_node: 8
   # 12 train + 4 generation; the CudaGym node rides on top at submit time.
   num_nodes: 16
-
-env:
-  nemo_gym:
-    cudagym_cuda_agent:
-      responses_api_agents:
-        cuda_agent:
-          # 1800, not 900: smoke-4 lost 25/64 rollouts to the backstop killing
-          # opencode mid-model-call (the "already frozen" symptom).
-          timeout: 1800
