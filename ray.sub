@@ -436,7 +436,31 @@ ip_addresses_array=()
 # in this smoke setup anyway). Killed automatically with the job.
 mkdir -p "$LOG_DIR/keepalive"
 for node_i in "${nodes_array[@]}"; do
-  srun --overlap --nodes=1 --ntasks=1 -w "$node_i"        --no-container-mount-home --container-image=$CONTAINER --container-mounts=$MOUNTS        -o "$LOG_DIR/keepalive/${node_i}.out"        bash -lc 'PYBIN=$([ -x /opt/nemo_rl_venv/bin/python ] && echo /opt/nemo_rl_venv/bin/python || command -v python3 || echo python); $PYBIN - <<PYEOF
+  srun --overlap --nodes=1 --ntasks=1 -w "$node_i"        --no-container-mount-home --container-image=$CONTAINER --container-mounts=$MOUNTS        -o "$LOG_DIR/keepalive/${node_i}.out"        bash -lc 'PYBIN=""
+# The image venv resolves through root-owned /root/.local, which a
+# non-root-remapped srun cannot traverse ([ -x ] fails even though the file
+# exists; jobs 3324663/3326563 lost their burner this way and the idle reaper
+# killed 3326563 at 59 min). The code venv (/opt/nemo-rl/.venv on Lustre)
+# only exists after the setup uv sync, minutes into the job — so retry the
+# candidate list instead of resolving once at T+0; the reaper horizon is ~31
+# minutes and the burner only needs to win that race.
+# One-shot context dump so a failed resolution is diagnosable from this log
+# alone (the venv python passes bare-container probes but failed in-job on
+# 3324663/3326563; the readlink chain tells the two cases apart).
+echo "[keepalive] uid=$(id -u) home=$HOME"
+ls -l /opt/nemo_rl_venv /opt/nemo_rl_venv/bin/python 2>&1 | head -4
+readlink -f /opt/nemo_rl_venv/bin/python 2>&1
+for _try in $(seq 1 120); do
+  for c in /opt/nemo_rl_venv/bin/python /opt/nemo-rl/.venv/bin/python; do
+    if [ -x "$c" ] && "$c" -c "pass" 2>/dev/null; then PYBIN="$c"; break 2; fi
+  done
+  c=$(command -v python3 || command -v python) && [ -n "$c" ] && { PYBIN="$c"; break; }
+  echo "[keepalive] no usable python yet (attempt $_try); retrying in 15s"
+  sleep 15
+done
+if [ -z "$PYBIN" ]; then echo "[keepalive] FATAL: no python after 30 min; GPU burner NOT running — idle reaper risk"; exit 0; fi
+echo "[keepalive] using $PYBIN"
+$PYBIN - <<PYEOF
 import time
 import torch
 if not torch.cuda.is_available():
