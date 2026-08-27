@@ -20,10 +20,10 @@ paths:
   # symlink dangling. The -0825 bake pointed at a deleted cpython-3.13.13 and
   # this image ships no system python3, so ray.sub's GPU keepalive died on
   # every node and the idle reaper cancelled smoke-10/11.
-  container: ${paths.workspace}/containers/nemo-rl-kernelwriter-gb300-20260826.sqsh
+  container: ${paths.workspace}/containers/nemo-rl-kernelwriter-gb300-20260826-pyfix.sqsh
   # In-allocation (disjoint) CudaGym hosting reuses the training image: it
   # carries torch/triton/CUDA + fastapi, which the smoke profile needs.
-  cudagym_container: ${paths.workspace}/containers/nemo-rl-kernelwriter-gb300-20260826.sqsh
+  cudagym_container: ${paths.workspace}/containers/nemo-rl-kernelwriter-gb300-20260826-pyfix.sqsh
   models: ${paths.workspace}/models
   output: ${paths.workspace}/experiments/nemorl
   datasets: ${paths.workspace}/datasets/post_training
