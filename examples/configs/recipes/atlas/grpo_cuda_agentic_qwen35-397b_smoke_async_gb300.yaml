@@ -34,9 +34,15 @@
 # Submit with --num-nodes 17 (12 train + 4 generation + 1 trailing CudaGym
 # node), smoke-scaled, e.g.:
 #   --extra-config-opts "logger.wandb_enabled=false grpo.max_num_steps=4
-#                        grpo.max_num_epochs=2 checkpointing.enabled=false"
+#                        grpo.max_num_epochs=8 checkpointing.enabled=false"
 # (4 steps, not 2: the replay buffer only exercises trajectory aging and
-# in-flight refit once there are multiple weight versions in play.)
+# in-flight refit once there are multiple weight versions in play.
+# epochs=8, not 2: the async collector's dataloader is sized
+# max_num_epochs x dataset rows and it looks one buffer target AHEAD of
+# training — 4 steps x 8 prompts + 8 lookahead = 40 draws vs the 12-row
+# cuda_smoke set. At epochs=2 (24 draws) the collector runs dry during the
+# step-0 fill and the run aborts: "dataloader exhausted while waiting for
+# initial buffer fill" (job 3338462).)
 defaults: "grpo_cuda_agentic_qwen35-397b_smoke_gb300.yaml"
 
 checkpointing:
