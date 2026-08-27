@@ -31,7 +31,11 @@ paths:
   ccache: ${paths.workspace}/cudagym_cache/ccache
 
 account: nemotron_reason_code
-partition: batch
+# batch_long (MaxTime 7d), not batch (MaxTime 4h): agentic kernel-writing
+# rollouts run up to the 3600s agent timeout, so even the async smoke's
+# first 32-rollout batch can outlive 4h (3341477 reached 9/32 at 3h18).
+# Same nodeset and priority tier as batch.
+partition: batch_long
 # No QoS scheduling on this cluster (srun/sbatch accepted without --qos).
 qos: ""
 skip_gres: false
