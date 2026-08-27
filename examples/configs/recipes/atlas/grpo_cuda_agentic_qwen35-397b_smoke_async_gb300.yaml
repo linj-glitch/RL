@@ -34,15 +34,16 @@
 # Submit with --num-nodes 17 (12 train + 4 generation + 1 trailing CudaGym
 # node), smoke-scaled, e.g.:
 #   --extra-config-opts "logger.wandb_enabled=false grpo.max_num_steps=4
-#                        grpo.max_num_epochs=8 checkpointing.enabled=false"
+#                        checkpointing.enabled=false"
 # (4 steps, not 2: the replay buffer only exercises trajectory aging and
 # in-flight refit once there are multiple weight versions in play.
-# epochs=8, not 2: the async collector's dataloader is sized
-# max_num_epochs x dataset rows and it looks one buffer target AHEAD of
-# training — 4 steps x 8 prompts + 8 lookahead = 40 draws vs the 12-row
-# cuda_smoke set. At epochs=2 (24 draws) the collector runs dry during the
-# step-0 fill and the run aborts: "dataloader exhausted while waiting for
-# initial buffer fill" (job 3338462).)
+# No grpo.max_num_epochs: async ignores it — the collector consumes the
+# train dataloader in ONE pass (sync's epoch loop is what re-iterates it).
+# The dataloader is batch_size=num_prompts_per_step with drop_last, so the
+# 12-row cuda_smoke set yields exactly one batch and the collector declares
+# exhaustion during the step-0 fill (jobs 3338462, 3339230). The data block
+# below points at cuda_smoke_async: the same 12 tasks cycled to 48 rows =
+# 4 steps x 8 prompts + one 8-prompt lookahead target, with headroom.)
 defaults: "grpo_cuda_agentic_qwen35-397b_smoke_gb300.yaml"
 
 checkpointing:
@@ -102,6 +103,15 @@ env:
           # frozen-drop path instead of masking the batch. Raise further for
           # the large job on batch_long.
           timeout: 3600
+
+data:
+  train:
+    # cuda_smoke's 12 tasks cycled to 48 rows (see header): the async
+    # collector's one-pass dataloader needs steps x prompts + one lookahead
+    # target of draws, and drop_last eats partial batches.
+    data_path: /datasets/cuda_smoke_async/train.jsonl
+  validation:
+    data_path: /datasets/cuda_smoke_async/val.jsonl
 
 logger:
   log_dir: "logs/grpo-cuda-agentic-qwen35-397b-smoke-async-gb300"
