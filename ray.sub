@@ -436,7 +436,17 @@ ip_addresses_array=()
 # in this smoke setup anyway). Killed automatically with the job.
 mkdir -p "$LOG_DIR/keepalive"
 for node_i in "${nodes_array[@]}"; do
-  srun --overlap --nodes=1 --ntasks=1 -w "$node_i"        --no-container-mount-home --container-image=$CONTAINER --container-mounts=$MOUNTS        -o "$LOG_DIR/keepalive/${node_i}.out"        bash -lc 'PYBIN=""
+  # NO --no-container-mount-home here, deliberately: the baked venv's
+  # interpreter symlink (/opt/nemo_rl_venv/bin/python ->
+  # /root/.local/share/uv/python/cpython-3.13.13-.../bin/python3.13) resolves
+  # through the HOST home, which this cluster's enroot default
+  # (ENROOT_MOUNT_HOME yes + root remap) binds at /root. The store was never
+  # in the image — the bake and every `enroot start` verification saw the
+  # host home too. Suppressing the home mount (as every other srun here does)
+  # is what left 3324663/3326563/3329730 with a dangling interpreter and no
+  # burner. The keepalive only reads one interpreter tree from home;
+  # the heavy sruns keep the flag.
+  srun --overlap --nodes=1 --ntasks=1 -w "$node_i"        --container-image=$CONTAINER --container-mounts=$MOUNTS        -o "$LOG_DIR/keepalive/${node_i}.out"        bash -lc 'PYBIN=""
 # The image venv resolves through root-owned /root/.local, which a
 # non-root-remapped srun cannot traverse ([ -x ] fails even though the file
 # exists; jobs 3324663/3326563 lost their burner this way and the idle reaper
