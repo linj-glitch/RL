@@ -377,6 +377,14 @@ override-dependencies = [
   "torch==2.11.0",
   # sglang has conflicting llguidance versions than vllm, so enforcing vllm's version since it's newer
   "llguidance>=1.3.0,<1.4.0",
+  # Gym main (post-rebase) pins openai==2.44.0 exactly, while
+  # sglang==0.5.12.post1 pins openai==2.6.1 exactly; nemo-gym is a workspace
+  # member so its base pin joins every resolution fork and the workspace
+  # became unsatisfiable. Force Gym's pin: the Gym proxy/token-capture path
+  # is what actually talks OpenAI dialect in the atlas recipes, and we never
+  # co-install sglang there (same pattern as the timm/llguidance overrides;
+  # the sglang path is untested against 2.44.0 — revisit on the next sglang bump).
+  "openai==2.44.0",
   # Override setuptools range in other dependencies to address CVE GHSA-58pv-8j8x-9vj2
   "setuptools>=80.10.2",
   "deep_ep @ git+https://github.com/deepseek-ai/DeepEP.git@29d31c095796f3c8ece47ee9cdcc167051bbeed9 ; platform_machine == 'x86_64'",
