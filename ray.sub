@@ -235,7 +235,11 @@ fi
 DRIVER_COMMAND_FILE=""
 if [[ -n "$COMMAND" ]]; then
   DRIVER_COMMAND_FILE="$LOG_DIR/driver_command.sh"
-  printf '%s' "$COMMAND" > "$DRIVER_COMMAND_FILE"
+  # PYTHONUNBUFFERED: the driver's phase prints mostly lack flush=True, and a
+  # job killed at its wall clock (SIGKILL after the grace period) loses
+  # whatever sat in the stdout buffer — 3341477 timed out with 3.5h of phase
+  # prints missing, making "hung" and "working quietly" indistinguishable.
+  printf 'export PYTHONUNBUFFERED=1\n%s' "$COMMAND" > "$DRIVER_COMMAND_FILE"
   chmod +x "$DRIVER_COMMAND_FILE"
 fi
 
