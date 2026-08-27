@@ -100,6 +100,18 @@ policy:
       lr_warmup_init: 1.0e-07
       lr_warmup_iters: 10
   generation:
+    vllm_kwargs:
+      # Blackwell (SM10x): vLLM's unquantized-MoE oracle picks
+      # FLASHINFER_TRTLLM, which repacks w13/w2 into a 4-D epilogue-tiled
+      # block layout at engine init; routed_experts.weight_loader then can't
+      # refit into it ("shard_dim=0 is not a valid data dimension for a 3D
+      # tensor" — job 3331447 hung 4h on the dead collective). H100 escapes
+      # only because the oracle demotes FlashInfer on SM90, so this is a
+      # no-op there. TRITON keeps the canonical 3-D (E, 2I, H) expert layout
+      # the refit path needs — same fix as grpo-moonlight-16b-automodel
+      # (EP-proven) and grpo-dapomath17k-dsv3. bf16-only: quantized MoE
+      # recipes (dsv4pro) must NOT inherit this — they clear vllm_kwargs.
+      moe_backend: triton
     # NON-colocated (inherited enabled: false): rehearses the 2.4T layout —
     # dedicated engine nodes, refit via NCCL collectives, bf16 both sides.
     colocated:
