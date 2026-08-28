@@ -1,0 +1,57 @@
+host: nb-hel-cs-001
+# Submission runs ON this cluster's login node; SSHTunnel targets self.
+hostname: localhost
+# 373 GPU nodes: x86_64, 8x H100/node, 128 CPUs, ~1.5 TB RAM.
+sku: h100
+gpus_per_node: 8
+
+paths:
+  # Kernel-writer RL workspace under the reasoning-code PPP project (Lustre).
+  workspace: /lustre/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj
+  cache: ${paths.workspace}/cache
+  # Stock NGC release image (enroot import docker://nvcr.io#nvidia/nemo-rl:v0.7.0 (CUDA 13.2, py3.13.13, uv 0.12.7 baked),
+  # x86_64). No custom bake: SETUP_COMMAND's uv sync builds /opt/nemo-rl/.venv
+  # from the branch lock at job start (compute nodes have PyPI egress), and
+  # extra_setup below supplies the Dockerfile.atlas overlay (node/opencode +
+  # cudagym SDK) from prestaged artifacts.
+  container: ${paths.workspace}/containers/nemo-rl-v0.7.0-amd64.sqsh
+  # In-allocation (disjoint) CudaGym hosting reuses the training image.
+  cudagym_container: ${paths.workspace}/containers/nemo-rl-v0.7.0-amd64.sqsh
+  models: ${paths.workspace}/models
+  output: ${paths.workspace}/experiments/nemorl
+  datasets: ${paths.workspace}/datasets/post_training
+  artifacts: ${paths.workspace}/cudagym_cache/artifacts
+  ccache: ${paths.workspace}/cudagym_cache/ccache
+
+account: nemotron_reason_code
+# nemotron_reason_code may only submit to batch (4h), interactive (4h), and
+# backfill (7d) on this cluster — batch_long/batch_large_long are
+# admin/infra-only. batch is the default and the ONLY partition we use:
+# PriorityTier 10 + this account's fairshare = near-instant scheduling
+# (924848 started in seconds), while backfill (tier 9, PreemptMode=REQUEUE)
+# yields to every batch job and got a multi-hour queue estimate (919067).
+# Do NOT fall back to backfill. Runs that need >4h wall-clock chain through
+# the limit instead: checkpointing.enabled=true + --num-jobs N (singleton
+# chaining resumes from the latest checkpoint each 4h leg).
+partition: batch
+qos: normal
+skip_gres: false
+requires_proxy_tunnel: false
+
+# The Dockerfile.atlas overlay, applied at container start instead of baked:
+# node 22.15.0 + opencode-ai@1.17.9 extracted from a prestaged x64 bundle
+# (built on this cluster's login node), plus /usr/local/bin symlinks for the
+# `cudagym`/`kf` CLIs the agent sandbox PATH needs. NO pip here: the NGC
+# image ships no system python3, and concurrent source installs from the
+# shared Lustre tree race and die (924848: "could not delete csan_runner.py"
+# -> loguru missing -> servers crashed). The venv side comes entirely from
+# SETUP_COMMAND's uv sync (cudagym is an editable dep in the branch lock,
+# loguru/fastapi included) — the symlinks dangle until that finishes, then
+# resolve. Idempotent.
+# Also: the image's bundled uv predates this branch (unknown
+# `exclude-dependencies` pyproject field, no 3.13.13 in its python-downloads
+# manifest -> "No interpreter found for Python 3.13.13", 924878). Overwrite
+# it in place (/root/.local/bin, first on PATH so SETUP_COMMAND's bare `uv`
+# resolves to it) and preinstall the branch's pinned interpreter.
+extra_setup: "(uv python find 3.13.13 >/dev/null 2>&1 || (curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/root/.local/bin sh && uv python install 3.13.13)) && ([ -x /usr/local/bin/opencode ] || tar -xf /lustre/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj/tools/opencode-node-x64.tar -C /usr/local) && ln -sf /opt/nemo_rl_venv/bin/cudagym /usr/local/bin/cudagym && ln -sf /opt/nemo_rl_venv/bin/kf /usr/local/bin/kf"
+extra_config_opts: ""
