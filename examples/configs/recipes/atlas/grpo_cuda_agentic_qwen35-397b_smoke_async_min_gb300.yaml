@@ -1,0 +1,55 @@
+# Minimal-footprint 397B ASYNC smoke on GB300 — same model, smallest ask.
+#
+# The full async smoke (17 nodes, 3600s rollouts) validates the right things
+# but couples them to an ask this congested cluster grants roughly never
+# (3345535: 26h+ queued). nb-hel's green 27B smoke (925237: 3 nodes, 39 min)
+# showed the smoke's cost drivers are footprint and rollout budget, not the
+# mechanisms. This recut keeps Qwen3.5-397B and shrinks everything else:
+#
+#   * TRAINER 6 nodes / 24 GPUs: TP2 x PP6 x DP2, EP4 x ETP1. Same TP/PP as
+#     the validated grid; only DP drops 4 -> 2. EP4 x ETP1 exactly tiles the
+#     stage group TP2 x DP2 = 4 (512/4 = 128 experts/rank; bf16 w+g ~66 GB +
+#     bf16 KL ref ~33 GB ≈ ~100 GB of 284 GB; offloaded bf16 moments
+#     ~64 GB/GPU x 4 = 256 GB of the node's 900 GB host RAM).
+#     Batch: global 32 % DP2 = 0, mbs 1 -> 16 accum (slower step; smoke-fine).
+#   * GENERATION unchanged: one bf16 TP16 x PP1 x EP16 engine on 4 nodes —
+#     the proven grid; no new engine risk in a scheduling-oriented recut.
+#   * EVAL unchanged: 1 disjoint CudaGym node.
+#   * Rollout budget 1200s (smoke-only): the elementwise smoke tasks solve in
+#     minutes; the 3600s production budget is what stretched batches to
+#     ~2.6h. ~32 rollouts land in about an hour at observed concurrency.
+#
+# Submit with --num-nodes 11 (6 train + 4 generation + 1 CudaGym), e.g.:
+#   --extra-config-opts "logger.wandb_enabled=false grpo.max_num_steps=1
+#                        checkpointing.enabled=true"
+# Expected single-link budget: ~0.7h startup + ~1.1h batch + ~0.7h step
+# ≈ 2.5h inside a 4h window. Chain --num-jobs for multi-step runs.
+defaults: "grpo_cuda_agentic_qwen35-397b_smoke_async_gb300.yaml"
+
+checkpointing:
+  checkpoint_dir: "results/grpo-cuda-agentic-qwen35-397b-smoke-async-min-gb300"
+
+policy:
+  # Restated (inherited value identical): grpo.sh greps model_name from THIS
+  # file to arm the per-node HF page-cache prewarm.
+  model_name: "Qwen/Qwen3.5-397B-A17B"
+  megatron_cfg:
+    # 512 experts / EP4 = 128 per rank; EP4 x ETP1 tiles TP2 x DP2 = 4.
+    expert_model_parallel_size: 4
+
+env:
+  nemo_gym:
+    cudagym_cuda_agent:
+      responses_api_agents:
+        cuda_agent:
+          # Smoke-only budget: elementwise tasks finish in minutes; the
+          # production 3600s budget lives in the parent recipe.
+          timeout: 1200
+
+logger:
+  log_dir: "logs/grpo-cuda-agentic-qwen35-397b-smoke-async-min-gb300"
+
+cluster:
+  gpus_per_node: 4
+  # 6 train + 4 generation; the CudaGym node rides on top at submit time.
+  num_nodes: 10
