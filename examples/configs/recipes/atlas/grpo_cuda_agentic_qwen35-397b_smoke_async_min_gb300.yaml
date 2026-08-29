@@ -36,6 +36,15 @@ policy:
   megatron_cfg:
     # 512 experts / EP4 = 128 per rank; EP4 x ETP1 tiles TP2 x DP2 = 4.
     expert_model_parallel_size: 4
+    optimizer:
+      # 0.5, not the parent's 1.0: DP2 doubles each GPU's parameter shard
+      # (~16.5B params) and the HybridDeviceOptimizer force-sync keeps CPU
+      # clones + FP32 copies of whatever is offloaded — at fraction 1.0
+      # that's ~500-650 GB/node of host RAM and 3396355 died to 27
+      # oom_kills during setup. Half stays on GPU (~180 GB free after
+      # weights + KL ref at EP4), half lands on the host (~250-330 GB of
+      # the node's 900 GB).
+      optimizer_offload_fraction: 0.5
 
 env:
   nemo_gym:
