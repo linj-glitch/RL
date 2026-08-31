@@ -1,0 +1,120 @@
+#!/bin/bash
+# Standalone CudaGym benchmark harness — vLLM serving + Gym eval, no RL runner.
+#
+# The RL runner's trajectory-collection mode builds and loads the full trainer
+# it never uses; at 397B that is 6 wasted nodes and at 550B ~16 — the tail
+# wagging the benchmark. This script is the minimal shape: one node serves the
+# model with plain `vllm serve`, one node runs the CudaGym compile/GPU/LB
+# services plus the Gym servers, and `ng_collect_rollouts` drives the
+# OpenCode cuda_agent against the endpoint (the documented eval mode in
+# resources_servers/cudagym/configs/cudagym_cuda_agent.yaml — no token
+# capture, no refit, no trainer).
+#
+#   sbatch --nodes=2 [--nodes=3 for TP8 models] \
+#     --export=ALL,MODEL_PATH=...,MODEL_NAME=...,TP=4,EVAL_INPUT=...,REPEATS=8,AGENT_TIMEOUT=1800 \
+#     slurm/eval_cudagym.sub
+#
+# Node 0: vllm serve (TP GPUs; TP<=4 single node — TP8 needs this script's
+#         multi-node serving extension, not written yet).
+# Node 1: cudagym compile/gpu/lb + Gym servers (ng_run) + collection driver.
+#
+# Container: the kernelwriter pyfix image (interpreter at /opt/uv-pythons);
+# its baked venv carries nemo-gym (editable against the mounted tree) and the
+# CudaGym server deps. vllm comes from the nemo-rl[vllm] uv fork, built on
+# first use from the seeded cache.
+#SBATCH --job-name=cudagym-eval
+#SBATCH --output=eval-%j.out
+#SBATCH --gpus-per-node=4
+#SBATCH --time=04:00:00
+
+set -euo pipefail
+
+WORKSPACE=/scratch/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj
+CONTAINER=${CONTAINER:-$WORKSPACE/containers/nemo-rl-kernelwriter-gb300-20260826-pyfix.sqsh}
+CODE_DIR=${CODE_DIR:-$SLURM_SUBMIT_DIR}
+GYM_DIR=/opt/nemo-rl/3rdparty/Gym-workspace/Gym
+
+MODEL_PATH=${MODEL_PATH:?set MODEL_PATH (HF id or local dir)}
+MODEL_NAME=${MODEL_NAME:-$MODEL_PATH}
+TP=${TP:-4}
+EVAL_INPUT=${EVAL_INPUT:?set EVAL_INPUT (rows jsonl, container-visible path)}
+REPEATS=${REPEATS:-8}
+AGENT_TIMEOUT=${AGENT_TIMEOUT:-1800}
+VLLM_PORT=8010
+
+ARTIFACTS_DIR=$WORKSPACE/cudagym_cache/artifacts
+CCACHE_DIR=$WORKSPACE/cudagym_cache/ccache
+OUT_DIR=$WORKSPACE/experiments/nemorl/cudagym-eval/$SLURM_JOB_ID
+mkdir -p "$OUT_DIR"/{logs,results} "$ARTIFACTS_DIR" "$CCACHE_DIR"
+
+nodes=($(scontrol show hostnames "$SLURM_JOB_NODELIST"))
+SERVE_NODE=${nodes[0]}
+EVAL_NODE=${nodes[1]}
+SERVE_IP=$(getent hosts "$SERVE_NODE" | awk '{print $1; exit}')
+EVAL_IP=$(getent hosts "$EVAL_NODE" | awk '{print $1; exit}')
+
+MOUNTS="$WORKSPACE:$WORKSPACE,$CODE_DIR:/opt/nemo-rl,$WORKSPACE/datasets/post_training:/datasets"
+COMMON="--container-image=$CONTAINER --container-mounts=$MOUNTS --no-container-mount-home --container-workdir=/opt/nemo-rl"
+# opencode + node for the agent (prestaged arm64 tar, idempotent).
+PRELUDE="[ -x /usr/local/bin/opencode ] || tar -xf $WORKSPACE/tools/opencode-node-arm64.tar -C /usr/local; PYBIN=/opt/nemo_rl_venv/bin/python;"
+
+echo "[eval] serve=$SERVE_NODE($SERVE_IP) eval=$EVAL_NODE($EVAL_IP) model=$MODEL_NAME tp=$TP input=$EVAL_INPUT x$REPEATS"
+
+# ---- keepalive burners (idle reaper defense during weight load) -------------
+for n in "${nodes[@]}"; do
+  srun --overlap $COMMON --nodes=1 --ntasks=1 -w "$n" -o "$OUT_DIR/logs/keepalive-$n.out" \
+    bash -c "$PRELUDE \$PYBIN - <<'EOF'
+import time, torch
+if not torch.cuda.is_available(): raise SystemExit(0)
+ms=[torch.randn(4096,4096,device=f'cuda:{d}') for d in range(torch.cuda.device_count())]
+while True:
+    t0=time.time()
+    while time.time()-t0<0.5:
+        for d,m in enumerate(ms): torch.matmul(m,m)
+    [torch.cuda.synchronize(d) for d in range(torch.cuda.device_count())]
+    time.sleep(8)
+EOF" &
+done
+
+# ---- node 0: vllm serve ------------------------------------------------------
+srun --overlap $COMMON --gres=gpu:4 --nodes=1 --ntasks=1 -w "$SERVE_NODE" -o "$OUT_DIR/logs/vllm.out" \
+  bash -c "$PRELUDE cd /opt/nemo-rl && uv run --locked --extra vllm vllm serve '$MODEL_PATH' \
+    --served-model-name '$MODEL_NAME' --tensor-parallel-size $TP --port $VLLM_PORT \
+    --gpu-memory-utilization 0.92 --enforce-eager --max-model-len 262144 \
+    --enable-auto-tool-choice --tool-call-parser qwen3_xml" &
+VLLM_PID=$!
+
+# ---- node 1: cudagym services -----------------------------------------------
+CG_ENV="export PYTHONPATH=/opt/nemo-rl/3rdparty/solswarm/cudagym/src:\${PYTHONPATH:-};"
+srun --overlap $COMMON --nodes=1 --ntasks=1 -w "$EVAL_NODE" -o "$OUT_DIR/logs/cg-compile.out" \
+  bash -c "$PRELUDE $CG_ENV \$PYBIN -m cudagym.servers.serve --compile-server-only --host 0.0.0.0 --port 8001 --artifacts-dir $ARTIFACTS_DIR --ccache-dir $CCACHE_DIR --num-cpu-workers 64" &
+srun --overlap $COMMON --gres=gpu:4 --nodes=1 --ntasks=1 -w "$EVAL_NODE" -o "$OUT_DIR/logs/cg-gpu.out" \
+  bash -c "$PRELUDE $CG_ENV \$PYBIN -m cudagym.servers.serve --gpu-server-only --allow-existing-procs --host 0.0.0.0 --port 8002 --artifacts-dir $ARTIFACTS_DIR" &
+sleep 5
+srun --overlap $COMMON --nodes=1 --ntasks=1 -w "$EVAL_NODE" -o "$OUT_DIR/logs/cg-lb.out" \
+  bash -c "$PRELUDE $CG_ENV \$PYBIN -m cudagym.servers.loadbalancer --host 0.0.0.0 --port 8000 --compile-servers http://$EVAL_IP:8001 --gpu-servers http://$EVAL_IP:8002" &
+
+# ---- wait for the endpoint (weights load can take ~15-25 min at TP4) --------
+for i in $(seq 1 240); do
+  if srun --overlap $COMMON --nodes=1 --ntasks=1 -w "$EVAL_NODE" bash -c \
+    "curl -sf -m 5 http://$SERVE_IP:$VLLM_PORT/v1/models >/dev/null" 2>/dev/null; then
+    echo "[eval] vllm endpoint live after ~$((i*15))s"; break
+  fi
+  kill -0 $VLLM_PID 2>/dev/null || { echo '[eval] vllm serve died'; exit 1; }
+  sleep 15
+done
+
+# ---- gym servers + collection on node 1 --------------------------------------
+srun --overlap $COMMON --nodes=1 --ntasks=1 -w "$EVAL_NODE" -o "$OUT_DIR/logs/gym.out" \
+  bash -c "$PRELUDE cd $GYM_DIR && \
+    export CUDAGYM_UNIFIED_SERVER_URL=http://$EVAL_IP:8000 CUDAGYM_AUTH_TOKEN=local \
+           policy_base_url=http://$SERVE_IP:$VLLM_PORT/v1 policy_api_key=local policy_model_name='$MODEL_NAME'; \
+    \$PYBIN -m nemo_gym.cli run \"+config_paths=[resources_servers/cudagym/configs/cudagym_cuda_agent.yaml,responses_api_models/openai_model/configs/openai_model.yaml]\" \
+      \"+cudagym_cuda_agent.responses_api_agents.cuda_agent.timeout=$AGENT_TIMEOUT\" & \
+    GYM_PID=\$!; sleep 90; \
+    \$PYBIN -m nemo_gym.cli collect_rollouts +agent_name=cudagym_cuda_agent \
+      +input_jsonl_fpath=$EVAL_INPUT +output_jsonl_fpath=$OUT_DIR/results/rollouts.jsonl \
+      +num_repeats=$REPEATS +num_samples_in_parallel=16; \
+    kill \$GYM_PID 2>/dev/null; true"
+
+echo "[eval] collection finished; results in $OUT_DIR/results/rollouts.jsonl"
