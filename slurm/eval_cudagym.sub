@@ -91,8 +91,9 @@ srun --overlap $COMMON --nodes=1 --ntasks=1 -w "$EVAL_NODE" -o "$OUT_DIR/logs/cg
 srun --overlap $COMMON --gres=gpu:4 --nodes=1 --ntasks=1 -w "$EVAL_NODE" -o "$OUT_DIR/logs/cg-gpu.out" \
   bash -c "$PRELUDE $CG_ENV \$PYBIN -m cudagym.servers.serve --gpu-server-only --allow-existing-procs --host 0.0.0.0 --port 8002 --artifacts-dir $ARTIFACTS_DIR" &
 sleep 5
+# Positional args per ray.sub: port, compile URLs, gpu URLs, compile/gpu max load.
 srun --overlap $COMMON --nodes=1 --ntasks=1 -w "$EVAL_NODE" -o "$OUT_DIR/logs/cg-lb.out" \
-  bash -c "$PRELUDE $CG_ENV \$PYBIN -m cudagym.servers.loadbalancer --host 0.0.0.0 --port 8000 --compile-servers http://$EVAL_IP:8001 --gpu-servers http://$EVAL_IP:8002" &
+  bash -c "$PRELUDE $CG_ENV \$PYBIN /opt/nemo-rl/3rdparty/solswarm/cudagym/deployments/multi_node/cudagym_load_balancer.py 8000 'http://$EVAL_IP:8001' 'http://$EVAL_IP:8002' 50 8" &
 
 # ---- wait for the endpoint (weights load can take ~15-25 min at TP4) --------
 for i in $(seq 1 240); do
