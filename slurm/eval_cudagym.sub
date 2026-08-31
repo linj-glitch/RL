@@ -59,8 +59,10 @@ EVAL_IP=$(getent hosts "$EVAL_NODE" | awk '{print $1; exit}')
 
 MOUNTS="$WORKSPACE:$WORKSPACE,$CODE_DIR:/opt/nemo-rl,$WORKSPACE/datasets/post_training:/datasets"
 COMMON="--container-image=$CONTAINER --container-mounts=$MOUNTS --no-container-mount-home --container-workdir=/opt/nemo-rl"
-# opencode + node for the agent (prestaged arm64 tar, idempotent).
-PRELUDE="[ -x /usr/local/bin/opencode ] || tar -xf $WORKSPACE/tools/opencode-node-arm64.tar -C /usr/local; PYBIN=/opt/nemo_rl_venv/bin/python;"
+# opencode + node for the agent (prestaged arm64 tar, idempotent), and the
+# uv cache seed — without it `uv run --extra vllm` source-builds git deps
+# from scratch on compute-node network (2h+, observed on jobs 3467165/444).
+PRELUDE="[ -x /usr/local/bin/opencode ] || tar -xf $WORKSPACE/tools/opencode-node-arm64.tar -C /usr/local; if [ -f $WORKSPACE/cache/uv-cache-seed.tar ] && [ ! -e /root/.cache/.uv_seeded ]; then mkdir -p /root/.cache && tar -xf $WORKSPACE/cache/uv-cache-seed.tar -C /root/.cache && touch /root/.cache/.uv_seeded; fi; PYBIN=/opt/nemo_rl_venv/bin/python;"
 
 echo "[eval] serve=$SERVE_NODE($SERVE_IP) eval=$EVAL_NODE($EVAL_IP) model=$MODEL_NAME tp=$TP input=$EVAL_INPUT x$REPEATS"
 
