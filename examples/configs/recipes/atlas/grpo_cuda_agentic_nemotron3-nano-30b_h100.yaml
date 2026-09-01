@@ -1,0 +1,88 @@
+# Agentic GRPO on CudaGym / KernelFactory — Nemotron-3-Nano-30B-A3B (BF16) on H100 (linj).
+# Derived from grpo_cuda_agentic_qwen38-27b_h100.yaml (defaults below): env.cudagym /
+# token-capture / data / grpo / seq-length (40960) blocks inherit unchanged.
+# Model-side blocks copied from the PRODUCTION recipe for this exact model,
+# examples/nemo_gym/grpo_nanov3.yaml (Nano v3 = 30B-A3B NemotronH hybrid),
+# reshaped for a 3-node smoke: 1 train node + 1 vLLM node + 1 CudaGym.
+#   * Train (8 GPUs): TP4 PP1 CP1 EP8 DP2 (nanov3 prod runs TP2/PP2/CP4 at
+#     49k across more nodes; single-node smoke flattens PP/CP — CP would
+#     force the packed divisor up and PP is unnecessary at 30B). Expert
+#     optimizer states are expert-DP-1 (EP = TP*DP), so the optimizer is
+#     CPU-offloaded like the Ultra/397B/2.4T H100 recipes.
+#   * Nano knob deltas vs Ultra (both straight from grpo_nanov3.yaml):
+#     use_fused_weighted_squared_relu FALSE, moe_router_bias_update_rate 1e-3.
+#   * Generation: vLLM TP4 PP1 single-node — the production nanov3 serving
+#     shape; NemotronH vLLM at PP1 is proven (the Ultra PP4 corruption does
+#     not apply). util 0.5 per nanov3 (refit headroom). nano_v3 reasoning
+#     parser (plugin at vllm_cfg top level) + qwen3_coder tool parser; the
+#     parent's Gym-side uses_reasoning_parser: true pairing holds.
+#   * No reference-policy KL (memory + matches the family's RLVR practice).
+# Submit: --num-nodes 3 = cluster.num_nodes 2 (1 train + 1 gen) + 1 CudaGym.
+# Smoke: --extra-config-opts "logger.wandb_enabled=false
+# checkpointing.enabled=false grpo.max_num_steps=2".
+defaults: "grpo_cuda_agentic_qwen38-27b_h100.yaml"
+
+checkpointing:
+  checkpoint_dir: "results/grpo-cuda-agentic-nemotron3-nano-30b-h100"
+
+loss_fn:
+  reference_policy_kl_penalty: 0.0
+
+policy:
+  model_name: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+
+  megatron_cfg:
+    tensor_model_parallel_size: 4
+    pipeline_model_parallel_size: 1
+    expert_model_parallel_size: 8
+    expert_tensor_parallel_size: 1
+    context_parallel_size: 1
+    sequence_parallel: true
+    activation_checkpointing: true
+
+    # NemotronH-Nano model knobs (grpo_nanov3.yaml, verbatim).
+    bias_activation_fusion: false
+    use_fused_weighted_squared_relu: false
+    apply_rope_fusion: true
+    moe_router_dtype: "fp32"
+    moe_router_enable_expert_bias: true
+    moe_router_bias_update_rate: 1.0e-3
+    moe_permute_fusion: true
+    moe_token_dispatcher_type: "alltoall"
+    moe_enable_deepep: false
+
+    optimizer:
+      use_distributed_optimizer: true
+      use_precision_aware_optimizer: true
+      optimizer_cpu_offload: true
+      optimizer_offload_fraction: 1.0
+      overlap_cpu_optimizer_d2h_h2d: true
+    env_vars:
+      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+
+  generation:
+    colocated:
+      enabled: false
+      resources:
+        gpus_per_node: 8
+        num_nodes: 1
+    vllm_cfg:
+      tensor_parallel_size: 4
+      pipeline_parallel_size: 1
+      expert_parallel_size: 1
+      gpu_memory_utilization: 0.5
+      reasoning_parser_plugin: nemo_rl/models/generation/vllm/reasoning_parsers/nano_v3_reasoning_parser.py
+      http_server_serving_chat_kwargs:
+        enable_auto_tools: true
+        tool_parser: qwen3_coder
+        reasoning_parser: nano_v3
+    vllm_kwargs:
+      mamba_ssm_cache_dtype: float32
+
+logger:
+  log_dir: "logs/grpo-cuda-agentic-nemotron3-nano-30b-h100"
+
+cluster:
+  gpus_per_node: 8
+  num_nodes: 2
+  segment_size: 1
