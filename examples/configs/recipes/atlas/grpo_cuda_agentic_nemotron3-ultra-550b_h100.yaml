@@ -105,11 +105,63 @@ policy:
       PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
 
   generation:
+    # MEGATRON (mcore) generation, not vLLM — the fallback the topology notes
+    # promised, now load-bearing: the vLLM TP8xPP4 engine loads and serves,
+    # but generates pure <unk> after the initial megatron->HF->vLLM refit
+    # stream (959477; direct curl confirmed garbage content, and NaN logprobs
+    # 500'd every Gym chat completion). Whether the corruption enters in the
+    # PP4 refit placement or PP4 hybrid decode is unresolved — mcore sidesteps
+    # both: generation workers run the model natively (first-class hybrid
+    # inference, production-proven for NemotronH via grpo_nanov3 on H100) and
+    # non-colocated refit is an mcore->mcore NCCL reshard, no format mapping.
+    # The vllm_cfg below is kept for future PP4 debugging; inert on this path.
+    backend: "megatron"
     colocated:
       enabled: false
       resources:
         gpus_per_node: 8
-        num_nodes: 4    # ONE TP8xPP4 engine; add engines in 4-node steps
+        num_nodes: 4    # 32 GPUs: TP8 x EP32 mcore inference group
+    # Merged into megatron_cfg for the inference workers only (see
+    # grpo_nanov3.yaml, copied nearly verbatim — it is the H100 NemotronH
+    # production shape): inference_optimized impl, fp32 mamba SSM states,
+    # InferenceTopKRouter needs num_groups/group_topk null. Parsers are the
+    # mcore server's names: Nemotron-3 thinks in the deepseek-r1 style
+    # (nanov3 = same family dialect) and opencode needs the qwen3-coder tool
+    # parser, matching the vLLM-side choice.
+    mcore_generation_config:
+      max_model_len: ${policy.max_total_sequence_length}
+      transformer_impl: "inference_optimized"
+      cuda_graph_impl: "local"
+      inference_cuda_graph_scope: "block"
+      activation_checkpointing: false
+      mamba_inference_ssm_states_dtype: "float32"
+      inference_grouped_gemm_backend: "vllm"
+      moe_router_num_groups: null
+      moe_router_group_topk: null
+      tensor_model_parallel_size: 8
+      pipeline_model_parallel_size: 1
+      expert_tensor_parallel_size: 1
+      # 520B routed experts / EP32 = 16.3B (32.5 GB) + dense/TP8 7.5 GB per
+      # GPU; + 10 GB KV buffer ~= 55 GB. No EP=TP constraint here (that
+      # assert is vLLM async-engine-specific).
+      expert_model_parallel_size: 32
+      sequence_parallel: true
+      context_parallel_size: 1
+      buffer_size_gb: 10
+      num_cuda_graphs: 4
+      block_size_tokens: 256
+      use_cuda_graphs_for_non_decode_steps: true
+      enable_chunked_prefill: true
+      enable_prefix_caching: true
+      max_tokens: ${policy.max_total_sequence_length}
+      kv_cache_management_mode: "persist"
+      materialize_only_last_token_logits: true
+      num_speculative_tokens: 0
+      refit_backend: "nccl"
+      expose_http_server: true
+      parsers:
+        - deepseek-r1-reasoning
+        - qwen3-coder-tool
     vllm_cfg:
       tensor_parallel_size: 8
       pipeline_parallel_size: 4
