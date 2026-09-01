@@ -40,6 +40,15 @@ defaults: "grpo_cuda_agentic_qwen38-27b_h100.yaml"
 checkpointing:
   checkpoint_dir: "results/grpo-cuda-agentic-nemotron3-ultra-550b-h100"
 
+# No reference-policy KL, matching the production ultra RLVR recipes
+# (student_rlvr1.yaml runs 0.0). Load-bearing for memory, not just taste:
+# penalty > 0 loads a SECOND full sharded model copy (grpo.py:1145) — 959372's
+# GPU_DIAG showed 29.5 GB after_model_setup -> 59.4 GB after_ref_model, and
+# the refit stream's fused-expert all-gathers (NemotronH packs a layer's 512
+# experts into one HF tensor; ~5 GB bursts) then OOM'd against the remainder.
+loss_fn:
+  reference_policy_kl_penalty: 0.0
+
 policy:
   model_name: "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16"
   max_total_sequence_length: 16384
