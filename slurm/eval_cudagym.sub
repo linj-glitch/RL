@@ -92,10 +92,14 @@ if [ "$SERVE_NODES" -gt 1 ]; then
   done
   # Same uv fork for head/workers/serve: mixed ray versions refuse to cluster.
   # --distributed-executor-backend ray is required: without it vllm only sees
-  # the local node's 4 GPUs and rejects TP8 outright (3476718).
-  VLLM_LAUNCH="/scratch/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj/venvs/vllm-eval/bin/ray start --head --port=$RAY_PORT --num-gpus=4 && sleep 20 && /scratch/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj/venvs/vllm-eval/bin/vllm serve --distributed-executor-backend ray"
+  # the local node's 4 GPUs and rejects TP8 outright (3476718). It rides in
+  # DIST_ARGS, appended AFTER the model — vllm serve demands the model as the
+  # first positional (3482873 died with it placed before).
+  VLLM_LAUNCH="/scratch/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj/venvs/vllm-eval/bin/ray start --head --port=$RAY_PORT --num-gpus=4 && sleep 20 && /scratch/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj/venvs/vllm-eval/bin/vllm serve"
+  DIST_ARGS="--distributed-executor-backend ray"
 else
   VLLM_LAUNCH="/scratch/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj/venvs/vllm-eval/bin/vllm serve"
+  DIST_ARGS=""
 fi
 # VLLM_USE_FASTOKENS=0: the training image exports it =1 for its baked venv,
 # but the Lustre eval venv ships no fastokens and vllm hard-errors on the
@@ -104,7 +108,7 @@ srun --overlap $COMMON --gres=gpu:4 --nodes=1 --ntasks=1 -w "$SERVE_NODE" -o "$O
   bash -c "$PRELUDE export VLLM_USE_FASTOKENS=0; cd /opt/nemo-rl && $VLLM_LAUNCH '$MODEL_PATH' \
     --served-model-name '$MODEL_NAME' --tensor-parallel-size $TP --port $VLLM_PORT \
     --gpu-memory-utilization 0.92 --enforce-eager --max-model-len 262144 \
-    --enable-auto-tool-choice --tool-call-parser $TOOL_PARSER $VLLM_EXTRA_ARGS" &
+    --enable-auto-tool-choice --tool-call-parser $TOOL_PARSER $DIST_ARGS $VLLM_EXTRA_ARGS" &
 VLLM_PID=$!
 
 # ---- node 1: cudagym services -----------------------------------------------
@@ -133,12 +137,15 @@ srun --overlap $COMMON --nodes=1 --ntasks=1 -w "$EVAL_NODE" -o "$OUT_DIR/logs/gy
   bash -c "$PRELUDE cd $GYM_DIR && \
     export CUDAGYM_UNIFIED_SERVER_URL=http://$EVAL_IP:8000 CUDAGYM_AUTH_TOKEN=local \
            policy_base_url=http://$SERVE_IP:$VLLM_PORT/v1 policy_api_key=local policy_model_name='$MODEL_NAME'; \
-    \$PYBIN -m nemo_gym.cli run \"+config_paths=[resources_servers/cudagym/configs/cudagym_cuda_agent.yaml,responses_api_models/openai_model/configs/openai_model.yaml]\" \
+    /opt/nemo_rl_venv/bin/ng_run \"+config_paths=[resources_servers/cudagym/configs/cudagym_cuda_agent.yaml,responses_api_models/openai_model/configs/openai_model.yaml]\" \
       \"+cudagym_cuda_agent.responses_api_agents.cuda_agent.timeout=$AGENT_TIMEOUT\" & \
     GYM_PID=\$!; sleep 90; \
-    \$PYBIN -m nemo_gym.cli collect_rollouts +agent_name=cudagym_cuda_agent \
+    /opt/nemo_rl_venv/bin/ng_collect_rollouts +agent_name=cudagym_cuda_agent \
       +input_jsonl_fpath=$EVAL_INPUT +output_jsonl_fpath=$OUT_DIR/results/rollouts.jsonl \
-      +num_repeats=$REPEATS +num_samples_in_parallel=16; \
-    kill \$GYM_PID 2>/dev/null; true"
+      +num_repeats=$REPEATS +num_samples_in_parallel=16; rc=\$?; \
+    kill \$GYM_PID 2>/dev/null; exit \$rc"
 
+# Fail the JOB when collection fails: 3482872 exited COMPLETED with zero
+# rollouts because the old trailing `true` swallowed the collection status.
+[ -s "$OUT_DIR/results/rollouts.jsonl" ] || { echo "[eval] FAILED: no rollouts written"; exit 1; }
 echo "[eval] collection finished; results in $OUT_DIR/results/rollouts.jsonl"
