@@ -58,6 +58,10 @@ policy:
     # NemotronH/Ultra model-side knobs (student_rlvr1.yaml), H100-validated
     # via the nanov3 nightly recipe for the fused squared-relu MLP.
     use_fused_weighted_squared_relu: true
+    # MCore rejects bias_activation_fusion for squared-relu (gelu/swiglu/
+    # quick_geglu only — 959178 died in worker init); the GB200 ultra recipe
+    # also runs it false. The base config inherits it true for swiglu models.
+    bias_activation_fusion: false
     apply_rope_fusion: true
     moe_router_dtype: "fp32"
     # Architecture flag, not a training knob: Ultra checkpoints carry expert
