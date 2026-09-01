@@ -5,7 +5,7 @@
 # re-sized for 8xH100-80GB nodes:
 #   * NemotronH hybrid: 108L = 48 mamba + 48 moe + 12 attn, 512 routed experts
 #     top-22, hidden 8192, vocab 131072, ~1.1TB bf16.
-#   * TRAIN 16 nodes / 128 GPUs: TP8 EP128 (=TP*CP*DP, expert-DP 1 — smaller EP
+#   * TRAIN 32 nodes / 256 GPUs: TP8 EP256 (=TP*CP*DP, expert-DP 1 — smaller EP
 #     multiplies expert param+grad copies and loses; see (4k+8)B/param arithmetic)
 #     PP1 CP1 DP16. Weights+grads ~31 GB/GPU; the unshardable 8B/param expert
 #     optimizer state (~34 GB/GPU) is fully CPU-offloaded (500 GB/node host,
@@ -32,7 +32,7 @@
 #   * seq 16384 for the smoke (GB200 runs 49152; the GB300 pipecleans train
 #     <=16k). GB200 recipe hardcodes 49152 in max_new_tokens/max_model_len —
 #     here both derive from max_total_sequence_length.
-# Submit: --num-nodes 21 = cluster.num_nodes 20 (16 train + 4 gen) + 1 CudaGym
+# Submit: --num-nodes 37 = cluster.num_nodes 36 (32 train + 4 gen) + 1 CudaGym
 # (disjoint trailing). Smoke: --extra-config-opts "logger.wandb_enabled=false
 # checkpointing.enabled=false grpo.max_num_steps=2".
 defaults: "grpo_cuda_agentic_qwen38-27b_h100.yaml"
@@ -45,11 +45,15 @@ policy:
   max_total_sequence_length: 16384
 
   megatron_cfg:
-    # --- parallel topology: 128 train GPUs = TP8 x DP16, experts sharded
-    # across all of them (EP128 -> 4 routed experts/rank, expert-DP 1) ---
+    # --- parallel topology: 256 train GPUs = TP8 x DP32, experts sharded
+    # across all of them (EP256 -> 2 routed experts/rank, expert-DP 1).
+    # 16 nodes/EP128 OOM'd (959296): 75 GB live at prepare_refit_info —
+    # params+grads ~31 GB + offload staging + conversion working set left no
+    # room for the ~2 GB full-embedding gather. EP256 halves expert
+    # params+grads to ~8 GB/GPU (~23 GB total with dense). ---
     tensor_model_parallel_size: 8
     pipeline_model_parallel_size: 1
-    expert_model_parallel_size: 128
+    expert_model_parallel_size: 256
     expert_tensor_parallel_size: 1
     context_parallel_size: 1
     sequence_parallel: true
@@ -127,5 +131,5 @@ logger:
 
 cluster:
   gpus_per_node: 8
-  num_nodes: 20
+  num_nodes: 36
   segment_size: 1
