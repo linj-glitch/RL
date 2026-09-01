@@ -53,5 +53,14 @@ requires_proxy_tunnel: false
 # manifest -> "No interpreter found for Python 3.13.13", 924878). Overwrite
 # it in place (/root/.local/bin, first on PATH so SETUP_COMMAND's bare `uv`
 # resolves to it) and preinstall the branch's pinned interpreter.
-extra_setup: "(uv python find 3.13.13 >/dev/null 2>&1 || (curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/root/.local/bin sh && uv python install 3.13.13)) && ([ -x /usr/local/bin/opencode ] || tar -xf /lustre/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj/tools/opencode-node-x64.tar -C /usr/local) && ln -sf /opt/nemo_rl_venv/bin/cudagym /usr/local/bin/cudagym && ln -sf /opt/nemo_rl_venv/bin/kf /usr/local/bin/kf"
+# The trailing mcore-venv prebuild works around a create_local_venv race:
+# with generation.backend=megatron BOTH worker groups sweep-build the SAME
+# /opt/ray_venvs/...MegatronPolicyWorker venv, the per-node stagger
+# (sleep node_idx) aligns the two sweeps, and the STARTED-marker
+# check-then-touch is not atomic — two concurrent uv installers corrupt the
+# venv (959659/959707: half-installed torch, "Directory not empty" rmtree).
+# Prebuilding the exact py_executable's venv (PY_EXECUTABLES.MCORE) makes
+# every sweep builder early-return on a COMPLETE venv. Seed extraction is
+# replicated here (idempotent, same marker) so the sync links from cache.
+extra_setup: "(uv python find 3.13.13 >/dev/null 2>&1 || (curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/root/.local/bin sh && uv python install 3.13.13)) && ([ -x /usr/local/bin/opencode ] || tar -xf /lustre/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj/tools/opencode-node-x64.tar -C /usr/local) && ln -sf /opt/nemo_rl_venv/bin/cudagym /usr/local/bin/cudagym && ln -sf /opt/nemo_rl_venv/bin/kf /usr/local/bin/kf && ( [ -f /lustre/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj/cache/uv-cache-seed.tar ] && [ ! -e /root/.cache/.uv_seeded ] && mkdir -p /root/.cache && tar -xf /lustre/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj/cache/uv-cache-seed.tar -C /root/.cache && touch /root/.cache/.uv_seeded || true ) && (UV_PROJECT_ENVIRONMENT=/opt/ray_venvs/nemo_rl.models.policy.workers.megatron_policy_worker.MegatronPolicyWorker uv run --locked --extra mcore --directory /opt/nemo-rl python -c pass)"
 extra_config_opts: ""
