@@ -1,0 +1,127 @@
+# Agentic GRPO on CudaGym / KernelFactory — Nemotron-3-Ultra-550B-A55B (BF16) on H100 (linj).
+# Derived from grpo_cuda_agentic_qwen38-27b_h100.yaml (defaults below): env.cudagym /
+# token-capture / data blocks inherit unchanged. Model+topology deltas follow the
+# production GB200 recipe (examples/nemo_gym/nemotron-3-ultra/student_rlvr1.yaml)
+# re-sized for 8xH100-80GB nodes:
+#   * NemotronH hybrid: 108L = 48 mamba + 48 moe + 12 attn, 512 routed experts
+#     top-22, hidden 8192, vocab 131072, ~1.1TB bf16.
+#   * TRAIN 16 nodes / 128 GPUs: TP8 EP128 (=TP*CP*DP, expert-DP 1 — smaller EP
+#     multiplies expert param+grad copies and loses; see (4k+8)B/param arithmetic)
+#     PP1 CP1 DP16. Weights+grads ~31 GB/GPU; the unshardable 8B/param expert
+#     optimizer state (~34 GB/GPU) is fully CPU-offloaded (500 GB/node host,
+#     same pattern as the 397B/2.4T H100 recipes). ~41 GB/GPU peak estimate.
+#   * GB200 knobs that DO NOT survive on H100: flex/hybridep dispatcher (MNNVL
+#     auto-detect + 128*CP*2*TP packing divisor both assume multi-node NVLink;
+#     setup.py:1009, data.py:1314) -> alltoall; segment_size 16 -> 1 (NVLink
+#     domain = 1 node here, virtual_cluster.py raises otherwise); MTP off for
+#     the smoke (drops 5 layers of state + a NemotronH-specific refit surface).
+#   * GENERATION 4 nodes / 32 GPUs, ONE engine TP8 x PP4 (34.4 GB weights/GPU;
+#     TP8xPP1 = 137 GB/GPU cannot fit). EP must equal TP: vllm_generation.py
+#     asserts async_engine off when EP != TP, and the Gym path requires async —
+#     so PP is the only widening axis. RISK: vLLM PP>1 on a mamba hybrid is
+#     unexercised in this repo (all NemotronH recipes are PP1 single-node);
+#     fallback if engine init or decode fails: policy.generation.backend:
+#     megatron (mcore has first-class hybrid inference + nccl refit).
+#   * moe_backend triton, NOT the GB200's flashinfer_cutlass: sharded NIXL
+#     expert refit requires canonical Triton expert weights (refit_loader.py
+#     raises), and SM90 demotes FlashInfer anyway.
+#   * Serving parsers per the Super H100 SWE production config (stage2_swe1):
+#     nano_v3 reasoning parser (plugin at vllm_cfg top level — nested it is
+#     silently dropped) + qwen3_coder tool parser; Gym-side
+#     uses_reasoning_parser: true inherits from the 27B parent.
+#   * seq 16384 for the smoke (GB200 runs 49152; the GB300 pipecleans train
+#     <=16k). GB200 recipe hardcodes 49152 in max_new_tokens/max_model_len —
+#     here both derive from max_total_sequence_length.
+# Submit: --num-nodes 21 = cluster.num_nodes 20 (16 train + 4 gen) + 1 CudaGym
+# (disjoint trailing). Smoke: --extra-config-opts "logger.wandb_enabled=false
+# checkpointing.enabled=false grpo.max_num_steps=2".
+defaults: "grpo_cuda_agentic_qwen38-27b_h100.yaml"
+
+checkpointing:
+  checkpoint_dir: "results/grpo-cuda-agentic-nemotron3-ultra-550b-h100"
+
+policy:
+  model_name: "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16"
+  max_total_sequence_length: 16384
+
+  megatron_cfg:
+    # --- parallel topology: 128 train GPUs = TP8 x DP16, experts sharded
+    # across all of them (EP128 -> 4 routed experts/rank, expert-DP 1) ---
+    tensor_model_parallel_size: 8
+    pipeline_model_parallel_size: 1
+    expert_model_parallel_size: 128
+    expert_tensor_parallel_size: 1
+    context_parallel_size: 1
+    sequence_parallel: true
+    activation_checkpointing: true
+
+    # NemotronH/Ultra model-side knobs (student_rlvr1.yaml), H100-validated
+    # via the nanov3 nightly recipe for the fused squared-relu MLP.
+    use_fused_weighted_squared_relu: true
+    apply_rope_fusion: true
+    moe_router_dtype: "fp32"
+    # Architecture flag, not a training knob: Ultra checkpoints carry expert
+    # bias; router stays frozen for RL (inherited freeze_moe_router: true).
+    moe_router_enable_expert_bias: true
+    moe_router_bias_update_rate: 0.0
+    moe_permute_fusion: true
+    # alltoall over IB — hybridep/flex is GB200-NVL-domain-only (header).
+    moe_token_dispatcher_type: "alltoall"
+    moe_enable_deepep: false
+
+    # MTP off for the smoke (GB200 trains 5 MTP layers; that is extra params,
+    # optimizer state, and refit surface this validation run does not need).
+    mtp_num_layers: 0
+    mtp_loss_scaling_factor: 0.0
+
+    # The whole 8B/param optimizer state to host: expert states cannot shard
+    # (expert-DP 1) and 34 GB/GPU does not fit next to 31 GB of params+grads.
+    optimizer:
+      use_distributed_optimizer: true
+      use_precision_aware_optimizer: true
+      optimizer_cpu_offload: true
+      optimizer_offload_fraction: 1.0
+      overlap_cpu_optimizer_d2h_h2d: true
+    # Offload's contiguous-buffer churn fragments the caching allocator
+    # (same mitigation as the 397B/2.4T H100 recipes).
+    env_vars:
+      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+
+  generation:
+    colocated:
+      enabled: false
+      resources:
+        gpus_per_node: 8
+        num_nodes: 4    # ONE TP8xPP4 engine; add engines in 4-node steps
+    vllm_cfg:
+      tensor_parallel_size: 8
+      pipeline_parallel_size: 4
+      expert_parallel_size: 8       # EP=TP keeps vllm_dp_size=1 -> async legal
+      # 0.70: 34 GB of weights/GPU + refit broadcast buckets need headroom
+      # (the 397B smoke OOM'd refit at 0.75; CUDA-graph workspaces OOM'd init).
+      gpu_memory_utilization: 0.70
+      enforce_eager: true
+      # Plugin path must sit at vllm_cfg top level — nested inside
+      # http_server_serving_chat_kwargs it is silently dropped (stage2_swe1).
+      reasoning_parser_plugin: nemo_rl/models/generation/vllm/reasoning_parsers/nano_v3_reasoning_parser.py
+      http_server_serving_chat_kwargs:
+        enable_auto_tools: true
+        tool_parser: qwen3_coder
+        reasoning_parser: nano_v3
+        default_chat_template_kwargs:
+          enable_thinking: true
+    vllm_kwargs:
+      moe_backend: triton
+      attention_backend: FLASH_ATTN
+      mamba_ssm_cache_dtype: float32
+      # 48 mamba layers hold per-sequence conv+SSM state in fp32 — a large
+      # fixed cost per slot. Super's small-scale H100 configs run 16.
+      max_num_seqs: 32
+
+logger:
+  log_dir: "logs/grpo-cuda-agentic-nemotron3-ultra-550b-h100"
+
+cluster:
+  gpus_per_node: 8
+  num_nodes: 20
+  segment_size: 1
