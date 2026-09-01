@@ -88,15 +88,20 @@ if [ "$SERVE_NODES" -gt 1 ]; then
   # from the head sees SERVE_NODES*4 GPUs for TP>4.
   for ((s=1; s<SERVE_NODES; s++)); do
     srun --overlap $COMMON --gres=gpu:4 --nodes=1 --ntasks=1 -w "${nodes[$s]}" -o "$OUT_DIR/logs/ray-worker-$s.out" \
-      bash -c "$PRELUDE cd /opt/nemo-rl && /scratch/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj/venvs/vllm-eval/bin/ray start --address=$SERVE_IP:$RAY_PORT --num-gpus=4 --block" &
+      bash -c "$PRELUDE export VLLM_USE_FASTOKENS=0; cd /opt/nemo-rl && /scratch/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj/venvs/vllm-eval/bin/ray start --address=$SERVE_IP:$RAY_PORT --num-gpus=4 --block" &
   done
   # Same uv fork for head/workers/serve: mixed ray versions refuse to cluster.
-  VLLM_LAUNCH="/scratch/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj/venvs/vllm-eval/bin/ray start --head --port=$RAY_PORT --num-gpus=4 && sleep 20 && /scratch/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj/venvs/vllm-eval/bin/vllm serve"
+  # --distributed-executor-backend ray is required: without it vllm only sees
+  # the local node's 4 GPUs and rejects TP8 outright (3476718).
+  VLLM_LAUNCH="/scratch/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj/venvs/vllm-eval/bin/ray start --head --port=$RAY_PORT --num-gpus=4 && sleep 20 && /scratch/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj/venvs/vllm-eval/bin/vllm serve --distributed-executor-backend ray"
 else
   VLLM_LAUNCH="/scratch/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj/venvs/vllm-eval/bin/vllm serve"
 fi
+# VLLM_USE_FASTOKENS=0: the training image exports it =1 for its baked venv,
+# but the Lustre eval venv ships no fastokens and vllm hard-errors on the
+# mismatch (3476717: "fastokens >= 0.2.0 is required when VLLM_USE_FASTOKENS=1").
 srun --overlap $COMMON --gres=gpu:4 --nodes=1 --ntasks=1 -w "$SERVE_NODE" -o "$OUT_DIR/logs/vllm.out" \
-  bash -c "$PRELUDE cd /opt/nemo-rl && $VLLM_LAUNCH '$MODEL_PATH' \
+  bash -c "$PRELUDE export VLLM_USE_FASTOKENS=0; cd /opt/nemo-rl && $VLLM_LAUNCH '$MODEL_PATH' \
     --served-model-name '$MODEL_NAME' --tensor-parallel-size $TP --port $VLLM_PORT \
     --gpu-memory-utilization 0.92 --enforce-eager --max-model-len 262144 \
     --enable-auto-tool-choice --tool-call-parser $TOOL_PARSER $VLLM_EXTRA_ARGS" &

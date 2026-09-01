@@ -63,6 +63,27 @@ policy:
   # 262k streams concurrently; vLLM preempts beyond that. Trainer side stays
   # protected by the inherited chunked logprob forward + mbs 1.
   max_total_sequence_length: 262144
+  megatron_cfg:
+    optimizer:
+      # On-GPU optimizer, overriding the h100 parent's full CPU offload. The
+      # HybridDeviceOptimizer force-syncs FP32 main params + CPU clones of the
+      # offloaded shards on the FIRST step: at 397B/DP4 that materialization
+      # killed policy.train() on every GB300 grid tried (3401037 host-OOM at
+      # offload 0.5/DP2; 3470347 rank drop at offload 1.0/DP4 with 900 GB
+      # hosts). At DP4 the distributed optimizer shards are small enough to
+      # stay in HBM (~8B params/rank -> ~100 GB opt state across the stage's
+      # 284 GB GPUs); v6 (3475723) completed the step this way.
+      optimizer_cpu_offload: false
+      optimizer_offload_fraction: 0.0
+      overlap_cpu_optimizer_d2h_h2d: false
+    checkpoint:
+      # Synchronous save. The base grpo_math_1B chain enables async_save; its
+      # nvidia_resiliency_ext daemon allocates CUDA staging buffers, and with
+      # the optimizer now resident in HBM every rank died with "CUDA driver
+      # error: out of memory" at the step-1 save (3475723). Same failure class
+      # and fix as grpo-dapomath17k-nanov3 ("async checkpoint save runs
+      # concurrently" OOM).
+      async_save: false
 
 grpo:
   async_grpo:
