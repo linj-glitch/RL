@@ -1,0 +1,137 @@
+# aws-cmh (ARM GB200, 4 GPUs/node) RL smoke: async GRPO, Qwen3.5-35B-A3B, anyswe_agent running Claude Code
+# inside ARM R2E task images with training-token capture. 1-2 steps only. Gym must be the linj/anyswe-sif-capture
+# branch (sif formatters + capture prefix) mounted at 3rdparty/Gym-workspace/Gym.
+defaults: ../configs/recipes/llm/grpo-qwen3.5-35ba3b-6n4g-async-1off-bf16-trtllm.yaml
+
+grpo:
+  num_prompts_per_step: 8
+  num_generations_per_prompt: 4
+  max_num_steps: 2
+  val_at_start: false
+  val_period: 0
+  async_grpo:
+    enabled: true
+    in_flight_weight_updates: true
+    max_trajectory_age_steps: 1
+
+checkpointing:
+  enabled: true
+  checkpoint_dir: /lustre/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj/experiments/polar_swe/ckpt/aws_cmh_anyswe_claude_smoke
+  save_period: 1
+
+policy:
+  model_name: /lustre/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj/models/Qwen3.5-35B-A3B
+  max_total_sequence_length: 65536
+  train_global_batch_size: 32
+  train_micro_batch_size: 1
+  logprob_batch_size: 1
+  megatron_cfg:
+    tensor_model_parallel_size: 2
+    context_parallel_size: 2
+    expert_model_parallel_size: 4      # 4n x 4g trainer = 16 GPUs; ep4 x tp2 x cp2 = 16
+  generation:
+    max_new_tokens: 16384
+    colocated:
+      enabled: false
+      resources:
+        gpus_per_node: 4
+        num_nodes: 2
+    vllm_cfg:
+      tensor_parallel_size: 4
+      expert_parallel_size: 4
+      async_engine: true
+      skip_tokenizer_init: false        # required for the Gym capture path (docs: external-agent-harnesses)
+      enable_thinking: true
+      http_server_serving_chat_kwargs:
+        enable_auto_tools: true
+        tool_parser: ${oc.env:QWEN35_TOOL_PARSER,hermes}          # VERIFY on the eval smoke; Qwen3.5 may need qwen3_xml/qwen3_coder
+        reasoning_parser: ${oc.env:QWEN35_REASONING_PARSER,qwen3}
+        default_chat_template_kwargs:
+          enable_thinking: true
+
+data:
+  shuffle: true
+  train:
+    data_path: /lustre/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj/datasets/swe/r2e_arm_anyswe_train.jsonl
+  validation:
+    data_path: /lustre/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj/datasets/swe/r2e_arm_anyswe_val.jsonl
+  default:
+    dataset_name: NemoGymDataset
+    env_name: nemo_gym
+    prompt_file: null
+    system_prompt_file: null
+    processor: nemo_gym_data_processor
+  _override_: true
+
+env:
+  should_use_nemo_gym: true
+  should_log_nemo_gym_responses: true
+  should_mask_flagged_samples: true       # capture failures arrive as mask_sample=true; keep masking ON and watch the fraction
+  nemo_gym:
+    skip_venv_if_present: true
+    use_absolute_ip: true
+    port_range_low: 5000
+    port_range_high: 5999
+    config_paths:
+    - responses_api_models/vllm_model/configs/vllm_model_for_training.yaml
+    - responses_api_agents/anyswe_agent/configs/anyswe_claude_code.yaml
+    # Path 1 + Path 2 together. Do NOT set token_capture.enabled (Path 3): it forces echo off and 422s streaming.
+    token_id_capture:
+      enabled: true
+      dir: /lustre/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj/experiments/polar_swe/token_captures/rl
+      rebuild_response: true
+      delta_records: true
+      max_mask_fraction: 0.5
+    policy_model:
+      responses_api_models:
+        vllm_model:
+          sampling_overrides:
+            temperature: 1.0
+            top_p: 1.0
+            top_k: -1
+    # dataset rows carry agent_ref.name = anyswe_claude_code_train (see $W/datasets/swe/scripts/make_anyswe_subset.py)
+    anyswe_claude_code_train:
+      responses_api_agents:
+        anyswe_agent:
+          entrypoint: app.py
+          token_id_capture: true
+          agent_server_module: responses_api_agents.claude_code_agent.app
+          agent_server_class: ClaudeCodeAgent
+          agent_config_class: ClaudeCodeAgentConfig
+          agent_runtime_source: auto
+          agent_kwargs:
+            model: model
+            max_turns: 60
+            timeout: 1500
+            system_prompt: "You are fixing a bug in the repository at /testbed. Edit the source files to fix the root cause, then verify. You MUST actually apply the fix with your file-editing tools; do not just describe it."
+          concurrency: 32
+          swebench_agent_timeout: 1800
+          swebench_tests_timeout: 1200
+          sandbox_model_base_url: null
+          container_formatter:
+          - /lustre/fsw/portfolios/nemotron/projects/nemotron_sw_post/users/akamehra/swe_e2e_corrected/sif/r2e_gym/{instance_id}.sif
+          sandbox_provider:
+            apptainer:
+              create: {mount_point: /sandbox, start_timeout_s: 900, apply_resource_limits: false, extra_start_args: ["--userns"]}
+              exec: {fakeroot_for_root: true, concurrency: 32, default_timeout_s: 600}
+              probe: {command: printf apptainer-sandbox-ready, expected_stdout: apptainer-sandbox-ready, deadline_s: 300, stable_count: 2, stable_delay_s: 1.0}
+          sandbox_spec:
+            workdir: /testbed
+            resources: {cpu: 4, memory_mib: 16384}
+          model_server:
+            name: policy_model
+            type: responses_api_models
+  _override_: true
+
+logger:
+  log_dir: /lustre/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj/experiments/polar_swe/logs
+  wandb_enabled: false
+  tensorboard_enabled: true
+  wandb:
+    project: polar-swe
+    name: aws-cmh-anyswe-claude-smoke
+
+cluster:
+  gpus_per_node: 4
+  num_nodes: 6          # 4 trainer + 2 generation (non-colocated)
+  segment_size: 2
