@@ -1,0 +1,61 @@
+# aws-cmh full training: async GRPO (DAPO-style loss + TIS), Qwen3.5-35B-A3B, Claude Code inside ARM R2E images,
+# training-token capture on. Chained 3h links via ray.sub singleton dependency; checkpoint every step.
+defaults: aws_cmh_grpo_qwen35_35ba3b_anyswe_claude_smoke.yaml
+
+grpo:
+  num_prompts_per_step: 16
+  num_generations_per_prompt: 8          # groups of 8 so most groups have mixed pass/fail
+  max_num_steps: 300
+  normalize_rewards: true
+  use_leave_one_out_baseline: true
+  use_dynamic_sampling: true             # drop all-pass / all-fail groups (zero advantage)
+  dynamic_sampling_max_gen_batches: 4
+  val_at_start: false
+  val_period: 10
+  max_val_samples: 48
+  async_grpo:
+    enabled: true
+    in_flight_weight_updates: true
+    max_trajectory_age_steps: 2
+
+loss_fn:
+  reference_policy_kl_penalty: 0.0        # DAPO: no KL to reference
+  use_importance_sampling_correction: true
+  truncated_importance_sampling_type: tis # async lag + vLLM/Megatron numerics
+  truncated_importance_sampling_ratio: 2
+  ratio_clip_min: 0.2
+  ratio_clip_max: 0.28                    # clip-higher
+  ratio_clip_c: 10
+  token_level_loss: true
+
+checkpointing:
+  enabled: true
+  checkpoint_dir: /lustre/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj/experiments/polar_swe/ckpt/aws_cmh_anyswe_claude_full
+  save_period: 1                          # 3h links: never lose more than one step
+  keep_top_k: 3
+  metric_name: train/total_reward/mean
+  higher_is_better: true
+
+policy:
+  train_global_batch_size: 128            # = 16 x 8, one optimizer step per rollout batch
+  max_total_sequence_length: 65536
+  generation:
+    max_new_tokens: 16384
+
+env:
+  nemo_gym:
+    anyswe_claude_code_train:
+      responses_api_agents:
+        anyswe_agent:
+          concurrency: 64
+
+logger:
+  wandb_enabled: false
+  tensorboard_enabled: true
+  wandb:
+    name: aws-cmh-anyswe-claude-full
+
+cluster:
+  gpus_per_node: 4
+  num_nodes: 6                            # 4 trainer + 2 generation
+  segment_size: 2
