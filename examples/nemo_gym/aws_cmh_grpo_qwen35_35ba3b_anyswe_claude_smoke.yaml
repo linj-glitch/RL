@@ -74,6 +74,10 @@ env:
     port_range_high: 5999
     config_paths:
     - responses_api_models/vllm_model/configs/vllm_model_for_training.yaml
+    # Prefix supply: Gym asks RL's vLLM server (required_prefix_token_ids) to start each continuation with the
+    # verified parent's exact tokens. Needed because Claude Code rewrites tool-call arguments when echoing history,
+    # so the re-rendered prompt does not naturally extend the sampled tokens. Stock vLLM cannot do this.
+    - responses_api_models/vllm_model/configs/vllm_model_supply_prefix.yaml
     - responses_api_agents/anyswe_agent/configs/anyswe_claude_code.yaml
     # Path 1 + Path 2 together. Do NOT set token_capture.enabled (Path 3): it forces echo off and 422s streaming.
     token_id_capture:
