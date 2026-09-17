@@ -12,7 +12,7 @@ grpo:
   dynamic_sampling_max_gen_batches: 4
   val_at_start: false
   val_period: 10
-  max_val_samples: 48
+  max_val_samples: null   # the Gym GRPO runner rejects a non-null value (no hidden data slicing)
   async_grpo:
     enabled: true
     in_flight_weight_updates: true
