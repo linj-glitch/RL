@@ -93,6 +93,7 @@ env:
             temperature: 1.0
             top_p: 1.0
             top_k: -1
+            max_tokens: 8192   # Claude Code requests 32000; keep prompt+generation inside the 64k server window
     # dataset rows carry agent_ref.name = anyswe_claude_code_train (see $W/datasets/swe/scripts/make_anyswe_subset.py)
     anyswe_claude_code_train:
       responses_api_agents:
