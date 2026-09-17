@@ -116,6 +116,10 @@ env:
           swebench_agent_timeout: 1800
           swebench_tests_timeout: 1200
           sandbox_model_base_url: null
+          # Gym a8f641eed: fan sandbox jobs (agent run + grading) out over the Ray cluster with SPREAD scheduling
+          # instead of running all of them on the node hosting the Gym servers; 2 cores reserved per job.
+          sandbox_dispatch: ray
+          sandbox_dispatch_num_cpus: 2
           container_formatter:
           - /lustre/fsw/portfolios/nemotron/projects/nemotron_sw_post/users/akamehra/swe_e2e_corrected/sif/r2e_gym/{instance_id}.sif
           sandbox_provider:
