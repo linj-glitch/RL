@@ -50,7 +50,10 @@ policy:
           enable_thinking: true
 
 data:
+  max_input_seq_length: null   # required by DataConfig (MasterConfig validation failed without it)
   shuffle: true
+  num_workers: 1
+  use_multiple_dataloader: false
   train:
     data_path: /lustre/fsw/portfolios/nemotron/projects/nemotron_reason_code/users/linj/datasets/swe/r2e_arm_anyswe_train.jsonl
   validation:
