@@ -97,6 +97,14 @@ env:
             top_p: 1.0
             top_k: -1
             max_tokens: 8192   # Claude Code requests 32000; keep prompt+generation inside the 64k server window
+    # The base entry from anyswe_claude_code.yaml reads container_formatter from ${oc.env:ANYSWE_CONTAINER_FORMATTER};
+    # the RL job has no such env var (the eval smoke sets it), so pin it here too or Gym spin-up dies on the
+    # interpolation (link 3805993). Rows are routed to anyswe_claude_code_train below; this entry just has to load.
+    anyswe_claude_code:
+      responses_api_agents:
+        anyswe_agent:
+          container_formatter:
+          - /lustre/fsw/portfolios/nemotron/projects/nemotron_sw_post/users/akamehra/swe_e2e_corrected/sif/r2e_gym/{instance_id}.sif
     # dataset rows carry agent_ref.name = anyswe_claude_code_train (see $W/datasets/swe/scripts/make_anyswe_subset.py)
     anyswe_claude_code_train:
       responses_api_agents:
